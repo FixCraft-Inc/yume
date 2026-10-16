@@ -284,7 +284,7 @@ stream reason, are:
 | Window an exit grants per stream | 256 KiB, returned as it drains |
 | Window an exit grants across one circuit | 8 MiB, so 32 streams at once |
 | Answer to an EXTEND | 10 seconds |
-| A cell waiting for the next hop, or for the previous one | 30 seconds |
+| A cell waiting for an adjacent hop, or a failed circuit draining its stream | 30 seconds |
 | Cells an exit queues toward the client before it stops reading | 16 |
 
 Every circuit stream, on `yume.circuit` and on a link, has a receive window

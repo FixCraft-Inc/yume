@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, connect as netConnect } from 'node:net';
 import { METHODS } from 'node:http';
 import { randomBytes } from 'node:crypto';
@@ -67,7 +67,8 @@ function generateCertificate(directory) {
   return { key, certificate };
 }
 
-async function startServer(directory, port, script = serverPath) {
+async function start_server(directory, port, script = serverPath,
+                            timeout_ms = STARTUP_TIMEOUT_MS) {
   const { key, certificate } = script === serverPath
     ? generateCertificate(directory) : {};
   const child = spawn(process.execPath, [script], {
@@ -80,24 +81,42 @@ async function startServer(directory, port, script = serverPath) {
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
+  // `close` follows exit/error and the closure of both piped streams. Own it
+  // before waiting for readiness so a failed start cannot keep the test alive.
+  const closed = new Promise(resolve => child.once('close', resolve));
+  const stop_server = async () => {
+    child.kill('SIGKILL');
+    await closed;
+  };
   let stderr = '';
   child.stderr.on('data', chunk => { stderr += chunk; });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`cover server did not start: ${stderr}`)),
-      STARTUP_TIMEOUT_MS);
-    child.stdout.on('data', chunk => {
-      if (String(chunk).includes('listening')) {
+  try {
+    await new Promise((resolve, reject) => {
+      const finish = error => {
         clearTimeout(timer);
-        resolve();
-      }
+        child.stdout.off('data', on_stdout);
+        child.off('exit', on_exit);
+        child.off('error', on_error);
+        if (error) reject(error);
+        else resolve();
+      };
+      const on_stdout = chunk => {
+        if (String(chunk).includes('listening')) finish();
+      };
+      const on_exit = code => finish(
+        new Error(`cover server exited with ${code}: ${stderr}`));
+      const on_error = error => finish(error);
+      const timer = setTimeout(() => finish(
+        new Error(`cover server did not start: ${stderr}`)), timeout_ms);
+      child.stdout.on('data', on_stdout);
+      child.once('exit', on_exit);
+      child.once('error', on_error);
     });
-    child.once('exit', code => {
-      clearTimeout(timer);
-      reject(new Error(`cover server exited with ${code}: ${stderr}`));
-    });
-  });
-  return child;
+  } catch (error) {
+    await stop_server();
+    throw error;
+  }
+  return stop_server;
 }
 
 function fetchOverHttp1(port, path) {
@@ -261,12 +280,13 @@ function checkMethodNotAllowed(response, method, path) {
 
 test('unsupported HTTP/2 methods match the native static cover', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'yume-cover-methods-'));
-  const port = await freePort();
-  const child = await startServer(directory, port);
-  t.after(() => {
-    child.kill('SIGKILL');
-    rmSync(directory, { recursive: true, force: true });
+  let stop_server;
+  t.after(async () => {
+    try { await stop_server?.(); }
+    finally { rmSync(directory, { recursive: true, force: true }); }
   });
+  const port = await freePort();
+  stop_server = await start_server(directory, port);
 
   for (const method of [...METHODS.filter(value =>
     !['GET', 'HEAD', 'CONNECT'].includes(value)), 'FOO', 'get']) {
@@ -284,8 +304,8 @@ test('unsupported HTTP/2 methods match the native static cover', async t => {
 
 test('HTTP/1.1 backend distinguishes method rejection from parser dispatch', async t => {
   const port = await freePort();
-  const child = await startServer(null, port, backendPath);
-  t.after(() => child.kill('SIGKILL'));
+  const stop_server = await start_server(null, port, backendPath);
+  t.after(stop_server);
   for (const method of METHODS.filter(value =>
     !['GET', 'HEAD', 'CONNECT'].includes(value))) {
     const response = await fetchRawHttp1(port, method, '/');
@@ -307,12 +327,13 @@ test('HTTP/1.1 backend distinguishes method rejection from parser dispatch', asy
 
 test('serves HTTP/2 and extended CONNECT, and refuses HTTP/1.1 promptly', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'yume-cover-server-'));
-  const port = await freePort();
-  const child = await startServer(directory, port);
-  t.after(() => {
-    child.kill('SIGKILL');
-    rmSync(directory, { recursive: true, force: true });
+  let stop_server;
+  t.after(async () => {
+    try { await stop_server?.(); }
+    finally { rmSync(directory, { recursive: true, force: true }); }
   });
+  const port = await freePort();
+  stop_server = await start_server(directory, port);
 
   const overHttp2 = await fetchOverHttp2(port, '/');
   assert.equal(Number(overHttp2.status), 200);
@@ -333,4 +354,35 @@ test('serves HTTP/2 and extended CONNECT, and refuses HTTP/1.1 promptly', async 
     fetchOverHttp1(port, '/'),
     error => !/did not answer within/.test(error.message),
     'HTTP/1.1 must fail fast, not hang');
+});
+
+test('startup timeout closes the child and its pipes before rejecting', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'yume-cover-startup-'));
+  let child_pid;
+  t.after(() => {
+    // Keep the regression bounded even when the startup cleanup is removed.
+    try {
+      if (child_pid) {
+        try { process.kill(child_pid, 'SIGKILL'); }
+        catch (error) { if (error.code !== 'ESRCH') throw error; }
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  const script = join(directory, 'never-ready.mjs');
+  writeFileSync(script, `
+    process.stderr.write('fixture-pid=' + process.pid + '\\n');
+    setTimeout(() => process.exit(0), 10000);
+  `);
+  await assert.rejects(start_server(null, 0, script, 1000), error => {
+    assert.match(error.message, /^cover server did not start:/);
+    const match = /fixture-pid=(\d+)/.exec(error.message);
+    assert.ok(match, 'fixture must have started before its readiness timeout');
+    child_pid = Number(match[1]);
+    assert.throws(() => process.kill(child_pid, 0), { code: 'ESRCH' },
+      'startup rejection must wait until the child is reaped');
+    child_pid = undefined;
+    return true;
+  });
 });

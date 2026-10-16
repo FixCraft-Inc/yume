@@ -651,6 +651,8 @@ YUME_API void yume_packet_destroy(yume_packet* packet) YUME_NOEXCEPT;
  * Files come in path order and yume.json is always present. The kit's layout
  * is validated, its configuration is not. yume_kit_get_file returns
  * YUME_STATUS_NOT_FOUND for an index at or above yume_kit_file_count.
+ * From a callback, yume_kit_file_count returns 0 and yume_kit_get_file
+ * returns YUME_STATUS_INVALID_STATE without writing the output.
  * yume_kit_destroy wipes the files and accepts null.
  */
 YUME_API yume_status yume_kit_open(yume_runtime* runtime, const void* sealed,

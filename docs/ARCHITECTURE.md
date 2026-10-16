@@ -279,7 +279,12 @@ also closes.
 
 `yumed` runs `endpoint.event_loops` execution contexts, each on its own
 thread, and one `NativeEndpoint` on each. The first context owns the
-listening sockets, signals, the control socket and the resolver helper. It accepts each TCP connection before TLS and hands its
+listening sockets, signals, the control socket and the resolver helper.
+A served endpoint's terminal accept failure reaches that first context through
+a reserved control task even when allocation fails. The runtime reports the
+first such failure once, retaining its state through the callback; the caller
+closes the runtime and drains its contexts.
+It accepts each TCP connection before TLS and hands its
 descriptor to the context serving the fewest sessions, whose front door
 then runs TLS, cover, admission and the session for the connection's whole
 life, so no TLS or session state moves between threads. The listener's

@@ -50,6 +50,37 @@ static int expect(yume_status actual, yume_status wanted, const char* what) {
     return 0;
 }
 
+typedef struct CallbackContext {
+    const yume_kit* kit;
+    size_t calls;
+    int passed;
+} CallbackContext;
+
+static void check_callback_reads(const yume_event* event, void* user_data) {
+    CallbackContext* context = (CallbackContext*)user_data;
+    yume_kit_file file;
+    unsigned char before[sizeof(file)];
+    (void)event;
+    if (context->kit == NULL) return;
+    ++context->calls;
+    if (yume_kit_file_count(context->kit) != 0u) {
+        fprintf(stderr, "a callback read the kit's file count\n");
+        context->passed = 0;
+    }
+    memset(&file, 0xa5, sizeof(file));
+    file.struct_size = sizeof(file);
+    file.abi_version = YUME_ABI_VERSION;
+    memcpy(before, &file, sizeof(file));
+    if (!expect(yume_kit_get_file(context->kit, 0u, &file, sizeof(file)),
+                YUME_STATUS_INVALID_STATE, "kit file from a callback")) {
+        context->passed = 0;
+    }
+    if (memcmp(before, &file, sizeof(file)) != 0) {
+        fprintf(stderr, "a callback's refused kit read changed its output\n");
+        context->passed = 0;
+    }
+}
+
 /* A refused kit publishes no handle and says why on the runtime. */
 static int expect_refused(yume_runtime* runtime, const unsigned char* sealed,
                           size_t sealed_size, const char* code,
@@ -139,6 +170,7 @@ static int check_opened(yume_runtime* runtime, const yume_kit* kit,
         strcpy(previous, name);
         if (strcmp(name, "yume.json") == 0) {
             yume_config* config = NULL;
+            yume_endpoint* endpoint = NULL;
             has_config = 1;
             /* The kit's own configuration is one this library accepts. */
             if (!expect(yume_config_parse_json(runtime, file.data, file.size,
@@ -148,6 +180,16 @@ static int check_opened(yume_runtime* runtime, const yume_kit* kit,
                 yume_config_destroy(config);
                 return 0;
             }
+            /* Stop emits lifecycle callbacks without starting any network I/O. */
+            if (!expect(yume_endpoint_create(runtime, config, &endpoint),
+                        YUME_STATUS_OK, "callback endpoint create") ||
+                !expect(yume_endpoint_stop(endpoint, 0u), YUME_STATUS_OK,
+                        "callback endpoint stop")) {
+                yume_endpoint_destroy(endpoint);
+                yume_config_destroy(config);
+                return 0;
+            }
+            yume_endpoint_destroy(endpoint);
             yume_config_destroy(config);
         }
     }
@@ -158,6 +200,11 @@ static int check_opened(yume_runtime* runtime, const yume_kit* kit,
     memset(&file, 0, sizeof(file));
     file.struct_size = sizeof(file);
     file.abi_version = YUME_ABI_VERSION;
+    if (!expect(yume_kit_get_file(kit, 0u, &file, sizeof(file)),
+                YUME_STATUS_OK, "kit file after callbacks") ||
+        !file_matches(directory, &file)) {
+        return 0;
+    }
     if (!expect(yume_kit_get_file(kit, count, &file, sizeof(file)),
                 YUME_STATUS_NOT_FOUND, "a file past the last") ||
         !expect(yume_kit_get_file(kit, 0u, NULL, sizeof(file)),
@@ -171,6 +218,7 @@ static int check_opened(yume_runtime* runtime, const yume_kit* kit,
 
 int main(int argc, char** argv) {
     yume_runtime_options options;
+    CallbackContext callback = {NULL, 0u, 1};
     yume_runtime* runtime = NULL;
     yume_kit* kit = NULL;
     unsigned char* sealed = NULL;
@@ -198,6 +246,8 @@ int main(int argc, char** argv) {
     options.struct_size = sizeof(options);
     options.abi_version = YUME_ABI_VERSION;
     options.config_base_dir = argv[3];
+    options.event_callback = check_callback_reads;
+    options.callback_user_data = &callback;
     if (!expect(yume_runtime_create(&options, &runtime), YUME_STATUS_OK,
                 "runtime create")) {
         return 1;
@@ -214,10 +264,17 @@ int main(int argc, char** argv) {
     /* The code as displayed, with its separators. */
     if (!expect(yume_kit_open(runtime, sealed, sealed_size, argv[2],
                               strlen(argv[2]), &kit),
-                YUME_STATUS_OK, "open with the displayed code") ||
-        !check_opened(runtime, kit, argv[3], expected_files)) {
+                YUME_STATUS_OK, "open with the displayed code")) {
         goto cleanup;
     }
+    callback.kit = kit;
+    if (!check_opened(runtime, kit, argv[3], expected_files) ||
+        callback.calls != 2u || !callback.passed ||
+        yume_kit_file_count(kit) != expected_files) {
+        fprintf(stderr, "kit callback restrictions or subsequent reads failed\n");
+        goto cleanup;
+    }
+    callback.kit = NULL;
     yume_kit_destroy(kit);
     kit = NULL;
 

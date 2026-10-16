@@ -134,7 +134,8 @@ ytp1::Destination named(std::uint16_t port) {
 // Three nodes, north, east and west, with west an exit. Each open_next
 // makes an in-memory stream to the named node unless redirected.
 struct Cluster {
-    explicit Cluster(IoRuntime& io, bool every_exit = false)
+    explicit Cluster(IoRuntime& io, bool every_exit = false,
+                     std::chrono::milliseconds middle_stall_timeout = 30s)
         : runtime(io),
           crypto(std::make_shared<cc::CircuitCrypto>()),
           exit_everywhere(every_exit) {
@@ -146,6 +147,8 @@ struct Cluster {
             environment.context = runtime.context();
             environment.crypto = crypto;
             environment.identity = identities[name];
+            if (std::string_view(name) == "east")
+                environment.limits.stall_timeout = middle_stall_timeout;
             environment.is_peer = [this](std::string_view identity) {
                 for (const auto* node : {"north", "east", "west"}) {
                     if (identities[node]->identity.fingerprint == identity)
@@ -251,6 +254,7 @@ struct Cluster {
             links.clear();
             far_ends.clear();
             client_ends.clear();
+            entry_ends.clear();
             identities.clear();
             crypto.reset();
         });
@@ -270,6 +274,7 @@ struct Cluster {
         return runtime.sync([&] {
             auto [mine, theirs] = PipeEnd::pair(runtime.context());
             client_ends.push_back(mine);
+            entry_ends.push_back(theirs);
             Status acceptance;
             services[route.front()]->async_open(
                 open_context(client), theirs,
@@ -356,6 +361,7 @@ struct Cluster {
     // The node end of each link, by "from>to", which the "to" node writes.
     std::map<std::string, std::shared_ptr<PipeEnd>> far_ends;
     std::vector<std::shared_ptr<PipeEnd>> client_ends;
+    std::vector<std::shared_ptr<PipeEnd>> entry_ends;
 };
 
 // Writes data into a stream, shuts it, and reads back until the end.
@@ -659,6 +665,105 @@ void test_middle_loss(Cluster& cluster) {
           failure->reason == c1::CircuitReason::Unreachable);
 }
 
+// The entry has forwarded one backward cell but has not finished its write,
+// so it is not reading the middle hop. A failure behind that cell must retain
+// the middle hop's attribution while it waits in the entry's stream inbox.
+enum class FailurePredecessor { Reading, FinBeforeReport, FinAfterReport, Stalled };
+
+void test_queued_middle_failure(IoRuntime& io, FailurePredecessor predecessor) {
+    const bool stall_predecessor = predecessor == FailurePredecessor::Stalled;
+    Cluster cluster(io, false, stall_predecessor ? 500ms : 30s);
+    auto circuit = cluster.circuit({"north", "east", "west"});
+    CHECK(cluster.build(circuit).ok());
+    auto opened = cluster.open(circuit, 443);
+    CHECK(opened.ok());
+    if (!opened.ok()) return;
+    auto stream = std::move(opened).take_value();
+    const auto entry = cluster.entry_ends.back();
+    const auto middle = cluster.far_ends.at("north>east");
+    const auto to_middle = cluster.links.front();
+    auto received = std::make_shared<std::promise<bool>>();
+    auto received_future = received->get_future();
+    auto warmed = std::make_shared<std::promise<bool>>();
+    auto warmed_future = warmed->get_future();
+    auto closed = std::make_shared<std::promise<void>>();
+    auto closed_future = closed->get_future();
+    cluster.runtime.sync([&] {
+        circuit->on_closed([closed] { closed->set_value(); });
+        stream->async_read({}, [warmed](Result<ReceivedRecord> result) {
+            warmed->set_value(result.ok());
+        });
+        stream->async_write(take(Buffer::allocate(4U, 65536U)), {},
+                            [](Status, std::size_t) {});
+    });
+    CHECK(warmed_future.wait_for(5s) == std::future_status::ready);
+    if (warmed_future.wait_for(0s) != std::future_status::ready) return;
+    CHECK(warmed_future.get());
+    cluster.runtime.sync([&] {
+        entry->hold_next_write();
+        stream->async_read({}, [received](Result<ReceivedRecord> result) {
+            received->set_value(result.ok());
+        });
+        stream->async_write(take(Buffer::allocate(4U, 65536U)), {},
+                            [](Status, std::size_t) {});
+    });
+    CHECK(received_future.wait_for(5s) == std::future_status::ready);
+    if (received_future.wait_for(0s) != std::future_status::ready) return;
+    CHECK(received_future.get());
+    cluster.runtime.sync([&] {
+        CHECK(entry->write_held());
+        middle->hold_next_write();
+        cluster.far_ends.at("east>west")
+            ->close(Status(StatusCode::Cancelled));
+    });
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!cluster.runtime.sync([&] { return middle->write_held(); }) &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+    if (predecessor == FailurePredecessor::FinBeforeReport)
+        cluster.runtime.sync([&] { CHECK(to_middle->shutdown_write().ok()); });
+    cluster.runtime.sync([&] {
+        CHECK(middle->write_held());
+        if (middle->write_held()) middle->resume_write();
+    });
+    // resume_write posts its completion on the same executor. This next
+    // task runs after the middle has acted on that completion.
+    if (predecessor == FailurePredecessor::FinAfterReport)
+        cluster.runtime.sync([&] { CHECK(to_middle->shutdown_write().ok()); });
+    if (stall_predecessor) {
+        const auto waiting = cluster.runtime.sync([&] {
+            return cluster.services.at("east")->status();
+        });
+        CHECK(waiting.circuits == 1U && waiting.failed == 0U);
+        // The existing five-second node sweep enforces the shortened stall
+        // bound while north continues to hold its backward write.
+        const auto expiry = std::chrono::steady_clock::now() + 7s;
+        while (!cluster.runtime.sync([&] { return middle->terminated(); }) &&
+               std::chrono::steady_clock::now() < expiry)
+            std::this_thread::sleep_for(10ms);
+        const auto expired = cluster.runtime.sync([&] {
+            return cluster.services.at("east")->status();
+        });
+        CHECK(expired.circuits == 0U && expired.failed == 1U);
+    }
+    cluster.runtime.sync([&] { entry->resume_write(); });
+    CHECK(closed_future.wait_for(5s) == std::future_status::ready);
+    const auto failure =
+        cluster.runtime.sync([&] { return circuit->failure(); });
+    const unsigned expected_hop = stall_predecessor ? 1U : 2U;
+    if (failure && failure->hop != expected_hop)
+        std::cerr << "queued middle failure reported hop "
+                  << static_cast<unsigned>(failure->hop) << '\n';
+    if (stall_predecessor) {
+        CHECK(failure && failure->hop == 1U &&
+              failure->reason == c1::CircuitReason::Unreachable);
+    } else {
+        CHECK(failure && failure->hop == 2U &&
+              failure->reason == c1::CircuitReason::Unreachable);
+    }
+    cluster.runtime.sync([&] { circuit->close(); });
+}
+
 void test_client_bounds(Cluster& cluster) {
     std::vector<std::shared_ptr<ClientCircuit>> held;
     const std::string client(64, 'd');
@@ -861,6 +966,10 @@ int main() {
             test_upload_fairness(cluster);
             test_middle_loss(cluster);
         }
+        test_queued_middle_failure(io, FailurePredecessor::Reading);
+        test_queued_middle_failure(io, FailurePredecessor::FinBeforeReport);
+        test_queued_middle_failure(io, FailurePredecessor::FinAfterReport);
+        test_queued_middle_failure(io, FailurePredecessor::Stalled);
         test_one_hop_exit_refused(io);
     } catch (const std::exception& error) {
         std::cerr << "circuit runtime test aborted: " << error.what() << '\n';

@@ -183,7 +183,10 @@ FrontDoor separately bounds pre-promotion connections and work. An optional
 endpoint-owned accept loop keeps a sized number of starts pending on every
 listener and retries refused or immediately failed starts after a delay. When a
 listener stops, or a retry cannot be scheduled for a listener with nothing
-pending, it closes the endpoint and reports once. Descriptor or memory
+pending, it closes the endpoint and reports once. The standalone server uses
+a reserved control task to carry a served endpoint's terminal failure to its
+first context without allocating, retaining its state through the callback.
+Descriptor or memory
 exhaustion in the native FrontDoor pauses accepting for one second before
 retrying. Other accept failures, or failure to schedule that retry, close the
 listener. Listener publication follows credential, mapped-limit and
@@ -271,7 +274,8 @@ an eighth of the session budget on `yume.circuit` and on links, and
 `yumed --status` counts circuits per link and refusals by bound. The
 in-memory `yume_circuit_runtime_test` covers the node service and the client
 builder, including an even share for a circuit's downloads and uploads over
-a slow link,
+a slow link, queued middle-hop failure delivery while an upstream write is
+held, and bounded cleanup when the previous hop does not end the failed stream,
 and `yume_native_circuit_test` runs four daemons with a test client:
 two- and three-hop circuits carrying a stream both ways, an exit policy and
 a non-exit refusing streams, a client without the grant, the per-client

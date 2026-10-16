@@ -263,10 +263,12 @@ state-event order cannot interleave. Callback arguments and strings are
 borrowed for that invocation only. To avoid self-deadlock, callbacks may
 re-enter only the global version, build, compatibility and status-info queries
 and `yume_handle_get_diagnostic`. Endpoint state, status and message queries
-are forbidden from a callback, as are lifecycle, I/O and registration calls.
+and kit file queries are forbidden from a callback, as are lifecycle, I/O
+and registration calls.
 Status-returning calls report
 `YUME_STATUS_INVALID_STATE`; the `void` destroy functions are ignored and
-ownership remains with the caller, and `yume_endpoint_state` returns 0.
+ownership remains with the caller, and `yume_endpoint_state` and
+`yume_kit_file_count` return 0.
 Exceptions thrown by C++ callbacks are
 contained before returning through the C boundary.
 
@@ -784,7 +786,9 @@ takes a noticeable time and belongs off an interface thread.
 
 A failure publishes no handle and leaves its text as the runtime handle's
 diagnostic. `yume_kit_file_count` returns the number of files, at most 32,
-and 0 for a null handle. `yume_kit_get_file` fills a sized `yume_kit_file`
+and 0 for a null handle or from a callback. `yume_kit_get_file` returns
+`YUME_STATUS_INVALID_STATE` from a callback without changing the output.
+Outside callbacks, it fills a sized `yume_kit_file`
 for an index below that count and returns `YUME_STATUS_NOT_FOUND` for any
 other. Files come in path order. A path is one or two components of ASCII
 letters, digits, `.`, `_` and `-`, such as `credentials/admission.key`, and

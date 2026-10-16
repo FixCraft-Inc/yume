@@ -78,10 +78,12 @@ ApplicationWindow {
                         spacing: 0
                         Layout.fillWidth: true
                         Text {
+                            objectName: "pageHeading"
                             textFormat: Text.PlainText
                             text: window.pageTitles[window.pageNames.indexOf(App.page)]
                             color: Theme.ink
                             font.family: Theme.displayFont
+                            font.weight: Font.Bold
                             font.pixelSize: Theme.textTitle
                             Accessible.role: Accessible.Heading
                         }

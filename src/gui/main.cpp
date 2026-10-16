@@ -18,7 +18,6 @@
 
 #include <QApplication>
 #include <QCoreApplication>
-#include <QFontDatabase>
 #include <QLocale>
 #include <QGuiApplication>
 #include <QIcon>
@@ -34,6 +33,7 @@
 #include "common/version.hpp"
 #include "gui/app_state.hpp"
 #include "gui/capture.hpp"
+#include "gui/fonts.hpp"
 #include "gui/headless.hpp"
 #include "gui/kit_store.hpp"
 #include "gui/language.hpp"
@@ -240,10 +240,10 @@ int run_window(int argc, char** argv) {
     QSurfaceFormat format = QSurfaceFormat::defaultFormat();
     format.setSamples(4);
     QSurfaceFormat::setDefaultFormat(format);
-    QFontDatabase::addApplicationFont(
-        QStringLiteral(":/yume/fonts/Jost-Regular.ttf"));
-    QFontDatabase::addApplicationFont(
-        QStringLiteral(":/yume/fonts/Quicksand-Bold.ttf"));
+    if (!register_fonts()) {
+        std::fprintf(stderr, "yume-gui: the bundled fonts did not load\n");
+        return 1;
+    }
     QGuiApplication::setWindowIcon(mark_icon());
 
     QTranslator english_translator;

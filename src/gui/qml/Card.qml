@@ -27,22 +27,32 @@ Rectangle {
                     + 2 * padding
     implicitWidth: 320
 
-    RowLayout {
+    Item {
         id: heading
+        objectName: "cardHeading"
         visible: card.title.length > 0
         anchors { left: parent.left; right: parent.right; top: parent.top; margins: card.padding }
-        spacing: Theme.gapSmall
-        ColumnLayout {
+        implicitHeight: Math.max(titles.implicitHeight, trailingSlot.implicitHeight)
+        // Width flows from the card to the text, and wrapped height flows
+        // back through positioners. A layout solver can loop or retain a
+        // zero-width text column when a hidden card receives new text.
+        Column {
+            id: titles
+            anchors.left: parent.left
+            width: Math.max(0, heading.width - trailingSlot.implicitWidth
+                            - (trailingSlot.implicitWidth > 0 ? Theme.gapSmall : 0))
             spacing: 2
-            Layout.fillWidth: true
             Text {
                 textFormat: Text.PlainText
                 horizontalAlignment: Text.AlignLeft
+                objectName: "cardTitle"
                 text: card.title
                 color: Theme.ink
                 font.pixelSize: Theme.textHeading
-                font.weight: Font.DemiBold
-                Layout.fillWidth: true
+                font.family: Theme.displayFont
+                font.weight: Font.Bold
+                Accessible.role: Accessible.Heading
+                width: parent.width
                 wrapMode: Text.WordWrap
                 maximumLineCount: 2
                 elide: Text.ElideRight
@@ -51,18 +61,24 @@ Rectangle {
                 textFormat: Text.PlainText
                 horizontalAlignment: Text.AlignLeft
                 visible: card.subtitle.length > 0
+                objectName: "cardSubtitle"
                 text: card.subtitle
                 color: Theme.muted
                 font.pixelSize: Theme.textSmall
-                Layout.fillWidth: true
+                width: parent.width
                 wrapMode: Text.WordWrap
             }
         }
-        Row { id: trailingSlot; spacing: Theme.gapSmall; Layout.alignment: Qt.AlignTop }
+        Row {
+            id: trailingSlot
+            anchors.right: parent.right
+            spacing: Theme.gapSmall
+        }
     }
 
     ColumnLayout {
         id: column
+        objectName: "cardContent"
         spacing: Theme.gapSmall
         anchors {
             left: parent.left

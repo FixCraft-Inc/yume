@@ -49,6 +49,7 @@ Dialog {
             text: qsTrId("desktop.use.a.shorter.route")
             color: Theme.ink
             font.family: Theme.displayFont
+            font.weight: Font.Bold
             font.pixelSize: 24
             Accessible.role: Accessible.Heading
         }

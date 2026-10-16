@@ -285,6 +285,14 @@ class Gui(unittest.TestCase):
                               timeout=180)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn("QML", result.stderr)
+        # The narrow Japanese page exposes a heading column that Qt 6.4 can
+        # retain at zero width after its parent row becomes visible. Capture
+        # mode checks rendered card geometry as well as QML warnings.
+        japanese = dict(self.environment, LANG="ja_JP.UTF-8", LC_ALL="ja_JP.UTF-8",
+                        LANGUAGE="ja_JP")
+        result = self.gui("--kit", "work", "--size", "900x700", "--capture",
+                          str(self.root / "shots-ja"), environment=japanese, timeout=180)
+        self.assertEqual(result.returncode, 0, result.stderr)
         names = sorted(path.name for path in shots.iterdir())
         for page in ("overview", "connect", "logs", "posture", "route-review"):
             for suffix in ("light-ltr", "dark-ltr", "light-rtl"):

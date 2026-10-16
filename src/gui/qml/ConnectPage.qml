@@ -319,6 +319,7 @@ Flickable {
                 text: qsTrId("desktop.rename").arg(renameDialog.originalName)
                 color: Theme.ink
                 font.family: Theme.displayFont
+                font.weight: Font.Bold
                 font.pixelSize: 24
                 Accessible.role: Accessible.Heading
             }

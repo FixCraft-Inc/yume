@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QGuiApplication>
 #include <QImage>
+#include <QQuickItem>
 #include <QQuickWindow>
 #include <QTimer>
 #include <QVariant>
@@ -39,8 +40,56 @@ struct Capture final {
     int failures{0};
 };
 
+// A clean QML log alone does not prove that a hidden card laid out its
+// heading when it became visible. Check the rendered text bounds as well.
+// QML data aliases can give an item different object and visual parents,
+// so walk the visual tree rather than QObject's children.
+QQuickItem* visual_item(QQuickItem* root, const QString& name) {
+    if (root->objectName() == name) return root;
+    for (auto* child : root->childItems())
+        if (auto* found = visual_item(child, name)) return found;
+    return nullptr;
+}
+
+bool card_headings_fit(QQuickItem* root) {
+    if (!root->isVisible()) return true;
+    if (root->objectName() == QStringLiteral("cardContent")) {
+        auto* card = root->parentItem();
+        if (!card) return false;
+        auto* heading = visual_item(card, QStringLiteral("cardHeading"));
+        if (!heading || heading->parentItem() != card) return false;
+        if (!heading->isVisible()) return true;
+        qreal previous_bottom = 0;
+        for (const auto* name : {"cardTitle", "cardSubtitle"}) {
+            auto* text = visual_item(heading, QLatin1String(name));
+            if (!text) return false;
+            if (!text->isVisible() ||
+                text->property("text").toString().isEmpty())
+                continue;
+            const QRectF bounds = text->mapRectToItem(
+                heading, QRectF(0, 0, text->width(), text->height()));
+            if (bounds.width() <= 0 || bounds.top() < previous_bottom - 0.5 ||
+                bounds.bottom() > heading->height() + 0.5)
+                return false;
+            previous_bottom = bounds.bottom();
+        }
+        if (card->property("hasContent").toBool() &&
+            heading->y() + heading->height() > root->y() + 0.5)
+            return false;
+    }
+    for (auto* child : root->childItems())
+        if (!card_headings_fit(child)) return false;
+    return true;
+}
+
 void save(const std::shared_ptr<Capture>& capture, const QString& name) {
     const QImage image = capture->window->grabWindow();
+    if (!card_headings_fit(capture->window->contentItem())) {
+        ++capture->failures;
+        std::fprintf(stderr,
+                     "yume-gui: card heading overlaps or has no width on %s\n",
+                     qPrintable(name));
+    }
     const QString path = capture->directory.filePath(
         name + QStringLiteral("-") + capture->suffix + QStringLiteral(".png"));
     if (image.isNull() || !image.save(path)) {

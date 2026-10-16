@@ -51,7 +51,7 @@ Rectangle {
             horizontalAlignment: Text.AlignLeft
             text: metric.value
             color: metric.tint
-            font.family: Theme.displayFont
+            font.family: Theme.numberFont
             font.pixelSize: 26
             Layout.fillWidth: true
             elide: Text.ElideRight

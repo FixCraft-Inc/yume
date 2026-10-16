@@ -149,6 +149,9 @@ Item {
                           : qsTrId("desktop.the.tunnel.is.not.running")
                     color: Theme.ink
                     font.pixelSize: Theme.textHeading
+                    font.family: Theme.displayFont
+                    font.weight: Font.Bold
+                    Accessible.role: Accessible.Heading
                 }
                 Text {
                     textFormat: Text.PlainText

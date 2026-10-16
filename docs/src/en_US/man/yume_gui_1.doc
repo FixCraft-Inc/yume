@@ -129,7 +129,8 @@ Wait for the selected kit's first status, save each page and the route
 review dialog, when a proposal is shown, to *directory* as
 *page*-*theme*-*direction*.png, and the tray icon in each state as
 tray-*state*.png, and exit. The exit status is 1 when an image
-could not be written or a page raised a QML warning.
+could not be written, a page raised a QML warning, or a visible card's
+heading has no width or overlaps its content.
 @opt **--headless** *action*
 @cli values: status connect stop cycle
 @cli spell: --headless <action>

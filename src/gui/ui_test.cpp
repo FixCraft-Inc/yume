@@ -25,6 +25,7 @@
 #include <QApplication>
 #include <QFontDatabase>
 #include <QFontInfo>
+#include <QGlyphRun>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -35,6 +36,7 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSettings>
 #include <QTemporaryDir>
@@ -42,9 +44,11 @@
 #include <QTcpServer>
 #include <QTest>
 #include <QTranslator>
+#include <QTextLayout>
 #include <QtQml>
 
 #include "gui/app_state.hpp"
+#include "gui/fonts.hpp"
 #include "gui/kit_store.hpp"
 #include "gui/language.hpp"
 #include "gui/mark.hpp"
@@ -281,6 +285,41 @@ private slots:
         const QFontInfo resolved(font);
         QCOMPARE(resolved.family(), QStringLiteral("Quicksand"));
         QVERIFY(resolved.bold());
+    }
+
+    void headings_resolve_latin_and_cyrillic_faces() {
+        auto* heading = window_->findChild<QQuickItem*>(
+            QStringLiteral("pageHeading"));
+        QVERIFY(heading);
+        const QFont font = heading->property("font").value<QFont>();
+        QCOMPARE(font.family(), QStringLiteral("Quicksand"));
+        QCOMPARE(font.weight(), QFont::Bold);
+        for (const auto& [text, family] : {
+                 std::pair{QStringLiteral("Overview"), QStringLiteral("Quicksand")},
+                 std::pair{QStringLiteral("Обзор"), QStringLiteral("Jost*")},
+                 std::pair{QStringLiteral("Огляд"), QStringLiteral("Jost*")},
+                 std::pair{QStringLiteral("іїєґ"), QString{}}}) {
+            QTextLayout layout(text, font);
+            layout.beginLayout();
+            QVERIFY(layout.createLine().isValid());
+            layout.endLayout();
+            const auto runs = layout.glyphRuns();
+            QVERIFY(!runs.isEmpty());
+            for (const auto& run : runs) {
+                const auto raw = run.rawFont();
+                QVERIFY(raw.isValid());
+                if (!family.isEmpty()) {
+                    QCOMPARE(raw.familyName(), family);
+                } else {
+                    // These Ukrainian letters are in neither embedded face.
+                    QVERIFY(raw.familyName() != QStringLiteral("Quicksand"));
+                    QVERIFY(raw.familyName() != QStringLiteral("Jost*"));
+                }
+                const auto glyphs = run.glyphIndexes();
+                QVERIFY(!glyphs.isEmpty());
+                for (const auto glyph : glyphs) QVERIFY(glyph != 0);
+            }
+        }
     }
 
     void tuning_table_and_custom_limits() {
@@ -1204,6 +1243,72 @@ private slots:
         QCOMPARE(rows, 2);
     }
 
+    void wrapped_card_heading_settles_while_hidden() {
+        QTest::failOnWarning(QRegularExpression(QStringLiteral(".*Polish loop.*")));
+        QQmlComponent component(&engine_);
+        component.setData(R"(
+            import QtQuick
+            Card {
+                width: 3
+                visible: false
+                title: "Защита"
+                subtitle: "Этот GUI не описывает транспорт. Он показывает то, о чём сообщает программа."
+                Text { objectName: "content"; textFormat: Text.PlainText; text: "Content" }
+            }
+        )", QUrl(QStringLiteral("qrc:/yume/qml/CardHeadingProbe.qml")));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto* card = qobject_cast<QQuickItem*>(root.get());
+        QVERIFY(card);
+        card->setParentItem(window_->contentItem());
+        QTest::qWait(50);
+        card->setProperty("subtitle", QStringLiteral(
+            "Задано YTP/1. Каждый сеанс YUME использует всё это, и ничего нельзя отключить."));
+        QTest::qWait(50);
+        card->setWidth(599);
+        card->setVisible(true);
+        QTest::qWait(100);
+        auto* content = root->findChild<QQuickItem*>(QStringLiteral("content"));
+        QVERIFY(content);
+        const QRectF inside = content->mapRectToItem(
+            card, QRectF(0, 0, content->width(), content->height()));
+        QVERIFY(inside.top() > 40);
+        QVERIFY(inside.bottom() <= card->height() - 20);
+        const qreal settled = card->height();
+        QTest::qWait(100);
+        QCOMPARE(card->height(), settled);
+    }
+
+    void route_proposal_settles_while_hidden() {
+        QTest::failOnWarning(QRegularExpression(QStringLiteral(".*Polish loop.*")));
+        QQmlComponent component(&engine_);
+        component.setData(
+            "import QtQuick\nOverviewPage { width: 3; height: 700; visible: false }",
+            QUrl(QStringLiteral("qrc:/yume/qml/ProposalProbe.qml")));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto* page = qobject_cast<QQuickItem*>(root.get());
+        QVERIFY(page);
+        page->setParentItem(window_->contentItem());
+        QTest::qWait(50);
+        state_->connectKit();
+        QTRY_COMPARE_WITH_TIMEOUT(state_->phase(), QStringLiteral("running"), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!page->property("proposal").toMap().isEmpty(), 5000);
+        QTest::qWait(50);
+        page->setWidth(663);
+        page->setVisible(true);
+        QTest::qWait(100);
+        auto* banner = root->findChild<QQuickItem*>(QStringLiteral("routeProposalBanner"));
+        QVERIFY(banner && banner->isVisible());
+        QVERIFY(banner->height() > 28);
+        QVERIFY(banner->height() < 200);
+        const qreal settled = banner->height();
+        QTest::qWait(100);
+        QCOMPARE(banner->height(), settled);
+        state_->stopKit();
+        QTRY_COMPARE_WITH_TIMEOUT(state_->phase(), QStringLiteral("stopped"), 10000);
+    }
+
     // The mark comes from assets/icon.svg, and the parser takes only well
     // formed path text.
     void mark_is_read_from_the_icon() {
@@ -1372,10 +1477,7 @@ int main(int argc, char** argv) {
         return 1;
     application.installTranslator(&english_translator);
     QQuickStyle::setStyle(QStringLiteral("Basic"));
-    QFontDatabase::addApplicationFont(
-        QStringLiteral(":/yume/fonts/Jost-Regular.ttf"));
-    QFontDatabase::addApplicationFont(
-        QStringLiteral(":/yume/fonts/Quicksand-Bold.ttf"));
+    if (!register_fonts()) return 1;
     if (!qEnvironmentVariableIsEmpty("YUME_GUI_LIVE_YUME")) {
         LiveTuningTest test;
         return QTest::qExec(&test, argc, argv);

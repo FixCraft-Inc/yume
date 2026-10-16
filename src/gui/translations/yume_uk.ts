@@ -62,7 +62,7 @@
       <location filename="catalog:settings" line="1"/>
       <source></source>
       <extracomment>source: Settings; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Налаштування</translation>
+      <translation>Параметри</translation>
     </message>
     <message id="language">
       <location filename="catalog:language" line="1"/>
@@ -1280,7 +1280,7 @@
       <location filename="catalog:flow.budget" line="1"/>
       <source></source>
       <extracomment>source: Flow budget; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Межа потоку</translation>
+      <translation>Бюджет потоку</translation>
     </message>
     <message id="credit.returns.per.window">
       <location filename="catalog:credit.returns.per.window" line="1"/>
@@ -1478,13 +1478,13 @@
       <location filename="catalog:open.source.components" line="1"/>
       <source></source>
       <extracomment>source: Open-source components; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Open-source компоненти</translation>
+      <translation>Компоненти з відкритим кодом</translation>
     </message>
     <message id="view.open.source.components">
       <location filename="catalog:view.open.source.components" line="1"/>
       <source></source>
       <extracomment>source: View open-source components; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Переглянути open-source компоненти</translation>
+      <translation>Переглянути компоненти з відкритим кодом</translation>
     </message>
     <message id="third.party.code.yume.builds.on.with.licences">
       <location filename="catalog:third.party.code.yume.builds.on.with.licences" line="1"/>
@@ -1825,8 +1825,8 @@
     <message id="desktop.circuits.stopped">
       <location filename="catalog:desktop.circuits.stopped" line="1"/>
       <source></source>
-      <extracomment>source: Circuits stopped: %1; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>Зупинено контурів: %1</translation>
+      <extracomment>source: Circuits stopped: %1; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; %1 is why circuits stopped, as yume reports it (English), not a count.</extracomment>
+      <translation>Ланцюжки зупинено: %1</translation>
     </message>
     <message id="desktop.closed">
       <location filename="catalog:desktop.closed" line="1"/>
@@ -2978,13 +2978,13 @@
       <location filename="catalog:desktop.cannot.read.kit.settings.safely" line="1"/>
       <source></source>
       <extracomment>source: Cannot read this kit's settings safely; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>Не вдалося безпечно прочитати налаштування цього комплекту</translation>
+      <translation>Не вдалося безпечно прочитати налаштування цього набору</translation>
     </message>
     <message id="desktop.cannot.read.kit.settings">
       <location filename="catalog:desktop.cannot.read.kit.settings" line="1"/>
       <source></source>
       <extracomment>source: Cannot read this kit's settings; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>Не вдалося прочитати налаштування цього комплекту</translation>
+      <translation>Не вдалося прочитати налаштування цього набору</translation>
     </message>
     <message id="desktop.cannot.create">
       <location filename="catalog:desktop.cannot.create" line="1"/>
@@ -3020,7 +3020,7 @@
       <location filename="catalog:desktop.yume.could.not.import.kit" line="1"/>
       <source></source>
       <extracomment>source: yume could not import the kit; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>yume не вдалося імпортувати комплект</translation>
+      <translation>yume не вдалося імпортувати набір</translation>
     </message>
     <message id="desktop.cannot.run.program">
       <location filename="catalog:desktop.cannot.run.program" line="1"/>
@@ -3032,13 +3032,13 @@
       <location filename="catalog:desktop.not.a.kit.name" line="1"/>
       <source></source>
       <extracomment>source: not a kit name; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>Неприпустиме ім’я комплекту</translation>
+      <translation>Неприпустиме ім’я набору</translation>
     </message>
     <message id="desktop.not.a.kit.directory">
       <location filename="catalog:desktop.not.a.kit.directory" line="1"/>
       <source></source>
       <extracomment>source: %1 is not a kit directory; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 не є каталогом комплекту</translation>
+      <translation>%1 не є каталогом набору</translation>
     </message>
     <message id="desktop.cannot.remove.kit">
       <location filename="catalog:desktop.cannot.remove.kit" line="1"/>
@@ -3050,19 +3050,19 @@
       <location filename="catalog:desktop.choose.a.different.kit.name" line="1"/>
       <source></source>
       <extracomment>source: choose a different kit name; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>Виберіть інше ім’я комплекту</translation>
+      <translation>Виберіть інше ім’я набору</translation>
     </message>
     <message id="desktop.not.a.safe.kit.directory">
       <location filename="catalog:desktop.not.a.safe.kit.directory" line="1"/>
       <source></source>
       <extracomment>source: %1 is not a safe kit directory; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 не є безпечним каталогом комплекту</translation>
+      <translation>%1 не є безпечним каталогом набору</translation>
     </message>
     <message id="desktop.cannot.read.kit.configuration">
       <location filename="catalog:desktop.cannot.read.kit.configuration" line="1"/>
       <source></source>
       <extracomment>source: cannot read the kit's configuration; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>Не вдалося прочитати конфігурацію комплекту</translation>
+      <translation>Не вдалося прочитати конфігурацію набору</translation>
     </message>
     <message id="desktop.cannot.rename.kit">
       <location filename="catalog:desktop.cannot.rename.kit" line="1"/>
@@ -3074,7 +3074,7 @@
       <location filename="catalog:desktop.cannot.display.kit.settings" line="1"/>
       <source></source>
       <extracomment>source: Cannot display this kit's settings; check its configuration; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
-      <translation>Не вдалося показати налаштування комплекту; перевірте конфігурацію</translation>
+      <translation>Не вдалося показати налаштування набору; перевірте конфігурацію</translation>
     </message>
     <message id="desktop.no.configuration.directory">
       <location filename="catalog:desktop.no.configuration.directory" line="1"/>
@@ -3086,25 +3086,25 @@
       <location filename="catalog:desktop.invalid.kit.name" line="1"/>
       <source></source>
       <extracomment>source: a kit name is 1 to 48 letters, digits, dots, dashes or underscores, starting with a letter, digit or underscore; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
-      <translation>Ім’я комплекту має містити від 1 до 48 літер, цифр, крапок, дефісів або підкреслень і починатися з літери, цифри чи підкреслення</translation>
+      <translation>Ім’я набору має містити від 1 до 48 літер, цифр, крапок, дефісів або підкреслень і починатися з літери, цифри чи підкреслення</translation>
     </message>
     <message id="desktop.kits.root.not.safe">
       <location filename="catalog:desktop.kits.root.not.safe" line="1"/>
       <source></source>
       <extracomment>source: the kits root is not a safe directory of this user; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
-      <translation>Кореневий каталог комплектів не є безпечним каталогом цього користувача</translation>
+      <translation>Кореневий каталог наборів не є безпечним каталогом цього користувача</translation>
     </message>
     <message id="desktop.kit.configuration.not.bounded">
       <location filename="catalog:desktop.kit.configuration.not.bounded" line="1"/>
       <source></source>
       <extracomment>source: the kit's configuration is not a bounded regular file of this user; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
-      <translation>Конфігурація комплекту не є обмеженим звичайним файлом цього користувача</translation>
+      <translation>Конфігурація набору не є обмеженим звичайним файлом цього користувача</translation>
     </message>
     <message id="desktop.kit.configuration.cannot.be.checked">
       <location filename="catalog:desktop.kit.configuration.cannot.be.checked" line="1"/>
       <source></source>
       <extracomment>source: the kit's configuration cannot be checked before renaming; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
-      <translation>Не вдалося перевірити конфігурацію комплекту перед перейменуванням</translation>
+      <translation>Не вдалося перевірити конфігурацію набору перед перейменуванням</translation>
     </message>
     <message id="desktop.kit.configuration.unsafe.paths">
       <location filename="catalog:desktop.kit.configuration.unsafe.paths" line="1"/>
@@ -3116,13 +3116,13 @@
       <location filename="catalog:desktop.kit.named.already.exists" line="1"/>
       <source></source>
       <extracomment>source: a kit named %1 already exists; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve Qt placeholders.</extracomment>
-      <translation>Комплект із назвою %1 вже існує</translation>
+      <translation>Набір із назвою %1 вже існує</translation>
     </message>
     <message id="desktop.kit.changed.while.checked">
       <location filename="catalog:desktop.kit.changed.while.checked" line="1"/>
       <source></source>
       <extracomment>source: the kit changed while it was being checked; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve Qt placeholders.</extracomment>
-      <translation>Комплект змінився під час перевірки</translation>
+      <translation>Набір змінився під час перевірки</translation>
     </message>
     <message id="password.minimum.utf8.bytes">
       <location filename="catalog:password.minimum.utf8.bytes" line="1"/>
@@ -3158,19 +3158,19 @@
       <location filename="catalog:kit.index.corrupt" line="1"/>
       <source></source>
       <extracomment>source: The kit list could not be read; context: Android AppStrings; owner: android.app.i18n; Recovery and settings UI; preserve meaning.</extracomment>
-      <translation>Не вдалося прочитати список комплектів</translation>
+      <translation>Не вдалося прочитати список наборів</translation>
     </message>
     <message id="kit.index.recover">
       <location filename="catalog:kit.index.recover" line="1"/>
       <source></source>
       <extracomment>source: Recover kit list; context: Android AppStrings; owner: android.app.i18n; Recovery and settings UI; preserve meaning.</extracomment>
-      <translation>Відновити список комплектів</translation>
+      <translation>Відновити список наборів</translation>
     </message>
     <message id="kit.index.recover.detail">
       <location filename="catalog:kit.index.recover.detail" line="1"/>
       <source></source>
       <extracomment>source: Rebuild the list from readable stored kits. Kit files stay unchanged; names and selection may need to be set again. An encrypted copy of the old list is kept.; context: Android AppStrings; owner: android.app.i18n; Recovery and settings UI; preserve meaning.</extracomment>
-      <translation>Відновити список із доступних для читання збережених комплектів. Файли комплектів не зміняться; назви й вибір, можливо, доведеться задати знову. Зашифрована копія старого списку збережеться.</translation>
+      <translation>Відновити список із доступних для читання збережених наборів. Файли наборів не зміняться; назви й вибір, можливо, доведеться задати знову. Зашифрована копія старого списку збережеться.</translation>
     </message>
     <message id="credits.helper.contribution">
       <location filename="catalog:credits.helper.contribution" line="1"/>
@@ -3284,7 +3284,7 @@
       <location filename="catalog:tuning.level.stealth" line="1"/>
       <source></source>
       <extracomment>source: Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency.; context: Desktop tuning slider explanation; owner: config/tuning_presets.json; Tooltip of the Stealth slider. Keep the denial: no classifier result is implied.</extracomment>
-      <translation>Лише налаштування вікон, повернень кредитів і зміни ключів під час простою: 4 зберігає типову межу 4 МіБ, два повернення кредитів і вимкнену зміну ключів під час простою. Нижчі рівні збільшують вікна або додають записи кредитів, а fast і max додають обміни для зміни ключів під час простою. Результат класифікатора не мається на увазі; зміна епохи також змінює частоту зміни ключів.</translation>
+      <translation>Лише налаштування вікон, повернень кредитів і зміни ключів під час простою: 4 зберігає типовий бюджет 4 МіБ, два повернення кредитів і вимкнену зміну ключів під час простою. Нижчі рівні збільшують вікна або додають записи кредитів, а fast і max додають обміни для зміни ключів під час простою. Результат класифікатора не мається на увазі; зміна епохи також змінює частоту зміни ключів.</translation>
     </message>
     <message id="info.more.about">
       <location filename="catalog:info.more.about" line="1"/>

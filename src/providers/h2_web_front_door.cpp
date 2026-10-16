@@ -231,7 +231,9 @@ struct CoverSession final : H2CoverHandler {
         const auto queued = h2.queued_output_bytes();
         if (queued > limits.max_output_bytes ||
             response.body.size() > limits.max_output_bytes - queued) return false;
-        obfs::H2Headers headers(response.headers.begin(), response.headers.end());
+        obfs::H2Headers headers;
+        headers.reserve(response.headers.size());
+        for (const auto& [name, value] : response.headers) headers.emplace_back(name, value);
         obfs::H2Bytes body(response.body.begin(), response.body.end());
         streams.insert(request.stream_id);
         return h2.RespondHttp(request.stream_id, static_cast<unsigned>(response.status_code),

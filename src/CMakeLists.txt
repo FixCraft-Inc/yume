@@ -2425,6 +2425,10 @@ if(YUME_BUILD_TESTING)
                         -P "${CMAKE_SOURCE_DIR}/tests/cmake/fail_with_message.cmake")
             endif()
         endforeach()
+        if(UNIX AND TARGET yume_cover_site_test)
+            set_tests_properties(yume_cover_server_protocols_test PROPERTIES
+                ENVIRONMENT "YUME_NATIVE_COVER_RESPONSE=$<TARGET_FILE:yume_cover_site_test>")
+        endif()
         if(NOT _yume_node_match EQUAL 0)
             message(WARNING "The cover tools' tests need Node ${_yume_cover_node}, found "
                 "${_yume_node_version}, so they will fail. Source scripts/ensure-node.sh, "

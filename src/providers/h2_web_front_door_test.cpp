@@ -393,9 +393,12 @@ public:
         while (!settings_received_) receive();
     }
     std::int32_t submit(std::string method, std::string path, bool extended = false) {
+        const bool plain_connect = method == "CONNECT" && !extended;
         std::vector<std::pair<std::string, std::string>> values{
-            {":method", std::move(method)}, {":scheme", "https"},
-            {":authority", authority_}, {":path", std::move(path)}};
+            {":method", std::move(method)}};
+        if (!plain_connect) values.emplace_back(":scheme", "https");
+        values.emplace_back(":authority", authority_);
+        if (!plain_connect) values.emplace_back(":path", std::move(path));
         if (extended) {
             values.emplace_back(":protocol", "websocket");
             values.emplace_back("sec-websocket-version", "13");
@@ -687,14 +690,16 @@ private:
     static inline thread_local bool fail_reservation_{false};
 };
 
-void check_cover(const HttpResponse& response) {
-    CHECK(response.headers.at(":status") == "404");
-    CHECK(response.headers.at("content-type") == "text/html");
+void check_cover(const HttpResponse& response, bool not_found = false) {
+    const auto body = not_found ? kNotFound : std::string_view("Method Not Allowed\n");
+    CHECK(response.headers.at(":status") == (not_found ? "404" : "405"));
+    CHECK(response.headers.at("content-type") ==
+          (not_found ? "text/html" : "text/plain; charset=utf-8"));
     CHECK(response.headers.at("cache-control") == "public, max-age=60");
-    CHECK(response.headers.at("content-length") == std::to_string(kNotFound.size()));
+    CHECK(response.headers.at("content-length") == std::to_string(body.size()));
     const auto date = response.headers.at("date");
     CHECK(date.size() == 29U && date.ends_with(" GMT"));
-    CHECK(response.body == kNotFound);
+    CHECK(response.body == body);
     for (const auto& [name, value] : response.headers) {
         CHECK(name.find("yume") == std::string::npos);
         CHECK(value.find("YUME") == std::string::npos);
@@ -732,7 +737,13 @@ void test_http_cover_and_failed_admission() {
     CHECK(head.headers.at(":status") == "200");
     CHECK(head.headers.at("content-length") == std::to_string(kIndex.size()));
     CHECK(head.body.empty());
-    check_cover(h2.response(h2.submit("GET", "/absent")));
+    check_cover(h2.response(h2.submit("GET", "/absent")), true);
+    for (const auto method : {"POST", "OPTIONS", "PUT", "DELETE", "PATCH", "TRACE",
+                              "get", "CUSTOM"}) {
+        for (const auto target : {"/", "/absent"})
+            check_cover(h2.response(h2.submit(method, target)));
+    }
+    check_cover(h2.response(h2.submit("CONNECT", "")));
     check_cover(h2.response(h2.submit("CONNECT", "/", true)));
     check_cover(h2.response(h2.submit("CONNECT", "/not-a-proof", true)));
     admission::Nonce nonce{};
@@ -1099,9 +1110,9 @@ void test_overlapping_admission_reserves_capacity_before_publication() {
         "CONNECT", second_tls.admission_path(second_nonce), true);
     const auto first_status = first_h2.response_headers(first_stream).headers.at(":status");
     const auto second_status = second_h2.response_headers(second_stream).headers.at(":status");
-    CHECK((first_status == "200" && second_status == "404") ||
-          (first_status == "404" && second_status == "200"));
-    if (first_status == "404") check_cover(first_h2.response(first_stream));
+    CHECK((first_status == "200" && second_status == "405") ||
+          (first_status == "405" && second_status == "200"));
+    if (first_status == "405") check_cover(first_h2.response(first_stream));
     else check_cover(second_h2.response(second_stream));
     auto server = std::move(take(await(first_accept))).take_carrier();
     CHECK(second_accept.wait_for(0ms) == std::future_status::timeout);

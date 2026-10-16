@@ -11,7 +11,6 @@
 #include <filesystem>
 #include <map>
 #include <memory>
-#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -33,12 +32,13 @@ struct CoverLimits final {
     // Includes loaded bodies, route names and response header names/values.
     std::size_t max_total_bytes{16U * 1024U * 1024U};
     std::size_t max_path_bytes{4096U};
+    // Header name/value bytes per response, including the fixed 405.
     std::size_t max_header_bytes{1024U};
 };
 
 struct CoverResponse final {
     int status_code{404};
-    std::span<const std::pair<std::string, std::string>> headers;
+    std::array<std::pair<std::string_view, std::string_view>, 3U> headers;
     std::string_view body;
 };
 
@@ -63,9 +63,11 @@ public:
         const std::filesystem::path& root, CoverLimits limits = {}) noexcept;
 
     // Returned views remain valid while this immutable site is retained.
-    // GET/HEAD select configured routes; all other methods and invalid targets
-    // receive the same configured not-found representation. HEAD omits only
-    // the body, retaining the GET content-length. Queries do not select files.
+    // GET/HEAD select configured routes; invalid or missing targets receive the
+    // configured not-found representation. Other methods receive the reference's
+    // fixed 405 response before target lookup. HEAD omits only the body, retaining
+    // the GET content-length. Queries do not select files. Admission precedes this
+    // static-site boundary and is not decided here.
     CoverResponse respond(std::string_view method,
                              std::string_view target) const noexcept;
 

@@ -115,7 +115,7 @@ void test_real_site_snapshot_and_head() {
             "static response header order changed");
     const auto head = site->respond("HEAD", "/?v=1");
     require(head.status_code == 200 && head.body.empty() &&
-                head.headers.data() == index.headers.data(),
+                head.headers == index.headers,
             "HEAD did not preserve GET representation headers");
     const auto stylesheet = site->respond("GET", "/%73tyle.css?v=1%20two");
     require(stylesheet.status_code == 200 && stylesheet.body == "body { color: green; }",
@@ -136,23 +136,40 @@ void test_real_site_snapshot_and_head() {
     const auto denied_under_pressure = site->respond("CONNECT", "/invalid-proof");
     allocation_failure_after = -1;
     require(!allocation_failed && under_pressure.body == stylesheet.body &&
-                denied_under_pressure.status_code == 404,
+                denied_under_pressure.status_code == 405 &&
+                denied_under_pressure.body == "Method Not Allowed\n",
             "cover response attempted an allocation");
 }
 
-void test_missing_invalid_and_unsupported_are_ordinary_cover() {
+void test_unsupported_methods_match_reference() {
+    SiteFiles files;
+    const auto site = files.load();
+    const decltype(CoverResponse::headers) expected{{
+        {"content-type", "text/plain; charset=utf-8"},
+        {"cache-control", "public, max-age=60"},
+        {"content-length", "19"}}};
+    for (const auto method : {"CONNECT", "POST", "OPTIONS", "PUT", "DELETE",
+                              "PATCH", "TRACE", "get", "CUSTOM", ""}) {
+        for (const auto target : {"/", "/missing", "/../invalid", "*", ""}) {
+            allocation_failure_after = 0;
+            allocation_failed = false;
+            const auto response = site->respond(method, target);
+            allocation_failure_after = -1;
+            require(!allocation_failed && response.status_code == 405 &&
+                        response.body == "Method Not Allowed\n" &&
+                        response.headers == expected,
+                    "unsupported method did not match the fixed reference response");
+        }
+    }
+}
+
+void test_missing_and_invalid_targets_are_not_found() {
     SiteFiles files;
     const auto site = files.load();
     const auto missing = site->respond("GET", "/missing");
     require(missing.status_code == 404 &&
                 missing.body == "<title>Page unavailable</title><a href=/>Home</a>",
             "configured not-found file was not served");
-    for (const auto method : {"CONNECT", "POST", "OPTIONS", "get", ""}) {
-        const auto response = site->respond(method, "/");
-        require(response.status_code == 404 && response.body == missing.body &&
-                    response.headers.data() == missing.headers.data(),
-                "unsupported method exposed a separate rejection response");
-    }
     const std::vector<std::string> invalid = {
         "", "*", "https://example.test/", "//style.css", "/../style.css",
         "/./style.css", "/%2e%2e/style.css", "/%2fstyle.css", "/%5cstyle.css",
@@ -163,17 +180,30 @@ void test_missing_invalid_and_unsupported_are_ordinary_cover() {
     for (const auto& target : invalid) {
         const auto response = site->respond("GET", target);
         require(response.status_code == 404 && response.body == missing.body &&
-                    response.headers.data() == missing.headers.data(),
+                    response.headers == missing.headers,
                 "invalid target did not use ordinary not-found response");
     }
     const auto head = site->respond("HEAD", "/missing");
     require(head.status_code == 404 && head.body.empty() &&
-                head.headers.data() == missing.headers.data(),
+                head.headers == missing.headers,
             "HEAD of missing resource lost representation headers");
 }
 
 void test_configuration_and_retained_bounds() {
     SiteFiles files;
+    files.write("small.html", "x");
+    const std::vector<CoverFile> small{{"/", "small.html", "text/html"}};
+    auto fixed_limits = CoverLimits{};
+    std::size_t fixed_header_bytes = 0U;
+    for (const auto& [name, value] : files.load()->respond("POST", "/").headers)
+        fixed_header_bytes += name.size() + value.size();
+    fixed_limits.max_header_bytes = fixed_header_bytes;
+    require(CoverSite::load(files.root(), small, "small.html", fixed_limits).ok(),
+            "exact fixed-response header bound was refused");
+    --fixed_limits.max_header_bytes;
+    const auto too_small = CoverSite::load(files.root(), small, "small.html", fixed_limits);
+    require(!too_small.ok() && too_small.status().code() == StatusCode::ResourceExhausted,
+            "fixed response exceeded the configured header bound");
     const auto routes = files.routes();
     auto absent = CoverSite::load(files.root(), {}, "missing.html");
     require(!absent.ok(), "site started without any routes");
@@ -331,18 +361,33 @@ void test_directory_snapshot_and_bounds() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     yume::test::before_allocate_on_any_thread.store(check_test_allocation);
 
     try {
 #if !defined(_WIN32)
+        // The Node protocol test compares these native bytes with its live
+        // reference. Date belongs to the H2 encoder, not this snapshot.
+        if (argc == 4 && std::string_view(argv[1]) == "--method-response") {
+            SiteFiles files;
+            const auto site = files.load();
+            const auto response = site->respond(argv[2], argv[3]);
+            std::cout << response.status_code << '\n';
+            for (const auto& [name, value] : response.headers)
+                std::cout << name << ": " << value << '\n';
+            std::cout << '\n' << response.body;
+            return 0;
+        }
+        test_unsupported_methods_match_reference();
         test_real_site_snapshot_and_head();
-        test_missing_invalid_and_unsupported_are_ordinary_cover();
+        test_missing_and_invalid_targets_are_not_found();
         test_configuration_and_retained_bounds();
         test_file_confinement_and_special_files();
         test_startup_allocation_failures_are_contained();
         test_directory_snapshot_and_bounds();
 #else
+        (void)argc;
+        (void)argv;
         require(!CoverSite::load(".", {{"/", "index.html", "text/html"}},
                                     "missing.html").ok(),
                 "unsupported platform failed to close file confinement boundary");

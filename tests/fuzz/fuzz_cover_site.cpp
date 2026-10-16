@@ -78,7 +78,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
         // Only GET and HEAD select a file, and only one of the site's own.
         if (!readable) __builtin_trap();
         if (method == "GET" && !is_site_body(response.body)) __builtin_trap();
-    } else if (response.status_code != 404) {
+    } else if (response.status_code == 405) {
+        if (readable || response.body != "Method Not Allowed\n") __builtin_trap();
+    } else if (response.status_code != 404 || !readable) {
         __builtin_trap();
     }
     if (method == "HEAD" && !response.body.empty()) __builtin_trap();

@@ -193,9 +193,12 @@ payload matches; TLS close-notify, FIN/RST and idle timing still need separate
 wire qualification for complete parity.
 Native H2 cover responses now include the reference's `Date` and
 `cache-control: public, max-age=60` headers, with the static site's content
-headers kept in the reference order. Unsupported methods remain an explicit
-semantic difference: Node returns a fixed 405 response, while the configured
-native site uses its ordinary 404 representation.
+headers kept in the reference order. At the static-site boundary, methods other
+than GET and HEAD receive the reference's fixed 405 response: `text/plain;
+charset=utf-8`, `cache-control: public, max-age=60`, `content-length: 19`, and
+`Method Not Allowed\n`. Method rejection precedes target lookup. GET and HEAD
+retain the configured routes and not-found representation. Authenticated H2
+WebSocket admission is decided before static-site handling.
 
 Diagnostic TLS probes do not qualify Chrome parity or a classifier gate.
 The classifier gate needs four groups, so the existing one-group capture

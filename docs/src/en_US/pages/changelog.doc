@@ -1233,6 +1233,15 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Fixed
 
+- **ThreadSanitizer reported races inside OpenSSL.** Concurrent handshakes
+  on one library context read and extended OpenSSL's name map, which
+  publishes entries through atomics that an uninstrumented OpenSSL hides
+  from TSan, so CI's `thread-sanitize` job failed now and then on a race
+  between `ossl_ht_get` and `ossl_ht_insert`. The TSan lanes now build the
+  pinned, patched OpenSSL with ThreadSanitizer, selected by
+  `YUME_OPENSSL_SANITIZE=thread` in `scripts/ensure-openssl.sh`, into a
+  separate static-only cache prefix. Nothing is suppressed, and TSan now
+  checks YUME's own OpenSSL use as well.
 - **`yume-doctor` refused a circuits client on a cluster member.** It checked
   each capability against the configured services only, while `yumed` also
   grants `yume.circuit` on a member of a cluster, so a server with a client

@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <future>
 #include <memory>
 #include <stdexcept>
@@ -114,7 +115,7 @@ public:
         return engine::ServiceKind::PacketChannel;
     }
     std::size_t max_write_size() const noexcept override { return 65536U; }
-    bool terminated() const noexcept override { return closed_; }
+    bool terminated() const noexcept override { return closed_ || peer_closed_; }
 
     void async_read(CancellationToken, ReadCompletion completion) override {
         pending_ = std::move(completion);
@@ -134,6 +135,11 @@ public:
             completion(ok ? Status::success() : Status(StatusCode::Closed),
                        ok ? size : 0U);
         };
+        if (ok && hold_next_write_) {
+            hold_next_write_ = false;
+            held_write_ = std::move(complete);
+            return;
+        }
         if (write_delay.count() == 0 || !ok) {
             boost::asio::post(context_->executor(), std::move(complete));
             return;
@@ -154,11 +160,32 @@ public:
     void close(Status) noexcept override {
         if (closed_) return;
         closed_ = true;
+        inbox_.clear();
+        if (held_write_) resume_write();
         deliver();
         if (const auto peer = peer_.lock()) {
             peer->peer_closed_ = true;
+            // SessionEngine's terminal CLOSE discards unread records. Only
+            // shutdown_write's normal FIN preserves them for the reader.
+            peer->inbox_.clear();
             peer->deliver();
         }
+    }
+
+    // Hold one completion after its record reaches the peer's queue, so a
+    // test can arrange backpressure without depending on timer ordering.
+    void hold_next_write() {
+        if (hold_next_write_ || held_write_)
+            throw std::logic_error("write completion already held");
+        hold_next_write_ = true;
+    }
+    bool write_held() const noexcept { return !!held_write_; }
+    void resume_write() {
+        if (!held_write_)
+            throw std::logic_error("no write completion held");
+        auto complete = std::move(held_write_);
+        held_write_ = nullptr;
+        boost::asio::post(context_->executor(), std::move(complete));
     }
 
     std::size_t writes{0U};
@@ -204,6 +231,8 @@ private:
     std::weak_ptr<PipeEnd> peer_;
     std::deque<Buffer> inbox_;
     ReadCompletion pending_;
+    std::function<void()> held_write_;
+    bool hold_next_write_{false};
     bool closed_{false};
     bool peer_closed_{false};
     bool peer_shut_{false};

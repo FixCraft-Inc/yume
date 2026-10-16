@@ -327,7 +327,12 @@ error.
 
 EXTEND_FAILED leaves the circuit open at the hop that sent it, so the client
 may extend to another node. CIRCUIT_FAILED comes from the hop that saw the
-circuit break, and that hop then ends the circuit.
+circuit break. That hop stops forwarding and shuts down its backward write
+direction after the report, preserving queued cells for the previous hop to
+read. It drains crossed forward cells until the previous hop ends the stream,
+within the existing stalled-circuit timeout. A terminal abort can discard
+unread cells, so it is used when delivery fails or that timeout expires,
+rather than immediately after writing the report.
 
 ## Vectors
 

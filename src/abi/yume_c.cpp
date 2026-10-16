@@ -2763,6 +2763,7 @@ size_t yume_kit_file_count(const yume_kit* kit) noexcept {
     if (!kit || !valid_header(&kit->header, HandleKind::Kit) || !kit->kit) {
         return 0U;
     }
+    if (g_in_callback) return 0U;
     return kit->kit->file_count();
 }
 
@@ -2772,6 +2773,7 @@ yume_status yume_kit_get_file(const yume_kit* kit, size_t index,
         !out) {
         return YUME_STATUS_INVALID_ARGUMENT;
     }
+    if (g_in_callback) return YUME_STATUS_INVALID_STATE;
     if (index >= kit->kit->file_count()) return YUME_STATUS_NOT_FOUND;
     const yume::embed::BackendKitFile file = kit->kit->file(index);
     yume_kit_file value{};

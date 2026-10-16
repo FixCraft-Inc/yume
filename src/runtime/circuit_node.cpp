@@ -186,7 +186,8 @@ public:
         const auto& limits = node_->env.limits;
         const bool stalled =
             (forward_since_ && now - *forward_since_ > limits.stall_timeout) ||
-            (backward_since_ && now - *backward_since_ > limits.stall_timeout);
+            (backward_since_ && now - *backward_since_ > limits.stall_timeout) ||
+            (closing_since_ && now - *closing_since_ > limits.stall_timeout);
         if (stalled) {
             close(true);
             return;
@@ -259,7 +260,7 @@ private:
     }
 
     void read_inbound() noexcept {
-        if (closed_ || reading_inbound_) return;
+        if (closed_ || inbound_ended_ || reading_inbound_) return;
         reading_inbound_ = true;
         try {
             inbound_->async_read(
@@ -277,9 +278,21 @@ private:
         reading_inbound_ = false;
         if (closed_) return;
         if (!result.ok()) {
+            if (closing_ && result.status().code() == StatusCode::EndOfStream) {
+                inbound_ended_ = true;
+                finish_failure_if_drained();
+                return;
+            }
             // The previous hop ended the circuit, or its session did.
-            close(result.status().code() != StatusCode::EndOfStream &&
-                  result.status().code() != StatusCode::Cancelled);
+            close(closing_ ||
+                  (result.status().code() != StatusCode::EndOfStream &&
+                   result.status().code() != StatusCode::Cancelled));
+            return;
+        }
+        if (closing_) {
+            // Return crossed forward records' credit without accepting new
+            // circuit work while the failure and FIN travel backward.
+            read_inbound_later();
             return;
         }
         try {
@@ -561,7 +574,7 @@ private:
     // Reads the next hop's next backward cell once the previous one has been
     // written back, so the previous hop's pace holds the next one.
     void read_next() noexcept {
-        if (closed_ || reading_next_ || !next_) return;
+        if (closed_ || closing_ || reading_next_ || !next_) return;
         reading_next_ = true;
         try {
             next_->async_read(
@@ -577,7 +590,7 @@ private:
 
     void on_next(Result<ReceivedRecord> result) noexcept {
         reading_next_ = false;
-        if (closed_) return;
+        if (closed_ || closing_) return;
         if (!result.ok()) {
             next_ended();
             return;
@@ -614,18 +627,29 @@ private:
         }
     }
 
-    // The next hop or its link ended: tell the client, then end the circuit
-    // once that message has gone back.
+    // The next hop or its link ended. Preserve the report with an ordered
+    // FIN, then drain the predecessor until it ends or the stall bound does.
     void next_ended() noexcept {
         if (closed_ || closing_) return;
         closing_ = true;
+        closing_since_ = Clock::now();
         try {
             send(c1::RelayType::CircuitFailed, 0U,
                  std::array<std::uint8_t, 1>{static_cast<std::uint8_t>(
                      c1::CircuitReason::Unreachable)});
+            read_inbound();
         } catch (...) {
             close(true);
         }
+    }
+
+    void finish_failure_if_drained() noexcept {
+        if (!inbound_ended_ || !backward_finished_ || closed_) return;
+        // Both directions sent FIN and incoming records were consumed.
+        // The engine owns orderly settlement; terminal CLOSE here would
+        // discard the report if the predecessor has not read it yet.
+        auto inbound = std::move(inbound_);
+        close(true);
     }
 
     // Seals a relay message under this hop's backward layer and queues it.
@@ -687,7 +711,12 @@ private:
         const bool resume_next = backward_queue_.front().resume_next;
         backward_queue_.pop_front();
         if (closing_ && backward_queue_.empty()) {
-            close(true);
+            if (!inbound_->shutdown_write().ok()) {
+                close(true);
+                return;
+            }
+            backward_finished_ = true;
+            finish_failure_if_drained();
             return;
         }
         write_backward();
@@ -1005,6 +1034,7 @@ private:
     std::optional<Clock::time_point> forward_since_;
     std::optional<Clock::time_point> backward_since_;
     std::optional<Clock::time_point> extend_since_;
+    std::optional<Clock::time_point> closing_since_;
     bool reading_inbound_{false};
     // The stream that last started a destination read, where resume_reads
     // continues its round.
@@ -1013,6 +1043,8 @@ private:
     bool backward_writing_{false};
     bool terminal_{false};
     bool closing_{false};
+    bool inbound_ended_{false};
+    bool backward_finished_{false};
     bool closed_{false};
 };
 

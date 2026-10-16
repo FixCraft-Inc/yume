@@ -55,9 +55,8 @@ struct NodeLimits final {
     // With the stream window above it allows 32 streams at once.
     std::uint64_t circuit_window{std::uint64_t{8} * 1024U * 1024U};
     std::chrono::milliseconds extend_timeout{10'000};
-    // A circuit whose cell has waited this long for the next hop, or for its
-    // previous hop, ends, so a stalled circuit gives its share of a link's
-    // credit back.
+    // Bounds a cell waiting for either adjacent hop and a failed circuit's
+    // stream drain, so a stalled circuit gives its share of link credit back.
     std::chrono::milliseconds stall_timeout{30'000};
     // Backward cells an exit queues before it stops reading destinations.
     std::size_t backward_queue_cells{16U};

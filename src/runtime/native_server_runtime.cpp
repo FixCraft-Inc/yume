@@ -27,6 +27,7 @@
 #include "engine/route_provider.hpp"
 #include "providers/asio_direct_route_provider.hpp"
 #include "providers/circuit_crypto.hpp"
+#include "providers/control_task.hpp"
 #include "providers/h2_web_front_door.hpp"
 #include "runtime/circuit_host.hpp"
 #include "runtime/circuit_node.hpp"
@@ -400,6 +401,21 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
     std::shared_ptr<WorkerExits> exits;
     std::size_t next_loop{0U};
     bool dispatching{false};
+    // The first failing loop owns the status. The mailbox lock publishes it
+    // to the main context; the atomic only arbitrates between reporting loops.
+    std::atomic<bool> accept_failure_claimed{false};
+    Status accept_failure;
+    providers::ControlTask accept_failure_task{[](void* value) noexcept {
+        auto& self = *static_cast<State*>(value);
+        self.stop(std::move(self.accept_failure));
+    }};
+
+    void report_accept_failure(Status status) noexcept {
+        if (accept_failure_claimed.exchange(true, std::memory_order_relaxed))
+            return;
+        accept_failure = std::move(status);
+        context->submit(accept_failure_task, shared_from_this());
+    }
 
     void say(std::string_view text) noexcept {
         if (!report) return;
@@ -818,13 +834,10 @@ engine::Status NativeServerRuntime::start() {
         // Every loop accepts from its served front doors. A loop whose
         // accepting fails stops the server on the first context.
         for (const auto& loop : state->loops) {
-            const auto stopped = [weak = std::weak_ptr<State>(state),
-                                  main = state->context](Status status) {
-                boost::asio::post(main->executor(),
-                                  [weak, status = std::move(status)]() mutable {
-                                      if (const auto self = weak.lock())
-                                          self->stop(std::move(status));
-                                  });
+            const auto stopped = [weak = std::weak_ptr<State>(state)](
+                                     Status status) noexcept {
+                if (const auto self = weak.lock())
+                    self->report_accept_failure(std::move(status));
             };
             const auto begin = [&] {
                 return loop.endpoint->start_accepting(state->accept, stopped);

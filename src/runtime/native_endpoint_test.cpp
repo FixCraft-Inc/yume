@@ -2461,6 +2461,103 @@ void test_forward_adapter(const std::filesystem::path& kit) {
     CHECK(runner.exceptions.load() == 0U);
 }
 
+struct ServerStartAllocationFault final {
+    yume::providers::AsioExecutionContext* main_context;
+    std::thread::id test_thread;
+    std::size_t remaining;
+    unsigned failures{0U};
+};
+
+std::atomic<ServerStartAllocationFault*> server_start_allocation_fault{nullptr};
+
+void fail_server_worker_allocation(std::size_t) {
+    const auto fault = server_start_allocation_fault.load(std::memory_order_acquire);
+    if (!fault || fault->main_context->running_in_this_thread() ||
+        fault->test_thread == std::this_thread::get_id()) return;
+    // This fixture has one worker. Its counters are read only after join.
+    intercept_posix_allocation = true;
+    if (fault->remaining != 0U) --fault->remaining;
+    if (fault->remaining == 0U) {
+        ++fault->failures;
+        throw std::bad_alloc();
+    }
+}
+
+// An accepted server start must report a terminal accept failure even when
+// both the accept retry and delivery of its failure run out of memory.
+void test_server_start_failure_delivery(const std::filesystem::path& kit,
+                                       bool worker) {
+    std::string text;
+    CHECK(read_text_file_bounded(kit / "server/direct-udp.json",
+                                 yume::config::v1::kMaxDocumentBytes, &text));
+    auto document = nlohmann::json::parse(text);
+    document["endpoint"]["event_loops"] = worker ? 2U : 1U;
+    const auto config = yume::config::v1::Parse(document);
+    bool accepted_terminal_failure = false;
+    for (std::size_t nth = 1U; nth <= 64U; ++nth) {
+        Runner runner;
+        std::shared_ptr<NativeServerRuntime> server;
+        unsigned notifications = 0U;
+        StatusCode terminal = StatusCode::Ok;
+        bool on_context = false;
+        bool injected = false;
+        bool endpoint_closed = false;
+        ServerStartAllocationFault fault{runner.context.get(),
+                                         std::this_thread::get_id(), nth};
+        const auto started = runner.sync([&] {
+            server = take(NativeServerRuntime::create(
+                runner.context, config, kit / "server", [&](Status status) {
+                    ++notifications;
+                    terminal = status.code();
+                    on_context = runner.context->running_in_this_thread();
+                    server->close();
+                    server.reset();
+                }));
+            if (worker) {
+                server_start_allocation_fault.store(&fault, std::memory_order_release);
+                yume::test::before_allocate_on_any_thread.store(
+                    fail_server_worker_allocation);
+            } else {
+                yume::test::allocation_countdown = nth;
+                allocation_failure_sustained = true;
+                injected_allocation_failures = 0U;
+                intercept_posix_allocation = true;
+                yume::test::before_allocate = [](std::size_t size) {
+                    if (yume::test::allocation_countdown != 0U)
+                        --yume::test::allocation_countdown;
+                    if (yume::test::allocation_countdown == 0U)
+                        fail_runtime_allocation(size);
+                };
+            }
+            const auto result = server->start().code();
+            yume::test::before_allocate_on_any_thread.store(nullptr);
+            server_start_allocation_fault.store(nullptr, std::memory_order_release);
+            yume::test::before_allocate = nullptr;
+            intercept_posix_allocation = false;
+            injected = injected_allocation_failures != 0U;
+            endpoint_closed = result == StatusCode::Ok &&
+                              server->reload().code() == StatusCode::Closed;
+            return result;
+        });
+        runner.sync([&] { if (server) server->close(); });
+        runner.finish_and_join();
+        server.reset();
+        if (worker) injected = fault.failures != 0U;
+        CHECK(runner.exceptions.load() == 0U && runner.context->poll() == 0U);
+        if (!injected) {
+            CHECK(started == StatusCode::Ok && notifications == 0U);
+            break;
+        }
+        if (started == StatusCode::Ok && (worker || endpoint_closed)) {
+            accepted_terminal_failure = true;
+            CHECK(notifications == 1U && on_context);
+            CHECK(terminal == StatusCode::ResourceExhausted);
+            break;
+        }
+    }
+    CHECK(accepted_terminal_failure);
+}
+
 #ifdef YUME_TEST_WRAP_THREADS
 // Fail the creator's first allocation after a real worker launch. Creation
 // must return a typed refusal and join that worker instead of terminating.
@@ -3321,6 +3418,8 @@ int main(int argc, char** argv) {
         run(argv[1]);
         test_session_ended_notifications(argv[1]);
 #ifdef YUME_NATIVE_TEST_ROUTES
+        test_server_start_failure_delivery(argv[1], false);
+        test_server_start_failure_delivery(argv[1], true);
 #ifdef YUME_TEST_WRAP_THREADS
         test_server_worker_creation_rollback(argv[1]);
 #endif

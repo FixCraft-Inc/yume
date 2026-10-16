@@ -108,6 +108,11 @@ configured cover path and never starts AUTH. The native FrontDoor
 implements these ingress rules with a configured immutable static website;
 admission alone does not authenticate a YTP peer.
 
+At the static-site boundary, methods other than GET and HEAD receive the cover
+reference's fixed 405 response, including failed CONNECT admission. This does
+not change proof verification, replay reservation or successful promotion.
+GET and HEAD retain configured route and not-found handling.
+
 ## Streams and frames
 
 ### Stream identifiers

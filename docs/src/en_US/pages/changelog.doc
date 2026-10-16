@@ -652,6 +652,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Cover method refusals match the reference.** The static cover answers
+  methods other than GET and HEAD with Node's fixed 405 headers and
+  `Method Not Allowed\n` body. Authenticated H2 admission still precedes
+  static-site handling, and GET/HEAD route and not-found behavior is unchanged.
+
 - **Modules run under systemd as users of their own.** A `module` adapter
   now names the module's listening `socket` instead of a `program` and its
   `arguments`. `yumed` checks at startup and with `--validate` that only its

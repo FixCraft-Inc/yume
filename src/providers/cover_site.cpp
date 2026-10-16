@@ -21,6 +21,18 @@ constexpr std::size_t kMaxFileBytes = 16U * 1024U * 1024U;
 constexpr std::size_t kMaxTotalBytes = 256U * 1024U * 1024U;
 constexpr std::size_t kMaxHeaderBytes = 16U * 1024U;
 constexpr std::string_view kNotFoundContentType = "text/html";
+constexpr CoverResponse kMethodNotAllowed{
+    405,
+    {{{"content-type", "text/plain; charset=utf-8"},
+      {"cache-control", "public, max-age=60"},
+      {"content-length", "19"}}},
+    "Method Not Allowed\n"};
+constexpr std::size_t kMethodNotAllowedHeaderBytes = [] {
+    std::size_t bytes = 0U;
+    for (const auto& [name, value] : kMethodNotAllowed.headers)
+        bytes += name.size() + value.size();
+    return bytes;
+}();
 
 bool valid_limits(const CoverLimits& limits) noexcept {
     return limits.max_routes > 0U && limits.max_routes <= kMaxRoutes &&
@@ -188,6 +200,10 @@ engine::Result<std::shared_ptr<const CoverSite>> CoverSite::load(
             return SiteResult(Status(StatusCode::ResourceExhausted,
                                      "cover site route limit exceeded"));
         }
+        if (limits.max_header_bytes < kMethodNotAllowedHeaderBytes) {
+            return SiteResult(Status(StatusCode::ResourceExhausted,
+                                     "cover site header limit exceeded"));
+        }
         auto site = std::shared_ptr<CoverSite>(new CoverSite(limits));
         std::array<char, kMaxPathBytes> normalized{};
         std::size_t route_bytes = 0U;
@@ -274,19 +290,21 @@ engine::Result<std::shared_ptr<const CoverSite>> CoverSite::load(
 
 CoverResponse CoverSite::respond(std::string_view method,
                                        std::string_view target) const noexcept {
+    if (method != "GET" && method != "HEAD") return kMethodNotAllowed;
     const Representation* representation = &not_found_;
     int status = 404;
-    if (method == "GET" || method == "HEAD") {
-        std::array<char, kMaxPathBytes> buffer{};
-        if (const auto path = normalize_target(target, limits_.max_path_bytes, buffer)) {
-            if (const auto route = routes_.find(*path); route != routes_.end()) {
-                representation = &route->second;
-                status = 200;
-            }
+    std::array<char, kMaxPathBytes> buffer{};
+    if (const auto path = normalize_target(target, limits_.max_path_bytes, buffer)) {
+        if (const auto route = routes_.find(*path); route != routes_.end()) {
+            representation = &route->second;
+            status = 200;
         }
     }
-    return {status, representation->headers,
-            method == "HEAD" ? std::string_view{} : representation->body};
+    CoverResponse response{status, {},
+                           method == "HEAD" ? std::string_view{} : representation->body};
+    std::copy(representation->headers.begin(), representation->headers.end(),
+              response.headers.begin());
+    return response;
 }
 
 }  // namespace yume::providers

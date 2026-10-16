@@ -407,7 +407,8 @@ void report_routes(NativeCliRole role, const config::v1::Config& config) {
                     (circuits->min_hops == 1U ? " hop" : " hops") +
                     " are used without asking when no longer one can be built");
             say(role, std::string("warning: ") +
-                          shorter_route_cost(circuits->min_hops) +
+                          shorter_route_cost_text(
+                              shorter_route_cost(circuits->min_hops)) +
                           " An entry that refuses to extend circuits can force "
                           "this route.");
         }

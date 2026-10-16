@@ -20,6 +20,23 @@ function hopRoute(count) {
     return qsTrId("desktop.1.hop.route").arg(count)
 }
 
+// What a shorter route gives up, in the interface language, by the cost
+// code yume sends beside its English text (docs/protocol/CONTROL_1.md). The
+// runtime decides which cost a route has, and an unknown code, from a newer
+// yume, shows that English text rather than a guess.
+// tests/test_yume_translations.py keeps these codes and the runtime's in step.
+function routeCost(proposal) {
+    if (!proposal) return ""
+    switch (proposal.cost) {
+    case "entry_sees_all":
+        return qsTrId("desktop.route.cost.entry.sees.all")
+    case "entry_exit_adjacent":
+        return qsTrId("desktop.route.cost.entry.exit.adjacent")
+    default:
+        return proposal.gives_up || ""
+    }
+}
+
 // config/tuning_presets.json is English. Each text it shows maps to the
 // catalog message with that exact source, as Android resolves it, so an
 // edited text falls back to its new English instead of a stale translation.

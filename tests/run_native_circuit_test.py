@@ -851,10 +851,11 @@ def run(yumed: Path, program: Path, yume: Path, openssl: Path, stall_seconds: fl
                        "the proposal was not accepted", (accepted.returncode, accepted.stderr))
                 if proposal["hops"] == 1:
                     break
-                expect("neighbour" in proposal["gives_up"],
+                expect(proposal.get("cost") == "entry_exit_adjacent" and "neighbour" in proposal["gives_up"],
                        "a two-hop proposal did not say what it gives up", proposal)
                 proposal = await_proposal(seen)
-            expect(proposal["nodes"] == ["node-a"] and "entry server" in proposal["gives_up"],
+            expect(proposal["nodes"] == ["node-a"] and proposal.get("cost") == "entry_sees_all"
+                   and "entry server" in proposal["gives_up"],
                    "the last proposal is not the direct session", proposal)
             expect(rider.echo(echo.port, b"after consent") == b"after consent",
                    "the accepted route did not carry a stream", rider.circuits())

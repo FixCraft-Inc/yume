@@ -2362,6 +2362,18 @@
       <extracomment>source: Route through the cluster; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
       <translation>クラスター経由の経路</translation>
     </message>
+    <message id="desktop.route.cost.entry.sees.all">
+      <location filename="catalog:desktop.route.cost.entry.sees.all" line="1"/>
+      <source></source>
+      <extracomment>source: Your entry server sees both who you are and every site you visit, as a direct connection does.; context: Desktop RouteReviewDialog.qml, a 1-hop route; owner: src/gui/qml/Labels.js; Route consent: what a shorter route gives up, shown under "What you give up". yume sends the cost code entry_sees_all; this source must equal shorter_route_cost_text in src/runtime/circuit_status.hpp. Keep "sees" and "can link" exact; never soften them.</extracomment>
+      <translation>入口サーバーには、身元とアクセスするすべてのサイトの両方が見えます。直接接続の場合と同じです。</translation>
+    </message>
+    <message id="desktop.route.cost.entry.exit.adjacent">
+      <location filename="catalog:desktop.route.cost.entry.exit.adjacent" line="1"/>
+      <source></source>
+      <extracomment>source: The exit's neighbour is your entry. A party that runs both, or watches both, can link you to the sites you visit.; context: Desktop RouteReviewDialog.qml, a 2-hop route; owner: src/gui/qml/Labels.js; Route consent: what a shorter route gives up, shown under "What you give up". yume sends the cost code entry_exit_adjacent; this source must equal shorter_route_cost_text in src/runtime/circuit_status.hpp. Keep "sees" and "can link" exact; never soften them.</extracomment>
+      <translation>出口サーバーに隣接するのは入口サーバーです。両方を運営または監視している者は、身元とアクセスするサイトを結び付けることができます。</translation>
+    </message>
     <message id="desktop.running">
       <location filename="catalog:desktop.running" line="1"/>
       <source></source>

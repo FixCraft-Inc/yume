@@ -142,7 +142,7 @@ class Client:
                       if self.accepted else [],
             "proposal": None if self.accepted or not up else {
                 "id": self.proposal_id, "hops": 2, "nodes": ["north", "east"], "serial": 7,
-                "gives_up": GIVES_UP, "latency_ms": 84},
+                "cost": "entry_exit_adjacent", "gives_up": GIVES_UP, "latency_ms": 84},
         }
 
     def status(self) -> dict[str, object]:

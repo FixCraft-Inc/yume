@@ -52,15 +52,46 @@ struct CircuitPoolStatus final {
     std::optional<RouteProposal> proposal;
 };
 
-// What a route of hops, 1 or 2, gives up against three, in the words a
-// proposal shows.
-inline const char* shorter_route_cost(std::size_t hops) noexcept {
-    return hops == 1U ? "Your entry server sees both who you are and every "
-                        "site you visit, as a "
-                        "direct connection does."
-                      : "The exit's neighbour is your entry. A party that runs "
-                        "both, or watches both, "
-                        "can link you to the sites you visit.";
+// What a route of 1 or 2 hops gives up against three. A proposal carries
+// both the code, control protocol 1's closed `cost` set that a client may
+// show in its own language, and the English text, `gives_up`, which a
+// client shows for a code it does not know. The GUI's catalog messages for
+// these codes must carry these exact texts (tests/test_yume_translations.py).
+enum class ShorterRouteCost : std::uint8_t {
+    // One hop: the entry is also the exit.
+    EntrySeesAll,
+    // Two hops: the exit's only neighbour is the entry.
+    EntryExitAdjacent,
+};
+
+inline ShorterRouteCost shorter_route_cost(std::size_t hops) noexcept {
+    return hops == 1U ? ShorterRouteCost::EntrySeesAll
+                      : ShorterRouteCost::EntryExitAdjacent;
+}
+
+inline const char* shorter_route_cost_code(ShorterRouteCost cost) noexcept {
+    switch (cost) {
+        case ShorterRouteCost::EntrySeesAll:
+            return "entry_sees_all";
+        case ShorterRouteCost::EntryExitAdjacent:
+            return "entry_exit_adjacent";
+    }
+    return "unknown";
+}
+
+inline const char* shorter_route_cost_text(ShorterRouteCost cost) noexcept {
+    switch (cost) {
+        case ShorterRouteCost::EntrySeesAll:
+            return "Your entry server sees both who you are and every site "
+                   "you visit, as a direct connection does.";
+        case ShorterRouteCost::EntryExitAdjacent:
+            return "The exit's neighbour is your entry. A party that runs "
+                   "both, or watches both, can link you to the sites you "
+                   "visit.";
+    }
+    // Not reached. The wider loss is the safe text to show.
+    return "Your entry server sees both who you are and every site you "
+           "visit, as a direct connection does.";
 }
 
 }  // namespace yume::runtime

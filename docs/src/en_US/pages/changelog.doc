@@ -290,7 +290,8 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   reader drains them. The client never shortens a route on its
   own: it proposes one, which `yume --accept-route ID` accepts over the
   control socket, or `circuits.min_hops` approves in advance.
-  `yume --status` shows routes and proposals,
+  `yume --status` shows routes and proposals, and a proposal names its
+  `cost` as a code beside the English text,
   `yume-setup add-client --circuits` writes the section and kit copies, and
   the C ABI refuses the section. `scripts/yume_circuit_wan.py` measures the
   direct session and circuits of two and three hops across emulated links,
@@ -324,7 +325,8 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   connection, rates, listeners, circuits, printed lines and the fixed
   posture with the tuning preset it matches. A tray icon shows the selected
   kit's state and connects or disconnects it. A shorter route is accepted
-  only from a review of that exact proposal. Headless actions, a page
+  only from a review of that exact proposal, which states what the route
+  gives up in the interface language. Headless actions, a page
   capture, keyboard and right-to-left tests and a live cycle against a real
   daemon cover it ([desktop GUI](../GUI.md)). Stopped kits can be renamed
   without replacing an existing kit; the GUI checks both control sockets

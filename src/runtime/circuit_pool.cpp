@@ -744,8 +744,8 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         say("no route of " + std::to_string(options.hops) +
             " hops can be built. Proposed: " + std::to_string(hops) +
             (hops == 1U ? " hop" : " hops") + " (" + nodes + "). " +
-            shorter_route_cost(hops) + " Accept with yume --accept-route " +
-            next.id);
+            shorter_route_cost_text(shorter_route_cost(hops)) +
+            " Accept with yume --accept-route " + next.id);
         proposal = std::move(next);
     }
 

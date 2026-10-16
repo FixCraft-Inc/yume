@@ -167,6 +167,46 @@ def check_desktop_preset_texts(data: dict) -> None:
         raise SystemExit("desktop tuning texts drifted:\n" + "\n".join(errors))
 
 
+def check_route_cost_texts(data: dict) -> None:
+    """The route-consent dialog shows a shorter route's cost in the interface
+    language by the code yume sends (src/runtime/circuit_status.hpp). Every
+    runtime code needs a case in Labels.js routeCost(), each case's message
+    must be maintainer_review text whose source is the runtime's English, and
+    the dialog must not know a code the runtime does not send."""
+    import re
+    def literal(parts: str) -> str:
+        return "".join(json.loads(f'"{part}"') for part in re.findall(r'"((?:[^"\\]|\\.)*)"', parts))
+    def cases(function: str) -> dict[str, str]:
+        body = re.search(rf"{function}\(ShorterRouteCost cost\) noexcept \{{(.*?)\n\}}", header, re.S)
+        if not body:
+            raise SystemExit(f"circuit_status.hpp has no {function}")
+        return {name: literal(value) for name, value in
+                re.findall(r"case ShorterRouteCost::(\w+):\s*return((?:\s*\"(?:[^\"\\]|\\.)*\")+);", body.group(1))}
+    header = (ROOT / "src/runtime/circuit_status.hpp").read_text(encoding="utf-8")
+    codes, texts = cases("shorter_route_cost_code"), cases("shorter_route_cost_text")
+    enum = re.search(r"enum class ShorterRouteCost : std::uint8_t \{(.*?)\};", header, re.S)
+    members = re.findall(r"^\s*(\w+),", enum.group(1), re.M) if enum else []
+    errors = []
+    if not members or set(codes) != set(members) or set(texts) != set(members):
+        errors.append(f"every ShorterRouteCost needs a code and a text: {members} {sorted(codes)} {sorted(texts)}")
+    labels = (ROOT / "src/gui/qml/Labels.js").read_text(encoding="utf-8")
+    function = re.search(r"function routeCost\(proposal\) \{(.*?)\n\}", labels, re.S)
+    shown = dict(re.findall(r'case "([a-z_]+)":\s*return qsTrId\("([a-z0-9.]+)"\)', function.group(1))) if function else {}
+    by_id = {m["id"]: m for m in data["messages"]}
+    for member, code in codes.items():
+        message = by_id.get(shown.get(code, ""))
+        if message is None:
+            errors.append(f"Labels.js routeCost() does not translate {code}")
+        elif message["source"] != texts.get(member):
+            errors.append(f"{message['id']} source differs from the runtime's {code} text")
+        elif not message.get("maintainer_review"):
+            errors.append(f"{message['id']} must be maintainer_review text")
+    errors += [f"Labels.js routeCost() maps {code}, which the runtime never sends"
+               for code in shown if code not in codes.values()]
+    if errors:
+        raise SystemExit("route consent texts drifted:\n" + "\n".join(errors))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--android-root", type=Path)
@@ -236,6 +276,7 @@ def main() -> int:
     check_community_languages(data)
     check_language_scripts(data)
     check_desktop_preset_texts(data)
+    check_route_cost_texts(data)
 
     ids = [m["id"] for m in data["messages"]]
     if len(ids) != len(set(ids)):

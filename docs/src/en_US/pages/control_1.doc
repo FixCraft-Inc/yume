@@ -178,8 +178,20 @@ be used), `plain_http` (`refuse` or `allow`), `serial` (the routes view's, 0
 before one is verified), `stopped` (`null`, or why circuits stopped), `routes`
 and `proposal`. Each route has its `nodes` by name, the entry first, its
 `age_ms` and its open `streams`. `proposal` is `null`, or a shorter route's
-`id`, `hops`, `nodes`, the view's `serial`, what the user `gives_up` in plain
-words, and `latency_ms` when every hop has been measured.
+`id`, `hops`, `nodes`, the view's `serial`, its `cost`, what the user
+`gives_up` in plain English, and `latency_ms` when every hop has been
+measured. `cost` names what is given up. Its values are these, and a value
+is added only with a new kind of shorter route:
+
+@table
+| `cost` | Route | What is given up |
+| --- | --- | --- |
+| `entry_sees_all` | 1 hop | The entry server sees both who the user is and every site they visit, as a direct connection does |
+| `entry_exit_adjacent` | 2 hops | The entry is the exit's neighbour, so a party that runs or watches both can link the user to the sites they visit |
+@end
+
+A client may show its own words for a `cost` it knows, such as a
+translation, and shows `gives_up` for any other value.
 
 ## The status of yumed
 

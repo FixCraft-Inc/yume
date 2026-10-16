@@ -105,7 +105,8 @@ Dialog {
         Text {
             textFormat: Text.PlainText
             horizontalAlignment: Text.AlignLeft
-            text: dialog.reviewed ? dialog.reviewed.gives_up : ""
+            objectName: "routeCost"
+            text: Labels.routeCost(dialog.reviewed)
             color: Theme.ink
             font.pixelSize: Theme.textBody
             Layout.fillWidth: true

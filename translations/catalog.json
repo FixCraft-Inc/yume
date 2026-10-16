@@ -6613,6 +6613,42 @@
       "platform": "desktop"
     },
     {
+      "id": "desktop.route.cost.entry.sees.all",
+      "source": "Your entry server sees both who you are and every site you visit, as a direct connection does.",
+      "context": "Desktop RouteReviewDialog.qml, a 1-hop route",
+      "owner": "src/gui/qml/Labels.js",
+      "notes": "Route consent: what a shorter route gives up, shown under \"What you give up\". yume sends the cost code entry_sees_all; this source must equal shorter_route_cost_text in src/runtime/circuit_status.hpp. Keep \"sees\" and \"can link\" exact; never soften them.",
+      "maintainer_review": true,
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Ваш входной сервер видит и то, кто вы, и каждый сайт, который вы посещаете, как и при прямом подключении.",
+        "ja": "入口サーバーには、身元とアクセスするすべてのサイトの両方が見えます。直接接続の場合と同じです。",
+        "uk": "Ваш вхідний сервер бачить і те, хто ви, і кожен сайт, який ви відвідуєте, як і за прямого підключення.",
+        "zh-Hans": "您的入口服务器既能看到您是谁，也能看到您访问的每个网站，与直接连接时一样。"
+      },
+      "platform": "desktop"
+    },
+    {
+      "id": "desktop.route.cost.entry.exit.adjacent",
+      "source": "The exit's neighbour is your entry. A party that runs both, or watches both, can link you to the sites you visit.",
+      "context": "Desktop RouteReviewDialog.qml, a 2-hop route",
+      "owner": "src/gui/qml/Labels.js",
+      "notes": "Route consent: what a shorter route gives up, shown under \"What you give up\". yume sends the cost code entry_exit_adjacent; this source must equal shorter_route_cost_text in src/runtime/circuit_status.hpp. Keep \"sees\" and \"can link\" exact; never soften them.",
+      "maintainer_review": true,
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Соседом выходного сервера будет ваш входной сервер. Тот, кто управляет обоими или наблюдает за обоими, может связать вас с сайтами, которые вы посещаете.",
+        "ja": "出口サーバーに隣接するのは入口サーバーです。両方を運営または監視している者は、身元とアクセスするサイトを結び付けることができます。",
+        "uk": "Сусідом вихідного сервера буде ваш вхідний сервер. Той, хто керує обома або стежить за обома, може пов’язати вас із сайтами, які ви відвідуєте.",
+        "zh-Hans": "出口服务器的相邻节点就是您的入口服务器。同时运营或同时监视这两台服务器的人，可以将您与您访问的网站关联起来。"
+      },
+      "platform": "desktop"
+    },
+    {
       "id": "desktop.running",
       "source": "Running",
       "context": "Desktop app_state.cpp",

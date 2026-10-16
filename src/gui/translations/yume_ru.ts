@@ -2362,6 +2362,18 @@
       <extracomment>source: Route through the cluster; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
       <translation>Маршрут через кластер</translation>
     </message>
+    <message id="desktop.route.cost.entry.sees.all">
+      <location filename="catalog:desktop.route.cost.entry.sees.all" line="1"/>
+      <source></source>
+      <extracomment>source: Your entry server sees both who you are and every site you visit, as a direct connection does.; context: Desktop RouteReviewDialog.qml, a 1-hop route; owner: src/gui/qml/Labels.js; Route consent: what a shorter route gives up, shown under "What you give up". yume sends the cost code entry_sees_all; this source must equal shorter_route_cost_text in src/runtime/circuit_status.hpp. Keep "sees" and "can link" exact; never soften them.</extracomment>
+      <translation>Ваш входной сервер видит и то, кто вы, и каждый сайт, который вы посещаете, как и при прямом подключении.</translation>
+    </message>
+    <message id="desktop.route.cost.entry.exit.adjacent">
+      <location filename="catalog:desktop.route.cost.entry.exit.adjacent" line="1"/>
+      <source></source>
+      <extracomment>source: The exit's neighbour is your entry. A party that runs both, or watches both, can link you to the sites you visit.; context: Desktop RouteReviewDialog.qml, a 2-hop route; owner: src/gui/qml/Labels.js; Route consent: what a shorter route gives up, shown under "What you give up". yume sends the cost code entry_exit_adjacent; this source must equal shorter_route_cost_text in src/runtime/circuit_status.hpp. Keep "sees" and "can link" exact; never soften them.</extracomment>
+      <translation>Соседом выходного сервера будет ваш входной сервер. Тот, кто управляет обоими или наблюдает за обоими, может связать вас с сайтами, которые вы посещаете.</translation>
+    </message>
     <message id="desktop.running">
       <location filename="catalog:desktop.running" line="1"/>
       <source></source>

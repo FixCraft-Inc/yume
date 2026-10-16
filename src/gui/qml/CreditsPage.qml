@@ -152,7 +152,8 @@ Flickable {
                         text: group.modelData.title
                         color: Theme.muted
                         font.pixelSize: Theme.textSmall
-                        font.weight: Font.DemiBold
+                        font.family: Theme.displayFont
+                        font.weight: Font.Bold
                         font.capitalization: Font.AllUppercase
                         font.letterSpacing: 0.6
                         Accessible.role: Accessible.Heading

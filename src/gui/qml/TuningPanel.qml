@@ -256,6 +256,7 @@ Card {
                 color: Theme.ink
                 font.pixelSize: 24
                 font.family: Theme.displayFont
+                font.weight: Font.Bold
             }
             Text {
                 textFormat: Text.PlainText

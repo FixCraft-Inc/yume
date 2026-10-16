@@ -46,6 +46,7 @@ Flickable {
 
         // A shorter route needs the user's explicit acceptance.
         Rectangle {
+            objectName: "routeProposalBanner"
             visible: page.proposal !== null && page.proposal !== undefined
             Layout.fillWidth: true
             implicitHeight: proposalRow.implicitHeight + 28
@@ -54,14 +55,26 @@ Flickable {
             border.color: Theme.disguise
             Accessible.role: Accessible.AlertMessage
             Accessible.name: proposalText.text
-            RowLayout {
+            Item {
                 id: proposalRow
-                anchors.fill: parent
-                anchors.margins: 14
-                spacing: 12
-                Icon { name: "route"; size: 22; color: Theme.disguiseStrong }
-                ColumnLayout {
-                    Layout.fillWidth: true
+                anchors { left: parent.left; right: parent.right; top: parent.top; margins: 14 }
+                implicitHeight: Math.max(proposalLabels.implicitHeight, proposalIcon.implicitHeight, reviewButton.implicitHeight)
+                Icon {
+                    id: proposalIcon
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "route"
+                    size: 22
+                    color: Theme.disguiseStrong
+                }
+                // Explicit width avoids both Qt 6.4's nested-layout polish
+                // loop and a layout retaining a hidden text column's width.
+                Column {
+                    id: proposalLabels
+                    anchors.left: parent.left
+                    anchors.leftMargin: proposalIcon.width + 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.max(0, proposalRow.width - proposalIcon.width - reviewButton.width - 24)
                     spacing: 2
                     Text {
                         textFormat: Text.PlainText
@@ -74,7 +87,7 @@ Flickable {
                         color: Theme.ink
                         font.pixelSize: Theme.textBody
                         font.weight: Font.DemiBold
-                        Layout.fillWidth: true
+                        width: parent.width
                         wrapMode: Text.WordWrap
                     }
                     Text {
@@ -84,11 +97,14 @@ Flickable {
                               .arg(page.circuits ? Labels.hopRoute(page.circuits.hops) : "")
                         color: Theme.inkSoft
                         font.pixelSize: Theme.textSmall
-                        Layout.fillWidth: true
+                        width: parent.width
                         wrapMode: Text.WordWrap
                     }
                 }
                 AppButton {
+                    id: reviewButton
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
                     objectName: "reviewRoute"
                     kind: "primary"
                     text: qsTrId("desktop.review")
@@ -113,6 +129,7 @@ Flickable {
                         text: App.stateLabel(App.phase, page.status.state || "")
                         color: Theme.stateColor(App.stateKind(App.phase, page.status.state || ""))
                         font.family: Theme.displayFont
+                        font.weight: Font.Bold
                         font.pixelSize: Theme.textHero
                         Accessible.role: Accessible.Heading
                     }
@@ -169,7 +186,7 @@ Flickable {
                             textFormat: Text.PlainText
                             text: App.formatRate(App.sendRate)
                             color: Theme.ink
-                            font.family: Theme.displayFont
+                            font.family: Theme.numberFont
                             font.pixelSize: 22
                             Accessible.name: qsTrId("desktop.sending").arg(text)
                         }
@@ -181,7 +198,7 @@ Flickable {
                             textFormat: Text.PlainText
                             text: App.formatRate(App.receiveRate)
                             color: Theme.ink
-                            font.family: Theme.displayFont
+                            font.family: Theme.numberFont
                             font.pixelSize: 22
                             Accessible.name: qsTrId("desktop.receiving").arg(text)
                         }

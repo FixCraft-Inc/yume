@@ -177,6 +177,10 @@ not claim a connection; saved settings remain available for a later start.
 Appearance follows the desktop's light or dark setting by default, as the
 Android app does, and can be fixed to light or dark.
 
+Desktop headings use the embedded Quicksand Bold, with the embedded Jost
+as the Cyrillic fallback. Glyphs absent from both faces use a system font,
+including Ukrainian і, ї, є and ґ, Japanese and Chinese.
+
 ## Keyboard and languages
 
 The Credits page lists contributors with the same concise attribution used by
@@ -232,7 +236,8 @@ modules. It links no YUME library, so it also builds with
 
 `yume-gui --capture DIR` saves every page, and the route review dialog when a
 proposal is shown, as images for visual review. It fails when a page raises a
-QML warning. `yume-gui --headless ACTION --kit NAME` runs the window's
+QML warning or a visible card's heading has no width or overlaps its content.
+`yume-gui --headless ACTION --kit NAME` runs the window's
 lifecycle without a display and prints one JSON report per step. It exits 2
 when nothing could be exercised, so an empty run never reads as a pass.
 

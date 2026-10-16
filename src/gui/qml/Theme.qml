@@ -74,7 +74,9 @@ QtObject {
     readonly property color refusedSoft: p.refusedSoft
     readonly property color refusedInk: p.refusedOnSoft
 
-    readonly property string displayFont: "Jost"
+    readonly property string displayFont: "Quicksand"
+    // Preserve the numeric face independently of the headings.
+    readonly property string numberFont: "Jost"
     // The product name, as the website sets it: rounded Quicksand Bold.
     readonly property string brandFont: "Quicksand"
     readonly property string monoFont: "monospace"

@@ -26,6 +26,7 @@ add_library(yume_gui_core STATIC
     app_state.cpp app_state.hpp
     capture.cpp capture.hpp
     control_client.cpp control_client.hpp
+    fonts.cpp fonts.hpp
     headless.cpp headless.hpp
     kit_store.cpp kit_store.hpp
     language.cpp language.hpp

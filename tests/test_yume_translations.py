@@ -167,6 +167,25 @@ def check_desktop_preset_texts(data: dict) -> None:
         raise SystemExit("desktop tuning texts drifted:\n" + "\n".join(errors))
 
 
+# Words a glossary term replaced (private TRANSLATION.md glossary), which a
+# new draft would otherwise bring back.
+REPLACED_TERMS = {
+    "ru": {"комплект": "набор", "контур": "цепочка"},
+    "uk": {"комплект": "набір", "контур": "ланцюжок", "open-source": "з відкритим кодом"},
+}
+
+
+def check_replaced_terms(data: dict) -> None:
+    errors = []
+    for message in data["messages"]:
+        for lang, terms in REPLACED_TERMS.items():
+            text = message.get("translations", {}).get(lang, "").lower()
+            errors += [f"{message['id']} [{lang}]: {old!r}, the glossary says {new!r}"
+                       for old, new in terms.items() if old in text]
+    if errors:
+        raise SystemExit("replaced glossary terms are back:\n" + "\n".join(errors))
+
+
 def check_route_cost_texts(data: dict) -> None:
     """The route-consent dialog shows a shorter route's cost in the interface
     language by the code yume sends (src/runtime/circuit_status.hpp). Every
@@ -277,6 +296,7 @@ def main() -> int:
     check_language_scripts(data)
     check_desktop_preset_texts(data)
     check_route_cost_texts(data)
+    check_replaced_terms(data)
 
     ids = [m["id"] for m in data["messages"]]
     if len(ids) != len(set(ids)):

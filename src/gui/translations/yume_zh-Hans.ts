@@ -1825,7 +1825,7 @@
     <message id="desktop.circuits.stopped">
       <location filename="catalog:desktop.circuits.stopped" line="1"/>
       <source></source>
-      <extracomment>source: Circuits stopped: %1; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
+      <extracomment>source: Circuits stopped: %1; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; %1 is why circuits stopped, as yume reports it (English), not a count.</extracomment>
       <translation>线路已停止：%1</translation>
     </message>
     <message id="desktop.closed">

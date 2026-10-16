@@ -177,6 +177,58 @@ yume_openssl_series_tag() {
     printf 'p%s' "${digest:0:12}"
 }
 
+# Instrumentation of the pinned build: none, or thread for the
+# ThreadSanitizer lanes. OpenSSL publishes shared tables, such as the name map
+# behind every fetch, through atomics and read-copy-update. TSan only sees
+# that synchronization in code it instrumented, so YUME's TSan lanes reported
+# concurrent handshakes on one library context as races inside an
+# uninstrumented libcrypto. Instrumenting OpenSSL removes those reports and
+# checks YUME's own OpenSSL use without suppressing anything.
+yume_openssl_sanitize_mode() {
+    local mode="${YUME_OPENSSL_SANITIZE:-none}"
+    case "${mode}" in
+        none|thread) printf '%s' "${mode}" ;;
+        *)
+            yume_openssl_error "YUME_OPENSSL_SANITIZE must be none or thread."
+            return 1
+            ;;
+    esac
+}
+
+# Install-prefix tag: the patch series, with -tsan for the instrumented build,
+# so the two builds never share a cache entry.
+yume_openssl_prefix_tag() {
+    local series_dir="$1"
+    local mode="$2"
+    local series_tag=""
+    series_tag="$(yume_openssl_series_tag "${series_dir}")"
+    case "${mode}" in
+        none) printf '%s' "${series_tag}" ;;
+        thread) printf '%s-tsan' "${series_tag}" ;;
+        *) return 1 ;;
+    esac
+}
+
+# The instrumented build is static only. Activating a prefix puts its lib
+# directory on LD_LIBRARY_PATH, and an instrumented libcrypto.so would then
+# load into every uninstrumented process that uses OpenSSL, Python's hashlib
+# among them, where the late-loaded TSan runtime cannot work. Its archive
+# must carry TSan's instrumentation, or the lane would still run blind.
+yume_openssl_variant_ok() {
+    local prefix="$1"
+    local mode="$2"
+    local lib_dir="${prefix}/lib"
+    local instrumented=0
+    [[ "${mode}" == "thread" ]] || return 0
+    if [[ ! -f "${lib_dir}/libcrypto.a" || ! -f "${lib_dir}/libssl.a" ]] ||
+       compgen -G "${lib_dir}/lib*.so*" >/dev/null; then
+        return 1
+    fi
+    command -v nm >/dev/null 2>&1 || return 1
+    instrumented="$(nm -u "${lib_dir}/libcrypto.a" 2>/dev/null | grep -c -F '__tsan_func_entry' || true)"
+    [[ "${instrumented}" =~ ^[1-9][0-9]*$ ]]
+}
+
 yume_openssl_apply_patches() {
     local source_dir="$1"
     local series_dir="$2"
@@ -231,6 +283,7 @@ yume_openssl_build_fallback() (
     local cache_root="$1"
     local prefix="$2"
     local patch_dir="$3"
+    local sanitize="${4:-none}"
     local version="${YUME_OPENSSL_SOURCE_VERSION}"
     local archive_dir="${cache_root}/downloads"
     local archive="${archive_dir}/openssl-${version}.tar.gz"
@@ -257,7 +310,16 @@ yume_openssl_build_fallback() (
         fi
     fi
 
-    if yume_openssl_activate_prefix "${prefix}" && yume_openssl_detect; then
+    case "${sanitize}" in
+        none|thread) ;;
+        *)
+            yume_openssl_error "Unknown OpenSSL instrumentation: ${sanitize}"
+            return 1
+            ;;
+    esac
+
+    if yume_openssl_activate_prefix "${prefix}" && yume_openssl_detect &&
+       yume_openssl_variant_ok "${prefix}" "${sanitize}"; then
         return 0
     fi
 
@@ -322,20 +384,29 @@ profile's brotli, which is visible in the ClientHello. Install libbrotli-dev to 
 close it."
     fi
 
+    # The TSan build compiles position-independent archives, since the shared
+    # C ABI library links them, and keeps OpenSSL's own optimization. Its
+    # assembly is not instrumented, which hides accesses rather than adding
+    # reports.
+    local -a variant_options=(shared)
+    if [[ "${sanitize}" == "thread" ]]; then
+        variant_options=(no-shared -fPIC -fsanitize=thread -fno-omit-frame-pointer -g)
+    fi
+
     # Each step is chained because set -e is off here (see the download
     # above), and a partial prefix is removed so a later run cannot accept it.
     # install_sw intentionally omits the request configuration.  CI uses this
     # exact openssl binary to mint ephemeral fixture certificates, so keep the
     # checksum-verified source configuration with the otherwise self-contained
     # prefix instead of inheriting a host openssl.cnf.
-    yume_openssl_log "Building OpenSSL ${version} with ${jobs} job(s)..."
+    yume_openssl_log "Building OpenSSL ${version} (instrumentation: ${sanitize}) with ${jobs} job(s)..."
     if ! (
         cd "${work_dir}" &&
             ./Configure \
                 --prefix="${prefix}" \
                 --openssldir="${prefix}/ssl" \
                 --libdir=lib \
-                shared zlib enable-zstd "${brotli_option}" no-tests &&
+                "${variant_options[@]}" zlib enable-zstd "${brotli_option}" no-tests &&
             make -j"${jobs}" build_sw &&
             make install_sw install_ssldirs &&
             install -m 0644 apps/openssl.cnf "${prefix}/ssl/openssl.cnf"
@@ -375,11 +446,13 @@ yume_openssl_ensure() {
     local force_pinned="${YUME_OPENSSL_FORCE_PINNED:-0}"
     local patch_dir="${YUME_OPENSSL_PATCH_DIR:-}"
     local series_tag=""
+    local sanitize=""
 
     if [[ -z "${patch_dir}" ]]; then
         patch_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/patches/openssl"
     fi
     series_tag="$(yume_openssl_series_tag "${patch_dir}")"
+    sanitize="$(yume_openssl_sanitize_mode)" || return 1
 
     if [[ "${force_pinned}" != "0" && "${force_pinned}" != "1" ]]; then
         yume_openssl_error "YUME_OPENSSL_FORCE_PINNED must be 0 or 1."
@@ -394,6 +467,10 @@ yume_openssl_ensure() {
             "OpenSSL patch series ${series_tag} is active; the host library cannot satisfy it."
         force_pinned=1
     fi
+    if [[ "${sanitize}" != "none" && "${force_pinned}" == "0" ]]; then
+        yume_openssl_log "Instrumented OpenSSL requested; the host library cannot satisfy it."
+        force_pinned=1
+    fi
     if [[ "${force_pinned}" == "0" ]] && yume_openssl_detect; then
         found_version="$(pkg-config --modversion openssl)"
         yume_openssl_log "OpenSSL ${found_version} with ML-DSA-87 detected (required >= ${YUME_OPENSSL_MIN_VERSION})."
@@ -406,9 +483,10 @@ yume_openssl_ensure() {
         yume_openssl_error "OpenSSL cache root must be a writable directory below the filesystem root."
         return 1
     fi
-    prefix="${cache_root}/openssl-${YUME_OPENSSL_SOURCE_VERSION}-${series_tag}"
+    prefix="${cache_root}/openssl-${YUME_OPENSSL_SOURCE_VERSION}-$(yume_openssl_prefix_tag "${patch_dir}" "${sanitize}")"
 
-    if yume_openssl_activate_prefix "${prefix}" && yume_openssl_detect; then
+    if yume_openssl_activate_prefix "${prefix}" && yume_openssl_detect &&
+       yume_openssl_variant_ok "${prefix}" "${sanitize}"; then
         found_version="$(pkg-config --modversion openssl)"
         yume_openssl_log "Using cached OpenSSL ${found_version} from ${prefix}."
     else
@@ -428,9 +506,13 @@ yume_openssl_ensure() {
                 return 1
             fi
         done
-        yume_openssl_build_fallback "${cache_root}" "${prefix}" "${patch_dir}" || return 1
+        yume_openssl_build_fallback "${cache_root}" "${prefix}" "${patch_dir}" "${sanitize}" || return 1
         if ! yume_openssl_activate_prefix "${prefix}" || ! yume_openssl_detect; then
             yume_openssl_error "The OpenSSL fallback completed but ML-DSA-87 is unavailable."
+            return 1
+        fi
+        if ! yume_openssl_variant_ok "${prefix}" "${sanitize}"; then
+            yume_openssl_error "The OpenSSL fallback completed without the requested ${sanitize} instrumentation."
             return 1
         fi
         found_version="$(pkg-config --modversion openssl)"

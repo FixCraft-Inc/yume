@@ -458,6 +458,11 @@ jobs:
     # reported a false "double lock of a mutex" in the start/stop tests.
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      # The pinned, patched OpenSSL is built with ThreadSanitizer into its own
+      # static-only cache prefix, so TSan sees OpenSSL's atomics and lockless
+      # tables instead of reporting their readers and writers as races.
+      YUME_OPENSSL_SANITIZE: thread
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -501,6 +506,10 @@ jobs:
       - name: Configure (ThreadSanitizer)
         run: |
           test "$(pkg-config --modversion openssl)" = "3.5.7"
+          case "${OPENSSL_ROOT_DIR}" in
+            */openssl-3.5.7-*-tsan) ;;
+            *) echo "OpenSSL is not the instrumented build: ${OPENSSL_ROOT_DIR}" >&2; exit 1 ;;
+          esac
           cmake -S . -B build-tsan \
             -DCMAKE_BUILD_TYPE=Debug \
             -DYUME_BUILD_TESTING=ON \
@@ -528,9 +537,9 @@ jobs:
       - name: Run unit tests under ThreadSanitizer
         env:
           # halt_on_error keeps the first race as the failure rather than a
-          # wall of cascading ones. The prebuilt vendor archives are not
-          # instrumented, so a report pointing inside them is a suppression
-          # candidate rather than necessarily a YUME defect.
+          # wall of cascading ones. OpenSSL is instrumented, but the prebuilt
+          # vendor archives are not, so a report pointing inside them is a
+          # suppression candidate rather than necessarily a YUME defect.
           TSAN_OPTIONS: halt_on_error=1:abort_on_error=1:second_deadlock_stack=1
         run: |
           ctest --test-dir build-tsan --output-on-failure --parallel 2

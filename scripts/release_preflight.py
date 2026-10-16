@@ -247,6 +247,8 @@ def validate_workflow_guards() -> None:
         "-DBASEFWX_REQUIRE_ARGON2=ON",
         "-DBASEFWX_REQUIRE_OQS=ON",
         "-DBASEFWX_REQUIRE_LZMA=ON",
+        # TSan sees OpenSSL's synchronization only when OpenSSL is instrumented.
+        "YUME_OPENSSL_SANITIZE: thread",
     ):
         require(needle in ci_yml, f"ci.yml is missing required guard: {needle}")
     require(openssl["minimum_version"] == "3.5.0",
@@ -273,7 +275,8 @@ def validate_workflow_guards() -> None:
     for needle in (
         'YUME_OPENSSL_SOURCE_VERSION="3.5.7"',
         'YUME_OPENSSL_SOURCE_SHA256="a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"',
-        'shared zlib enable-zstd "${brotli_option}" no-tests',
+        "local -a variant_options=(shared)",
+        '"${variant_options[@]}" zlib enable-zstd "${brotli_option}" no-tests',
         'install -m 0644 apps/openssl.cnf "${prefix}/ssl/openssl.cnf"',
     ):
         require(needle in openssl_helper,

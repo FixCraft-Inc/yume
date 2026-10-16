@@ -145,6 +145,12 @@ source-built libraries as well as the harnesses. Use a separate build directory
 for TSan. Verify instrumentation in the parser objects and compile commands
 before treating a fuzz run as parser coverage; harness-only flags are insufficient.
 
+Prepare a TSan build with `YUME_OPENSSL_SANITIZE=thread` set before calling
+`yume_openssl_ensure`. It builds the pinned, patched OpenSSL with
+ThreadSanitizer into its own static-only cache prefix, so TSan sees
+OpenSSL's own synchronization and checks YUME's use of it. CI's
+`thread-sanitize` job does this.
+
 ## C++, API, and naming
 
 Use `.clang-format` for changed lines and `.clang-tidy` for focused analysis.

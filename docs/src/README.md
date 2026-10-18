@@ -51,7 +51,7 @@ run `python3 scripts/yume_palette.py generate`, then
 as paths so GitHub needs no installed or remote font.
 
 The root README's `title:` contains a centered banner image with an explicit
-300 px width and the project name as its alternative text. Keep the width
+480 px width and the project name as its alternative text. Keep the width
 on the HTML image so GitHub does not expand the SVG to fill the page.
 A README published on the website can keep a plain `web-title:` for that
 page and its catalog entry.

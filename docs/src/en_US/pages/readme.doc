@@ -1,7 +1,7 @@
 #!yume-doc 1
 name:     readme
 kind:     page
-title:    <div align="center"><img src="docs/assets/readme-banner.svg" alt="YUME" width="300"></div>
+title:    <div align="center"><img src="docs/assets/readme-banner.svg" alt="YUME" width="480"></div>
 summary:  Internet freedom through a server you control: what YUME carries and how to run it.
 markdown: README.md
 web:      no

@@ -1687,8 +1687,8 @@ tbody tr:last-child td {
  *
  * Generated SVGs own their geometry, styles and motion. They read the site's
  * theme tokens, with fallbacks for standalone viewing. Page rules size figures,
- * style their notes and pause animation off screen. The SVG's reduced-motion
- * rules hide travelling packets and stop the remaining animation.
+ * style their notes, keep the wire layers legible while they light up, and
+ * stop animation off screen or when reduced motion is requested.
  */
 
 /* Hairlines separate the figure from the surrounding text. */
@@ -1845,11 +1845,40 @@ tbody tr:last-child td {
   line-height: 1.35;
 }
 
-/* Paint, type, and motion live in the SVG itself, in scripts/yume_diagram_svg.py,
-   so one file styles a diagram whether the site inlines it, GitHub draws it from
-   Markdown, or someone opens it on its own. Its stylesheet reads the tokens
-   above first, so the theme toggle still recolours it. What is left here is the
-   page context an SVG cannot know. */
+/* The nested wire layers use a soft fill while active. Their labels use the
+   palette's ink for that tint: strong strokes and muted text lose contrast
+   when the whole ring lights up, especially in the dark theme. */
+.diagram [data-dgm^="record_layers-"] {
+  --dgm-layer-ink: var(--color-ink);
+}
+
+.diagram [data-dgm^="record_layers-"] .dgm-role-data {
+  --dgm-layer-ink: var(--color-role-data-ink);
+}
+
+.diagram [data-dgm^="record_layers-"] .dgm-role-keys {
+  --dgm-layer-ink: var(--color-role-keys-ink);
+}
+
+.diagram [data-dgm^="record_layers-"] .dgm-role-disguise {
+  --dgm-layer-ink: var(--color-role-disguise-ink);
+}
+
+.diagram [data-dgm^="record_layers-"] .dgm-role-outside {
+  --dgm-layer-ink: var(--color-role-outside-ink);
+}
+
+.diagram [data-dgm^="record_layers-"] .dgm-ring {
+  --dgm-live: var(--dgm-tone-soft);
+}
+
+.diagram [data-dgm^="record_layers-"] .dgm-ring-title,
+.diagram [data-dgm^="record_layers-"] .dgm-layer .dgm-sub {
+  fill: var(--dgm-layer-ink);
+}
+
+/* The SVG supplies its own paint and type for standalone use. The page uses
+   its theme tokens and controls visibility and motion in the embedding. */
 
 /* The page already paints a ground under the figure, so the standalone one
    would only draw a box around it. */
@@ -1858,8 +1887,20 @@ tbody tr:last-child td {
 }
 
 /* initDiagramMotion marks figures that have left the viewport. Without
-   JavaScript nothing is marked and the carrier simply keeps moving. */
+   JavaScript nothing is marked and their animation keeps running. */
 .diagram.is-offscreen .dgm-packet,
-.diagram.is-offscreen .dgm-conduit-flow {
+.diagram.is-offscreen .dgm-conduit-flow,
+.diagram.is-offscreen .dgm-ring,
+.diagram.is-offscreen .dgm-card {
   animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .diagram .dgm-packet,
+  .diagram .dgm-conduit-flow,
+  .diagram .dgm-ring,
+  .diagram .dgm-card {
+    /* Override per-figure animation names and the page's duration shortcut. */
+    animation: none !important;
+  }
 }

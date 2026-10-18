@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -33,6 +34,26 @@ class PaletteTests(unittest.TestCase):
         # A light theme keeps light surfaces under dark text and a light button.
         self.assertGreater(palette.luminance(light['surface'].hex), palette.luminance(light['page'].hex))
         self.assertGreater(palette.luminance(light['button'].hex), 0.6)
+
+    def test_banner_preserves_the_original_mark_without_external_resources(self) -> None:
+        rendered = palette.render(palette.load(), ROOT)[ROOT / palette.README_BANNER_OUTPUT]
+        banner = ET.fromstring(rendered)
+        svg = '{http://www.w3.org/2000/svg}'
+        mark = banner.find(f'{svg}g/{svg}path[@id="mark"]')
+        self.assertIsNotNone(mark)
+        self.assertEqual(mark.get('d'), palette.mark_path(ROOT))
+        # A translation and one uniform scale preserve the owner's shape and tilt.
+        self.assertRegex(mark.get('transform', ''),
+                         r'^translate\(-?[\d.]+ -?[\d.]+\) scale\([\d.]+\)$')
+        self.assertTrue(banner.findtext(f'{svg}title'))
+        self.assertTrue(banner.findtext(f'{svg}desc'))
+        for element in banner.iter():
+            self.assertNotIn(element.tag, {f'{svg}{tag}' for tag in ('script', 'foreignObject', 'text', 'image')})
+            for attribute, value in element.attrib.items():
+                if attribute.endswith('href'):
+                    self.assertTrue(value.startswith('#'), value)
+        self.assertNotIn('@import', rendered)
+        self.assertNotIn('@font-face', rendered)
 
     def test_oklch_conversion_matches_known_colours(self) -> None:
         self.assertEqual(palette.Colour([1.0, 0.0], 0, 'white').hex, '#FFFFFF')
@@ -64,7 +85,7 @@ class PaletteTests(unittest.TestCase):
             root = Path(temp) / 'native'
             android = Path(temp) / 'android'
             for name in ('scripts/yume_palette.py', str(palette.SOURCE), str(palette.WEB_OUTPUT),
-                         str(palette.MARK_SOURCE)):
+                         str(palette.MARK_SOURCE), str(palette.README_BANNER_SOURCE)):
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(ROOT / name, target)

@@ -40,9 +40,15 @@ The unified sync does not silently delete retired files.
 | Catalog grouping and order | `catalog-group:`, optional `catalog-home:`, and `catalog-order:` in the document |
 | Available catalog groups and repository-specific output policy | `docs/src/site.json` |
 | Shared colors and diagram role colors | `config/palette.json`; `scripts/yume_palette.py` exports them to the apps and `website/assets/tokens.css`, which the SVG renderer reads |
+| README banner layout and lettering | `docs/assets/readme-banner.svg.in`; `scripts/yume_palette.py` combines it with the canonical mark in `src/gui/assets/icon.svg` and shared palette colors to generate `docs/assets/readme-banner.svg` |
 | Diagram fonts | `website/assets/tokens.css` |
 | Site navigation, landing-page copy and layout | `website/_data/nav.yml`, HTML pages and `_includes/` |
 | YUME option help and completion metadata | `@opt` and `@cli` entries in its manual sources |
+
+The README banner is a palette output. After editing its template or mark,
+run `python3 scripts/yume_palette.py generate`, then
+`python3 scripts/yume_palette.py generate --check`. Its lettering is stored
+as paths so GitHub needs no installed or remote font.
 
 BaseFWX currently publishes generated ASCII figures. Its own animated SVG
 style is deferred; keep diagram `targets.web` false until that work is

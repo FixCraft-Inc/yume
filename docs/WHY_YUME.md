@@ -6,7 +6,7 @@ control. Its transport carries TCP, UDP and IP packets over one authenticated,
 browser-shaped connection. You can run it as a client and server or embed the
 same engine in another program.
 
-Yume (夢) means dream in Japanese. The dream behind it is a freer internet
+Yume (夢) means dream in Japanese. The dream behind it is internet freedom
 for everyone. Anime openings helped inspire the name.
 
 When goals conflict, YUME picks security first, then stealth, then speed. It

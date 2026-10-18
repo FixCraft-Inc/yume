@@ -1,14 +1,12 @@
 <!-- Generated from docs/src/en_US/pages/readme.doc by scripts/yume_docs.py. Edit that file, not this one. -->
-# YUME
-
-![YUME](docs/assets/readme-banner.svg)
+# ![YUME](docs/assets/readme-banner.svg)
 
 YUME is an internet freedom tool. It carries TCP, UDP and IP packets through
 a server you control over a connection shaped like a browser visiting an
 ordinary HTTPS site. The client is `yume` and the server is `yumed`. Both speak
 YTP/1, the YUME Transport Protocol.
 
-Yume (夢) means dream in Japanese. The dream behind it is a freer internet
+Yume (夢) means dream in Japanese. The dream behind it is internet freedom
 for everyone. Anime openings helped inspire the name. The design puts
 security first, then stealth, then usable speed.
 

@@ -42,8 +42,8 @@ footer_statement: Release files are useful only when their origin is verifiable.
 <section id="linux">
   <h2 class="section-title">Linux x86-64</h2>
   <p class="section-lead">
-    The release workflow produces these two Linux artifacts, plus their checksums,
-    signatures when configured, and a release manifest.
+    The release workflow publishes these two Linux artifacts with their checksums,
+    signatures and a release manifest.
   </p>
   <div class="table-scroll">
     <table class="artifact-table hash-manifest-table">
@@ -92,7 +92,7 @@ footer_statement: Release files are useful only when their origin is verifiable.
     </div>
     <div class="card">
       <h3>Signatures</h3>
-      <p>When the workflow has signing secrets, both artifacts, the checksum list, and the manifest each get a detached armored signature.</p>
+      <p>Publication requires detached armored signatures for both artifacts, the checksum list and the manifest.</p>
       <div class="hash-block hash-block-spaced">
         <div class="hash-title">GPG</div>
         <div class="hash-value">gpg --verify SHA256SUMS.txt.sig SHA256SUMS.txt</div>

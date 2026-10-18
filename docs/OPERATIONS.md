@@ -276,23 +276,36 @@ A Linux x86-64 release publishes `yume-amd64-linux.tar.xz`, holding `yume`,
 `yume-setup`, `yume-doctor`, the license, third-party notices, quick start and
 a `manifest.json`, and the standalone daemon `yumed-amd64-linux`. Each artifact
 has a `.sha256` file, and the release adds `SHA256SUMS.txt` and
-`release-manifest.json`. Detached `.sig` files exist only when the release
-signing key is configured.
+`release-manifest.json`. Both artifacts, the aggregate checksums and the
+manifest require detached `.sig` files.
+
+The release workflow verifies the annotated tag and its commit against the
+tracked public key in `third_party/prebuilt/yume-release-key.asc`, pinned to
+primary fingerprint `967278FF6FA436F504CBB0058A1588B5E2598DB1`. The tag must
+point directly to the checked-out commit. Publication requires the matching
+`GPG_PRIVATE_KEY` secret, `GPG_PASSPHRASE` when needed, and approval of the
+[release gates](IMPLEMENTATION_STATUS.md#freeze-gates).
+
+Verify the signing key's primary fingerprint through an authenticated source
+before checking downloaded signatures:
 
 ```bash
 sha256sum -c SHA256SUMS.txt
 gpg --verify yumed-amd64-linux.sig yumed-amd64-linux
+gpg --verify release-manifest.json.sig release-manifest.json
 ```
 
-The current workflow generates the manifest before signing and replaces
-same-name release assets. Stable publication requires trusted commit/tag
-verification, mandatory artifact signatures and immutable assets. Finalize
-the manifest after artifact signatures exist, then sign the manifest itself.
-Missing checksums or required signatures must stop publication.
+`scripts/release_integrity.py` signs the artifacts and aggregate checksums
+before generating the manifest, then signs the manifest itself. The inventory
+lists artifacts under `files` and aggregate checksums under `checksums`, with
+their signature filenames. Its own signature stays outside the inventory.
+Missing or inconsistent checksums, inventory entries or trusted signatures
+stop publication.
 
-The workflow still requires `independent_security_review` to publish. Remove
-that obsolete check to match the
-[release criteria](IMPLEMENTATION_STATUS.md#freeze-gates).
+Before uploading, the helper rechecks local signatures, the remote tag object
+and every existing asset name. Any matching name stops the upload. Uploads
+never replace assets. A failed multi-file upload can leave a partial set and
+requires operator review before another attempt.
 
 ## Public endpoints
 

@@ -1240,6 +1240,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Fixed
 
+- Release publication requires trusted signatures on the annotated tag,
+  source commit, artifacts, aggregate checksums and final manifest. The
+  manifest is generated after artifact signatures exist and classifies
+  aggregate checksum signatures separately. Uploads refuse existing asset
+  names and never replace them. The obsolete independent-review approval
+  input is removed.
 - **Circuit failure reports survive queued delivery.** A hop ends its
   backward write direction after its failure report instead of immediately
   aborting the stream and discarding unread cells at the previous hop.

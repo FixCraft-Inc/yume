@@ -101,7 +101,10 @@ jobs:
           python3 ./scripts/release_preflight.py
 
       - name: Check native release packaging
-        run: python3 scripts/test_package_linux_release.py
+        run: |
+          python3 scripts/test_package_linux_release.py
+          python3 scripts/test_release_manifest.py
+          python3 scripts/test_release_integrity.py
 
       - name: Validate declared dependency SBOM
         env:

@@ -622,10 +622,10 @@ These qualification and integration tasks remain open:
 - installed package/service, including the module units' user and sandbox,
   and remaining consumer migration around native `yume` and `yumed`, and a
   qualified setup-to-first-SOCKS path over a real network;
-- release publication controls: remove the obsolete independent-review check
-  and require trusted commit/tag verification, signatures, manifest/signature
-  consistency and immutable assets, as
-  [operations](OPERATIONS.md#release-verification) describes;
+- a release-workflow run with the configured signing secret and existing
+  release target. Local rejection tests cover trusted commit/tag verification,
+  required signatures, manifest consistency and refusal of existing asset
+  names, as [operations](OPERATIONS.md#release-verification) describes;
 - complete-session active-probe, classifier, performance, soak, fuzz and
   sanitizer qualification.
 

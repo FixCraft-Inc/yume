@@ -19,11 +19,6 @@ on:
         required: true
         default: false
         type: boolean
-      independent_security_review:
-        description: "Independent security review is complete"
-        required: true
-        default: false
-        type: boolean
       rc_gates_approved:
         description: "Documented lifecycle, scale, soak, WAN, and same-session gates passed"
         required: true
@@ -39,6 +34,10 @@ concurrency:
 
 env:
   YUME_OPENSSL_FORCE_PINNED: "1"
+  YUME_RELEASE_PROFILE: ${{ inputs.release_profile }}
+  YUME_RELEASE_TAG: ${{ inputs.tag_name }}
+  YUME_PUBLISH: ${{ inputs.publish }}
+  YUME_RC_GATES_APPROVED: ${{ inputs.rc_gates_approved }}
 
 jobs:
   preflight:
@@ -49,29 +48,30 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Validate release source and approvals
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
             echo "workflow_dispatch releases must be started from main." >&2
             exit 1
           fi
-          if [[ "${{ inputs.release_profile }}" != "linux-desktop-0.3.0" ]]; then
+          if [[ "${YUME_RELEASE_PROFILE}" != "linux-desktop-0.3.0" ]]; then
             echo "Unsupported release profile." >&2
             exit 1
           fi
-          if [[ "${{ inputs.publish }}" == "true" ]]; then
-            if [[ "${{ inputs.independent_security_review }}" != "true" || \
-                  "${{ inputs.rc_gates_approved }}" != "true" ]]; then
-              echo "Publishing requires independent review and every documented RC gate." >&2
+          if [[ "${YUME_PUBLISH}" == "true" ]]; then
+            if [[ "${YUME_RC_GATES_APPROVED}" != "true" ]]; then
+              echo "Publishing requires every documented RC gate." >&2
               exit 1
             fi
           fi
           python3 scripts/release_preflight.py \
-            --profile "${{ inputs.release_profile }}" \
-            --tag "${{ inputs.tag_name }}"
+            --profile "${YUME_RELEASE_PROFILE}" \
+            --tag "${YUME_RELEASE_TAG}"
 
   build-linux:
     needs: [preflight]
@@ -82,6 +82,17 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Revalidate release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/release_preflight.py \
+            --profile "${YUME_RELEASE_PROFILE}" \
+            --tag "${YUME_RELEASE_TAG}" \
+            --skip-ref-fetch
 
       - name: Verify host lane
         shell: bash
@@ -150,8 +161,8 @@ jobs:
             --version "${VERSION}" \
             --source-commit "$(git rev-parse HEAD)"
           python3 scripts/release_preflight.py \
-            --profile "${{ inputs.release_profile }}" \
-            --tag "${{ inputs.tag_name }}" \
+            --profile "${YUME_RELEASE_PROFILE}" \
+            --tag "${YUME_RELEASE_TAG}" \
             --skip-ref-fetch \
             --cmake-cache build-release/CMakeCache.txt \
             --artifacts dist
@@ -170,7 +181,7 @@ jobs:
 
   publish-release:
     needs: [preflight, build-linux]
-    if: ${{ inputs.publish && inputs.independent_security_review && inputs.rc_gates_approved }}
+    if: ${{ inputs.publish && inputs.rc_gates_approved }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -182,6 +193,8 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Download prepared Linux artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -207,60 +220,23 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/release_preflight.py \
-            --profile "${{ inputs.release_profile }}" \
-            --tag "${{ inputs.tag_name }}" \
+            --profile "${YUME_RELEASE_PROFILE}" \
+            --tag "${YUME_RELEASE_TAG}" \
             --skip-ref-fetch \
             --artifacts artifacts
 
-      - name: Generate checksums and manifest
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd artifacts
-          sha256sum yume-amd64-linux.tar.xz > yume-amd64-linux.tar.xz.sha256
-          sha256sum yumed-amd64-linux > yumed-amd64-linux.sha256
-          sha256sum yume-amd64-linux.tar.xz yumed-amd64-linux > SHA256SUMS.txt
-          cd ..
-          python3 scripts/release_manifest.py artifacts "${{ inputs.tag_name }}"
-
-      - name: Import optional release signing key
+      - name: Sign artifacts and finalize the signed manifest
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "${GPG_PRIVATE_KEY:-}" ]]; then
-            echo "YUME_GPG_AVAILABLE=0" >> "${GITHUB_ENV}"
-            exit 0
-          fi
-          keyfile="$(mktemp)"
-          trap 'rm -f "${keyfile}"' EXIT
-          printf '%s' "${GPG_PRIVATE_KEY}" > "${keyfile}"
-          gpg --batch --import "${keyfile}"
-          echo "YUME_GPG_AVAILABLE=1" >> "${GITHUB_ENV}"
-
-      - name: Sign and verify release artifacts
-        env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         shell: bash
         run: |
           set -euo pipefail
-          cd artifacts
-          sha256sum -c SHA256SUMS.txt
-          if [[ "${YUME_GPG_AVAILABLE:-0}" == "1" ]]; then
-            for file in yume-amd64-linux.tar.xz yumed-amd64-linux SHA256SUMS.txt release-manifest.json; do
-              gpg --batch --yes --pinentry-mode loopback \
-                --passphrase "${GPG_PASSPHRASE:-}" \
-                --detach-sign --armor --output "${file}.sig" "${file}"
-              gpg --batch --verify "${file}.sig" "${file}"
-            done
-          fi
+          python3 scripts/release_integrity.py sign artifacts "${YUME_RELEASE_TAG}"
 
       - name: Attach to existing release
         shell: bash
         run: |
           set -euo pipefail
-          gh release view "${{ inputs.tag_name }}" \
-            --repo "${GITHUB_REPOSITORY}" >/dev/null
-          gh release upload "${{ inputs.tag_name }}" artifacts/* \
-            --clobber --repo "${GITHUB_REPOSITORY}"
+          python3 scripts/release_integrity.py upload artifacts "${YUME_RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}"

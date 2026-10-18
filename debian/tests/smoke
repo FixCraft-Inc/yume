@@ -3,6 +3,14 @@ set -eu
 
 test -x /usr/bin/yume
 test -x /usr/bin/yumed
+test -r /usr/lib/sysusers.d/yume-daemon.conf
+getent passwd yume | grep -Eq '^yume:[^:]*:[0-9]+:[0-9]+:YUME server daemon:/var/lib/yume:/usr/sbin/nologin$'
+
+architecture=$(dpkg --print-architecture)
+openssl_version=$(dpkg-query -W -f='${Version}' "libssl3t64:$architecture")
+for package in yume yume-daemon; do
+    dpkg-query -W -f='${Depends}\n' "$package" | grep -F "libssl3t64 (= $openssl_version)"
+done
 
 yume --version | grep -F "transport YTP/1, config schema 1"
 yumed --version | grep -F "transport YTP/1, config schema 1"

@@ -80,13 +80,27 @@ ExecStart=
 ExecStart=/usr/local/libexec/yume/yume-echo-module --quiet
 @end
 
-The service runs the module as a dynamic user of its own with no
+The service runs the module as a dynamic user of its own. It has no
 capabilities, no new privileges, a read-only system, no access to
 `/etc/yume`, `/var/lib/yume`, `/var/log/yume` or `/run/yume`, a private
 `/tmp` and a state directory below `/var/lib/yume-modules`. It has no network.
 A module that needs one, such as a codec backend, sets `PrivateNetwork=false`
 and its address families in a drop-in. systemd starts a module that failed
 again after one second.
+
+The default account name is `yume-module-<instance>`. Dynamic account names
+accept ASCII letters, digits, underscores and hyphens, with at most 31
+characters, and start with a letter or underscore. An instance containing
+a dot or longer than 19 characters needs
+a short, unique `User=` in its service drop-in before it can start:
+
+@code ini
+[Service]
+User=yume-module-codec
+@end
+
+Use a different name for each instance and keep `DynamicUser=true`.
+The stream service, socket and executable names stay as configured.
 
 On a host without systemd, any supervisor that passes a listening socket as
 descriptor 3 can run a module. For development,

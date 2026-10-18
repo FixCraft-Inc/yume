@@ -1,5 +1,7 @@
 #!/usr/bin/make -f
 
+include /usr/share/dpkg/architecture.mk
+
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 %:
@@ -17,6 +19,12 @@ override_dh_auto_configure:
 		-DYUME_INSTALL_EXPERIMENTAL_SDK=OFF
 
 override_dh_installsystemd:
-	dh_installsystemd -p yume-daemon --name=yumed --no-enable --no-start
+	dh_installsystemd -p yume-daemon --name=yumed --no-enable --no-start --restart-after-upgrade
 	dh_installsystemd -p yume-daemon --name=yume-module@ --no-enable --no-start
 	dh_installsystemd --remaining-packages
+
+override_dh_gencontrol:
+	set -eu; \
+		openssl_version=$$(dpkg-query -W -f='$${Version}' libssl3t64:$(DEB_HOST_ARCH)); \
+		test -n "$$openssl_version"; \
+		dh_gencontrol -- -Vyume:OpenSSLVersion="$$openssl_version"

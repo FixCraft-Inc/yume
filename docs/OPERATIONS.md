@@ -3,8 +3,8 @@
 
 This page covers provisioning, deployment and maintenance after the first
 local connection in the [quick start](QUICKSTART.md).
-[Implementation status](IMPLEMENTATION_STATUS.md) lists the qualification
-still needed for an installed service and public release.
+[Implementation status](IMPLEMENTATION_STATUS.md) lists the covered service
+checks and remaining distribution, real-network and release qualification.
 
 ## Provision a kit
 

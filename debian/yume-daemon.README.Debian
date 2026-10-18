@@ -6,6 +6,13 @@ configuration at /etc/yume/yumed.json, and a hardened yumed.service.
 The service is disabled and not started on package install. The bootstrap
 contains no credentials and cannot start a working endpoint.
 
+Package configuration creates the yume account before its state directories.
+Upgrading restarts a running daemon and leaves a stopped daemon stopped.
+Removal stops the daemon and loaded module socket/service instances through
+Debian's service-policy helper. Removal preserves the configuration conffile;
+purge removes that file but retains operator-installed credentials and the
+service account.
+
 Install yume for the matching yume-setup and yume-doctor programs. Provision a
 schema-1 kit using the matching QUICKSTART.md. Install only the kit's server/
 contents under /etc/yume, preserving its credentials/ and cover-site/ layout;
@@ -63,9 +70,21 @@ server configuration a module adapter with the socket
 
   systemctl enable --now yume-module@echo.socket
 
-The socket belongs to yume with mode 0600, and the module runs as a dynamic
-user of its own without network access, so it cannot read /etc/yume. yumed
-refuses a missing socket or one that another user could reach.
+The socket belongs to yume with mode 0600. Each instance runs as its own
+dynamic user, yume-module-<instance>, without network access, so it cannot
+read /etc/yume. yumed refuses a missing socket or one that another user
+could reach.
+
+Dynamic account names accept ASCII letters, digits, underscores and hyphens,
+with at most 31 characters, and start with a letter or underscore. A dotted
+instance or one longer than 19 characters needs a short, unique User= in its
+service drop-in, for example:
+
+  [Service]
+  User=yume-module-codec
+
+Use a different name for each instance and keep DynamicUser=true. The stream
+service, socket and executable names stay as configured.
 
 The package remains experimental. Installed-service and distribution-specific
 qualification is required before publication; a successful build alone is

@@ -6,7 +6,7 @@ summary:  Internet freedom through a server you control: what YUME carries and h
 markdown: README.md
 web:      no
 ---
-![YUME. For a freer internet.](docs/assets/readme-banner.svg)
+![YUME](docs/assets/readme-banner.svg)
 
 YUME is an internet freedom tool. It carries TCP, UDP and IP packets through
 a server you control over a connection shaped like a browser visiting an

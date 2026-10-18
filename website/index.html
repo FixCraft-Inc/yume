@@ -354,9 +354,9 @@ curl --socks5-hostname 127.0.0.1:1080 https://example.com/</code></pre>
 <section id="verify">
   <h2 class="section-title">Verify release files</h2>
   <p class="section-lead">
-    Published artifacts carry SHA-256 sidecars, an aggregate <code>SHA256SUMS.txt</code>, and
-    a machine-readable manifest. Detached GPG signatures are attached when signing secrets
-    are configured, and the workflow verifies each signature before uploading it.
+    The release workflow requires SHA-256 checksums and detached GPG signatures.
+    It verifies both artifacts, the aggregate checksum list and the final
+    manifest before uploading them.
   </p>
   <div class="grid">
     <div class="card">
@@ -369,7 +369,7 @@ curl --socks5-hostname 127.0.0.1:1080 https://example.com/</code></pre>
     </div>
     <div class="card">
       <h3>Signatures</h3>
-      <p>Signed builds ship <code>.sig</code> sidecars for both artifacts, the checksum list, and the manifest.</p>
+      <p>The <code>.sig</code> sidecars cover both artifacts, the checksum list and the manifest.</p>
       <div class="hash-block hash-block-spaced">
         <div class="hash-title">GPG</div>
         <div class="hash-value">gpg --verify yumed-amd64-linux.sig yumed-amd64-linux</div>

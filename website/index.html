@@ -3,7 +3,6 @@ layout: page
 title: "YUME: for internet freedom"
 description: YUME is an open-source internet freedom tool. It carries TCP, UDP and IP traffic through a server you control over an encrypted connection shaped like a browser visiting a website.
 body_class: home-page
-footer_statement: YUME is an open-source internet freedom tool.
 section_nav:
   - label: How it works
     url: "#how"
@@ -415,24 +414,33 @@ curl --socks5-hostname 127.0.0.1:1080 https://example.com/</code></pre>
 
 <section id="credits">
   <h2 class="section-title">Credits</h2>
-  <dl>
-    {% for person in site.data.credits.contributors %}
-    <dt>{{ person.name | escape }} — {{ person.role | escape }}</dt>
-    <dd>{{ person.contribution | escape }}</dd>
-    {% endfor %}
+  <dl class="credits-people">
+    {%- for person in site.data.credits.contributors %}
+    <div>
+      <dt>{{ person.name | escape }}</dt>
+      <dd class="credit-role">{{ person.role | escape }}</dd>
+      <dd>{{ person.contribution | escape }}</dd>
+    </div>
+    {%- endfor %}
   </dl>
-  <h3>Components by consumer</h3>
+  <h3 class="credits-subtitle">Components by consumer</h3>
   {% assign credit_groups = "native,linux,desktop,android,mlkit" | split: "," %}
   {% assign credit_titles = "Native transport library,Linux client and daemon,Desktop interface,Android application,Optional Android ML Kit build" | split: "," %}
-  {% for group in credit_groups %}
-  <details>
-    <summary>{{ credit_titles[forloop.index0] }}</summary>
-    <dl>
-      {% for component in site.data.credits.components[group] %}
-      <dt>{{ component.name | escape }} — {{ component.license | escape }}</dt>
-      <dd>{{ component.use | escape }}</dd>
-      {% endfor %}
-    </dl>
-  </details>
-  {% endfor %}
+  <div class="credit-groups">
+    {%- for group in credit_groups %}
+    {%- assign components = site.data.credits.components[group] %}
+    <details class="credit-group">
+      <summary>{{ credit_titles[forloop.index0] }} <span class="credit-count">{{ components.size }} {% if components.size == 1 %}component{% else %}components{% endif %}</span></summary>
+      <dl>
+        {%- for component in components %}
+        <div>
+          <dt>{{ component.name | escape }}</dt>
+          <dd class="credit-license">{{ component.license | escape }}</dd>
+          <dd>{{ component.use | escape }}</dd>
+        </div>
+        {%- endfor %}
+      </dl>
+    </details>
+    {%- endfor %}
+  </div>
 </section>

@@ -28,9 +28,34 @@ def validate_product_version() -> None:
         )
 
 
+# A page may link to other sites, but everything it loads to render comes from
+# this site: CONTRIBUTING rules out remote fonts and third-party scripts.
+# site.js reads GitHub's release API on purpose. That is data, not page markup.
+REMOTE_RESOURCE_PATTERNS = (
+    re.compile(r"@import\s+(?:url\()?\s*['\"]?(?:https?:)?//", re.IGNORECASE),
+    re.compile(r"url\(\s*['\"]?(?:https?:)?//", re.IGNORECASE),
+    re.compile(r"<(?:script|img|iframe|source|video|audio|embed)\b[^>]*\bsrc=['\"]?(?:https?:)?//", re.IGNORECASE),
+    re.compile(r"<link\b(?=[^>]*\brel=['\"]?(?:stylesheet|preload|icon|modulepreload)\b)[^>]*\bhref=['\"]?(?:https?:)?//", re.IGNORECASE),
+)
+
+
+def validate_local_resources() -> None:
+    website = REPO_ROOT / "website"
+    for path in sorted(website.rglob("*")):
+        if path.suffix not in {".html", ".css"} or not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for pattern in REMOTE_RESOURCE_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                line = text.count("\n", 0, match.start()) + 1
+                fail(f"{path.relative_to(REPO_ROOT)}:{line} loads a resource from another host")
+
+
 def main() -> int:
     try:
         validate_product_version()
+        validate_local_resources()
         return yume_docs.main([sys.argv[0], "website", "--check", "--all-languages"])
     except (ValueError, OSError) as exc:
         print(f"website catalog: {exc}", file=sys.stderr)

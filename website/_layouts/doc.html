@@ -16,15 +16,17 @@
         </nav>
       </header>
       <main class="doc-shell" id="content">
+        {%- if content contains '<h2' or content contains '<h3' %}
         <details class="doc-toc" open>
           <summary>On this page</summary>
           <nav id="doc-toc-list" aria-label="On this page"></nav>
         </details>
+        {%- endif %}
         <article class="doc-article">
           {{ content }}
         </article>
       </main>
-      {% include site-footer.html statement="Published from the YUME source tree on main." %}
+      {% include site-footer.html %}
     </div>
   </body>
 </html>

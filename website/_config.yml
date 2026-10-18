@@ -6,10 +6,10 @@ description: >-
   YUME is an open-source internet freedom tool. It carries TCP, UDP and IP
   traffic through a server you control over an encrypted connection shaped
   like a browser visiting a website.
-# Bumped whenever assets/site.css or assets/site.js changes, so returning
+# Bumped whenever assets/tokens.css, site.css or site.js changes, so returning
 # visitors are not served a cached stylesheet against new markup. One place,
 # read by _includes/head.html.
-asset_version: 18
+asset_version: 19
 
 repo_url: https://github.com/FixCraft-Inc/yume
 
@@ -21,3 +21,4 @@ kramdown:
 exclude:
   - .jekyll-cache
   - README.md
+  - DESIGN.md

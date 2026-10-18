@@ -24,25 +24,27 @@ Page titles, descriptions, catalog titles and summaries come from the same
 
 | Path | What it is |
 | --- | --- |
-| `_config.yml` | Site settings. `asset_version` is the cache buster for CSS and JS. |
-| `_data/nav.yml` | The header link list. Edit here, not in the pages. |
+| `_config.yml` | Site settings. `asset_version` is the cache buster for `tokens.css`, `site.css` and `site.js`. |
+| `_data/nav.yml` | The header and footer link lists. Edit here, not in the pages. |
 | `_data/docs.json` | Generated from document headers; edit the owning `.doc` title, summary, route and catalog fields. |
 | `_includes/` | Shared chrome: `head`, `brand`, `site-header`, `section-nav`, `site-footer`, `theme-toggle`. |
 | `_layouts/page.html` | Wrapper for the hand-written pages. |
 | `_layouts/doc.html` | Wrapper for the generated Markdown docs. |
-| `assets/tokens.css` | Generated colours from `config/palette.json`, plus authored type, spacing and motion tokens. |
+| `assets/tokens.css` | Generated colours from `config/palette.json`, plus authored font faces and type, spacing and motion tokens. |
+| `assets/fonts/` | The self-hosted Quicksand, Nunito Sans and IBM Plex Mono subsets with their SIL Open Font License texts. |
 | `assets/site.css` | Everything else. |
 | `assets/site.js` | Release metadata, hashes, theme toggle, scroll spy, doc contents. |
 | `DESIGN.md` | The locked visual and motion rules for every website route. |
 
 ## Common edits
 
-**Add or rename a header link.** Edit `_data/nav.yml`. Every page reads it.
+**Add or rename a header or footer link.** Edit `_data/nav.yml`. Every page
+reads it.
 
 **Add a page.** Create an HTML file with `layout: page` front matter and a
 `title`. Optional keys: `description`, `body_class`, `nav_current` (marks a
-header link as current), `footer_statement` (the one line that differs between
-page footers), and `section_nav` (the on-page anchor strip).
+header link as current) and `section_nav` (the on-page anchor strip). Every
+page gets the same footer.
 
 **Add a documentation page.** Create a `.doc` under `docs/src/en_US/pages/`
 with `web: yes`. Put its title, summary and optional catalog placement in that
@@ -54,9 +56,15 @@ Generate the shared palette and sync diagrams as the root
 [agent guide](../AGENTS.md#repository-and-dependency-boundaries) describes.
 The generated regions of `assets/tokens.css` are exports of that palette.
 
-**Ship a CSS or JS change.** Bump `asset_version` in `_config.yml`.
+**Ship a CSS or JS change.** Bump `asset_version` in `_config.yml`. It covers
+`tokens.css` too, which `head.html` links directly.
 
 ## Rules worth keeping
+
+The site loads nothing from another host. The three faces are Latin subsets
+from the Fontsource 5.3.0 packages, unmodified, served from `assets/fonts/`
+beside their license texts. Characters outside those subsets use the system
+faces in each font stack.
 
 The mark is an inline `path` in `_includes/brand.html`. Keep it inline to
 avoid cross-file SVG references and preserve `fill: currentColor` tinting.
@@ -93,4 +101,6 @@ sources. It is not a clean-checkout gate because the mirror is intentionally
 absent there. The base URL matches the GitHub project-page mount.
 
 Before pushing, confirm there is no horizontal scroll at 320, 375, 414, and 768
-pixels, and that the theme toggle round-trips and survives a reload.
+pixels, also with the browser's text size doubled. Check that pages read
+correctly with JavaScript off, and that the theme toggle round-trips and
+survives a reload.

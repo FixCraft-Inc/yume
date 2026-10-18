@@ -1,5 +1,5 @@
-# The site chrome reads these lists. Adding a nav entry means editing this
-# file, not four HTML pages.
+# The site chrome reads these lists: primary for the header and footer for
+# the footer. Adding a nav entry means editing this file, not each page.
 primary:
   - label: Docs
     url: /docs/
@@ -7,4 +7,18 @@ primary:
     url: /hashes/
   - label: GitHub
     url: https://github.com/FixCraft-Inc/yume
+    external: true
+footer:
+  - label: Docs
+    url: /docs/
+  - label: Hashes
+    url: /hashes/
+  - label: GitHub
+    url: https://github.com/FixCraft-Inc/yume
+    external: true
+  - label: Issues
+    url: https://github.com/FixCraft-Inc/yume/issues
+    external: true
+  - label: Discord
+    url: https://discord.gg/6d3QxXnzbV
     external: true

@@ -1,7 +1,7 @@
 <!-- Generated from docs/src/en_US/pages/readme.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME
 
-![YUME. For a freer internet.](docs/assets/readme-banner.svg)
+![YUME](docs/assets/readme-banner.svg)
 
 YUME is an internet freedom tool. It carries TCP, UDP and IP packets through
 a server you control over a connection shaped like a browser visiting an

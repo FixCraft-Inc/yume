@@ -2,7 +2,7 @@
   "name": "traffic_path",
   "type": "flow",
   "title": "Where YUME traffic goes",
-  "summary": "yume carries application traffic to yumed's front door. A valid admission proof reaches an authenticated YTP/1 session and its policy check. Anything else gets the cover website.",
+  "summary": "On a direct route, yume reaches yumed over TLS and HTTP/2. The front door serves cover requests or admits a carrier for YTP/1 authentication. Authorized streams then reach their destinations.",
   "targets": {
     "web": true
   },
@@ -28,7 +28,7 @@
       "kind": "gate",
       "title": "Front door",
       "sub": "checks the proof",
-      "note": "Answers every request without a valid admission proof from the static website, so a scanner sees an ordinary site.",
+      "note": "Serves ordinary HTTP/2 requests from the static site and promotes at most one stream per TLS connection after a fresh admission proof verifies.",
       "source": [
         "src/providers/h2_web_front_door.cpp",
         "src/providers/ytp1_h2_admission.cpp"
@@ -38,7 +38,7 @@
       "id": "session",
       "kind": "server",
       "title": "YTP/1 session",
-      "sub": "authenticated",
+      "sub": "AUTH, then records",
       "note": "Both identities are proven with Ed25519 and ML-DSA-87, and the session keys mix X25519, ML-KEM-1024, the client's access PSK and the TLS connection.",
       "source": [
         "src/engine/session_engine.cpp",
@@ -104,7 +104,7 @@
     {
       "from": "front_door",
       "to": "cover",
-      "label": "no valid proof"
+      "label": "cover request"
     }
   ]
 }

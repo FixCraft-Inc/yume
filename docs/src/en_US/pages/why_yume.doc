@@ -15,33 +15,34 @@ browser-shaped connection that carries TCP, UDP and IP packets. Its protocol,
 YTP/1, and its implementation are written for this project. Other transports
 are useful for comparison, but they do not set YUME's design or feature list.
 
-When goals conflict, YUME picks stealth first, then security, then speed. It
+When goals conflict, YUME picks security first, then stealth, then speed. It
 still has to be fast enough for everyday use, including HD video.
 
 ## What a client gets
 
 A client reaches the server through SOCKS5, a managed Linux TUN device, or the
-[C ABI](ABI.md) for named byte streams, packets and routed TCP/UDP. All of them
-share one session. The server checks each client's identity and destination
-policy before it opens anything. Administrative access needs a second, separate
-identity from the admin list. See [operations](OPERATIONS.md#client-identities-and-limits).
+[C ABI](ABI.md) for named byte streams, packets and routed TCP/UDP. Each uses
+the same native transport. The server checks each client's identity and
+destination policy before opening a destination. Operators grant services and set
+per-client limits as described in [operations](OPERATIONS.md#client-identities-and-limits).
 
 ## Security contract
 
-YTP/1 has one fixed cryptographic composition. A client identity is signed by
-both Ed25519 and ML-DSA-87. Session keys combine X25519, ML-KEM-1024, a
-per-identity pre-shared key and the TLS 1.3 exporter. The handshake transcript
-binds the suite, roles, identities, capabilities and security parameters.
+YTP/1 has one fixed cryptographic composition. Each peer authenticates its
+composite identity with Ed25519 and ML-DSA-87 signatures. Session keys combine
+X25519, ML-KEM-1024, a per-identity pre-shared key and the TLS 1.3 exporter.
+The handshake transcript binds the suite, roles, identities, capabilities and
+security parameters.
 Records use one-use AES-256-GCM keys from directional ratchets. A missing
 component or provider mismatch fails the connection. There is no fallback
 suite and no weaker mode. The [threat model](THREAT_MODEL.md) states the
 assumptions behind it.
 
-## A real website at the front door
+## Cover website
 
-`yumed` serves TLS 1.3 and HTTP/2. A request without a valid, replay-protected
-admission proof gets the configured static website. YTP records appear only
-after admission. The browser-shaped TLS and HTTP/2 geometry is a separately
+`yumed` serves ordinary HTTP/2 requests from a configured static website.
+A valid, replay-protected admission proof opens a carrier for YTP/1
+authentication. The browser-shaped TLS and HTTP/2 geometry is a separately
 versioned profile, so recapturing a newer browser does not change YTP/1.
 
 The profile comes from real browser captures, and tests compare YUME's

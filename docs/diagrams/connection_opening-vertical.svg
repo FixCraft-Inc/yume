@@ -529,7 +529,7 @@
 <path class="dgm-conduit-wall" fill="none" stroke="#d59cc4" stroke-width="1.25" stroke-linecap="round" d="M314 551.5L97 551.5"/>
 <path class="dgm-conduit-flow" fill="none" stroke="#945983" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="7 15" d="M314 556.5L97 556.5"/>
 <path class="dgm-arrow dgm-conduit-head" fill="#945983" stroke="#945983" stroke-width="1.5" stroke-linejoin="round" d="M92 552L92 561L84 556.5Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="542.5">CAPABILITIES, sealed from here</text>
+<text class="dgm-edge-label dgm-centred" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="542.5">CAPABILITIES, sealed</text>
 <path class="dgm-conduit" fill="none" stroke="#f7d9ed" stroke-width="10" stroke-linecap="round" d="M89 609.5L306 609.5"/>
 <path class="dgm-conduit-wall" fill="none" stroke="#d59cc4" stroke-width="1.25" stroke-linecap="round" d="M89 604.5L306 604.5"/>
 <path class="dgm-conduit-wall" fill="none" stroke="#d59cc4" stroke-width="1.25" stroke-linecap="round" d="M89 614.5L306 614.5"/>

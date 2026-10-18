@@ -1,9 +1,9 @@
 <!-- Generated from docs/src/en_US/pages/changelog.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Development changelog
 
-YUME has no stable release. These entries record development work, including
-withdrawn version plans and test builds. They are not support contracts. See
-[implementation status](../IMPLEMENTATION_STATUS.md) for current support.
+These entries record development changes, including withdrawn version plans
+and test builds. [Implementation status](../IMPLEMENTATION_STATUS.md) describes
+current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 

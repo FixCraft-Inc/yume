@@ -15,8 +15,7 @@ Status: normative contract for the codec in `circuit/`, the constructions in
 client builder in `runtime/circuit_node.*` and `runtime/circuit_client.*`.
 `yumed` serves circuits over its [cluster links](CLUSTER_1.md), and `yume`
 builds them for a client with a `circuits` section
-([implementation status](../IMPLEMENTATION_STATUS.md)). This page is not a
-cryptographic proof or an anonymity claim.
+([implementation status](../IMPLEMENTATION_STATUS.md)).
 
 ## Purpose
 

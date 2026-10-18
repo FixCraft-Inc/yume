@@ -1,6 +1,6 @@
 <svg class="dgm dgm-vertical" data-dgm="module_bridge-vertical" width="332" height="392" viewBox="0 0 332 392" role="img" aria-labelledby="dgm-module_bridge-vertical-title dgm-module_bridge-vertical-desc" style="--dgm-dur:2.2s" xmlns="http://www.w3.org/2000/svg">
 <title id="dgm-module_bridge-vertical-title">An authorized stream reaches a module program</title>
-<desc id="dgm-module_bridge-vertical-desc">yumed authorizes the OPEN and connects to the module&#x27;s socket, which a service manager owns. The module runs as a user of its own.</desc>
+<desc id="dgm-module_bridge-vertical-desc">yumed authorizes the OPEN and connects to the module&#x27;s UNIX socket. Packaged systemd units run the module under a separate dynamic user.</desc>
 <style>
 .dgm {
   --dgm-plate: var(--color-paper, #f7f2f5);

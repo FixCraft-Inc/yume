@@ -30,7 +30,7 @@ Page titles, descriptions, catalog titles and summaries come from the same
 | `_includes/` | Shared chrome: `head`, `brand`, `site-header`, `section-nav`, `site-footer`, `theme-toggle`. |
 | `_layouts/page.html` | Wrapper for the hand-written pages. |
 | `_layouts/doc.html` | Wrapper for the generated Markdown docs. |
-| `assets/tokens.css` | Colour, type, spacing, and motion tokens for both themes. |
+| `assets/tokens.css` | Generated colours from `config/palette.json`, plus authored type, spacing and motion tokens. |
 | `assets/site.css` | Everything else. |
 | `assets/site.js` | Release metadata, hashes, theme toggle, scroll spy, doc contents. |
 | `DESIGN.md` | The locked visual and motion rules for every website route. |
@@ -49,10 +49,10 @@ with `web: yes`. Put its title, summary and optional catalog placement in that
 header and run the unified sync. Existing output paths and explicit
 `web-path` values preserve incoming links.
 
-**Change a colour.** Edit `assets/tokens.css`. Light values sit on `:root` and
-the dark palette is defined once in the `--dark-*` block and mapped onto the same
-names. Both a `prefers-color-scheme` query and a `[data-theme]` selector do the
-mapping, so a manual toggle wins in both directions.
+**Change a colour.** Edit `config/palette.json` at the repository root.
+Generate the shared palette and sync diagrams as the root
+[agent guide](../AGENTS.md#repository-and-dependency-boundaries) describes.
+The generated regions of `assets/tokens.css` are exports of that palette.
 
 **Ship a CSS or JS change.** Bump `asset_version` in `_config.yml`.
 
@@ -73,8 +73,9 @@ Colour identity is the boundary against BaseFWX. YUME is plum at OKLCH hue 337
 to 341 with generous rounding. BaseFWX is violet at hue 305 to 306 with
 near-square corners. Keep the two apart.
 
-Do not invent numbers or soften the status language. The page says the software
-is experimental because it is.
+Use the [authoring guide](../docs/src/README.md#writing-and-review) for prose.
+Keep support and qualification claims aligned with
+[implementation status](../docs/IMPLEMENTATION_STATUS.md).
 
 ## Working on it locally
 

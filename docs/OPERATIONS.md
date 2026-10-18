@@ -1,10 +1,10 @@
 <!-- Generated from docs/src/en_US/pages/operations.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME operations
 
-This page covers running `yume` and `yumed` after a first local connection
-from the [quick start](QUICKSTART.md). Neither is qualified for production
-yet. Read [implementation status](IMPLEMENTATION_STATUS.md) before exposing a
-server.
+This page covers provisioning, deployment and maintenance after the first
+local connection in the [quick start](QUICKSTART.md).
+[Implementation status](IMPLEMENTATION_STATUS.md) lists the qualification
+still needed for an installed service and public release.
 
 ## Provision a kit
 
@@ -284,9 +284,15 @@ sha256sum -c SHA256SUMS.txt
 gpg --verify yumed-amd64-linux.sig yumed-amd64-linux
 ```
 
-Treat a missing SHA-256 as a release defect. Before a stable release, the
-signatures, and signed commit and tag verification, must become mandatory
-rather than skipped when no key is configured.
+The current workflow generates the manifest before signing and replaces
+same-name release assets. Stable publication requires trusted commit/tag
+verification, mandatory artifact signatures and immutable assets. Finalize
+the manifest after artifact signatures exist, then sign the manifest itself.
+Missing checksums or required signatures must stop publication.
+
+The workflow still requires `independent_security_review` to publish. Remove
+that obsolete check to match the
+[release criteria](IMPLEMENTATION_STATUS.md#freeze-gates).
 
 ## Public endpoints
 

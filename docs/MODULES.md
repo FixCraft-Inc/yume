@@ -130,8 +130,8 @@ refuses the stream, and one module receives at most 1024 connections at once.
 
 - **Client**: Opens a configured byte-stream service without a destination, for example through a local forward or the C ABI. ([`src/runtime/native_forward.cpp`](../src/runtime/native_forward.cpp), [`src/abi/native_backend.cpp`](../src/abi/native_backend.cpp))
 - **yumed**: Checks the authenticated identity's service grant before handing the stream to its module adapter. ([`src/runtime/native_endpoint.cpp`](../src/runtime/native_endpoint.cpp), [`src/runtime/native_credentials.cpp`](../src/runtime/native_credentials.cpp))
-- **Module bridge**: Connects to the module's socket, which only the daemon's user can reach, and writes the version, identity and service header before the stream bytes. It preserves both half-closes. ([`src/runtime/module_connector.cpp`](../src/runtime/module_connector.cpp))
-- **Module program**: Accepts the connection and serves it without linking YUME. systemd runs it as a user of its own with the socket as descriptor 3, so it cannot read the daemon's credential files. ([`src/modules/echo/echo_module.cpp`](../src/modules/echo/echo_module.cpp))
+- **Module bridge**: Connects to the configured UNIX socket and writes the version, identity and service header before the stream bytes. It preserves both half-closes. ([`src/runtime/module_connector.cpp`](../src/runtime/module_connector.cpp))
+- **Module program**: The packaged systemd units give the module descriptor 3 and a separate dynamic user, with access to the daemon's credential directories blocked. The program serves streams without linking YUME. ([`src/modules/echo/echo_module.cpp`](../src/modules/echo/echo_module.cpp), [`debian`](../debian))
 
 </details>
 

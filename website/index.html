@@ -26,8 +26,9 @@ section_nav:
     <h1>YUME <small>Stealth transport, built for embedding.</small></h1>
     <p>
       YUME carries TCP, UDP and IP packets inside one connection shaped like
-      Chrome loading a website. Anyone without the key gets an ordinary site.
-      Clients with it get a post-quantum authenticated tunnel. The same engine
+      Chrome loading a website. Its HTTP/2 front door serves a cover site and
+      admits clients with a fresh proof. Client and server then authenticate
+      with post-quantum signatures before using the tunnel. The same engine
       runs as the <code>yume</code> client, the <code>yumed</code> server and a
       C library for other programs.
     </p>
@@ -75,15 +76,15 @@ section_nav:
   <div class="release-strip" aria-label="Transport at a glance">
     <div class="release-stat">
       <strong>Browser masquerade</strong>
-      <span>Chrome's TLS hello, HTTP/2 and WebSocket, with a real cover site for anyone without the key</span>
+      <span>Chrome's TLS hello, HTTP/2 and WebSocket, with a static cover site on the same listener</span>
     </div>
     <div class="release-stat">
       <strong>Post-quantum security</strong>
-      <span>ML-KEM-1024 with X25519, Ed25519 with ML-DSA-87, and a fresh AES-256-GCM key for every record</span>
+      <span>ML-KEM-1024 with X25519, Ed25519 with ML-DSA-87, and a fresh AES-256-GCM key for every data record</span>
     </div>
     <div class="release-stat">
       <strong>Fast</strong>
-      <span>Keys rotate mid-transfer without pausing it, and the <code>balanced</code> preset kept about 95 % of plain TCP speed in emulator runs</span>
+      <span>Epoch rotation starts before the current epoch fills. The <code>balanced</code> preset kept about 95 % of plain TCP speed in emulator runs.</span>
     </div>
     <div class="release-stat">
       <strong>Built to embed</strong>
@@ -95,9 +96,9 @@ section_nav:
 <section id="how" data-reveal="drift">
   <h2 class="section-title">How it works</h2>
   <p class="section-lead">
-    Every byte is sealed by YTP/1 first, then wrapped in the same layers a
-    browser uses. A watcher sees an HTTPS visit. The server sees an
-    authenticated client.
+    Application data is sealed by YTP/1, then wrapped in WebSocket, HTTP/2
+    and TLS. The opening follows a captured Chrome visit. Admission,
+    authentication and service policy determine which traffic can pass.
   </p>
   <!-- Both figures are generated from docs/diagrams/*.json. Edit the JSON,
        never the included SVG or key, then run the sync in docs/src/README.md. -->
@@ -251,7 +252,7 @@ section_nav:
         </tr>
         <tr>
           <td>Record layer</td>
-          <td>One-use directional AES-256-GCM keys. A direction rekeys after 1 MiB, 512 records, or 500 ms checked on the next send. Streams and the connection have credit, and allocation limits apply before attacker-controlled work.</td>
+          <td>One-use directional AES-256-GCM keys. The default epoch allows 1 MiB or 512 records, with a 500 ms send lifetime. Peers can agree on a larger epoch. Rotation starts halfway to a limit. Data waits if that limit is reached before confirmation. Streams and the connection have credit and bounded allocations.</td>
         </tr>
         <tr>
           <td>Policy surface</td>
@@ -263,7 +264,7 @@ section_nav:
         </tr>
         <tr>
           <td>Admission and cover</td>
-          <td>An exporter-bound, replay-protected HMAC proof promotes a connection. A missing or invalid proof gets the static cover site and no YUME-shaped response.</td>
+          <td>An exporter-bound, replay-protected HMAC proof promotes one HTTP/2 stream to a carrier. Requests that fail admission stay in cover handling: GET and HEAD serve static routes, other methods get a fixed 405. TLS and resource refusals are described in the <a href="{{ '/docs/STEALTH/#admission-and-failure-behavior' | relative_url }}">stealth reference</a>.</td>
         </tr>
       </tbody>
     </table>

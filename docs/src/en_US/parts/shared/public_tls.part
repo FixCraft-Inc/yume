@@ -1,0 +1,6 @@
+Ordinary cover uses HTTP/2 over TLS 1.2 or TLS 1.3. HTTP/1.1-only ALPN
+offers fail the TLS handshake. A connection without ALPN completes TLS,
+receives the Node reference's fixed 239-byte HTTP/1.0 403 response and closes.
+
+YTP/1 promotion requires TLS 1.3, HTTP/2 and valid exporter-bound admission,
+and occurs at most once per TLS connection.

@@ -54,7 +54,7 @@
   },
   {
     "title": "YTP/1 threat model",
-    "summary": "Attackers, operators, endpoints and metadata: what YUME protects and what it does not.",
+    "summary": "Session protection, endpoint trust, metadata visibility and resource bounds.",
     "url": "/docs/THREAT_MODEL/",
     "source": "docs/THREAT_MODEL.md",
     "landing_group": "Security and transport",

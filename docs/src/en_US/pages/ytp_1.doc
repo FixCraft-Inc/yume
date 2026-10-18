@@ -10,10 +10,8 @@ catalog-group: Security and transport
 catalog-home: Internals and status
 catalog-order: 150
 ---
-Status: normative development contract for the implemented dependency-pure
-YTP/1 kernel, session engine, native providers, and internal native endpoint.
-YUME is `0.3.0-dev1` development software; this document is not a
-production-readiness, cryptographic-proof, or interoperability claim.
+This is the normative development contract for the YTP/1 kernel, session
+engine, native providers and internal native endpoint.
 
 The authority for this contract is `src/ytp/`,
 `src/engine/session_engine.*`, `src/runtime/native_endpoint.*`, and the
@@ -23,8 +21,7 @@ provider sources `openssl_security_provider.*`, `ytp1_crypto.*`,
 together with their focused tests and the checked-in kernel vectors.
 Source and executable tests outrank this document if they disagree.
 
-This contract remains narrower than a complete transport product. The kernel
-implements canonical encodings, structural validation, bounds, stream rules,
+The kernel implements canonical encodings, structural validation, bounds, stream rules,
 fixed suite metadata, domains, and key-schedule input encoding. The session
 engine implements the authenticated record lifecycle and multiplexing over a
 carrier. Native providers implement the fixed hybrid handshake, a memory-BIO
@@ -40,7 +37,7 @@ The experimental schema-1 C ABI backend carries named streams, named packets
 and routed TCP/UDP requests, while refusing adapter declarations.
 Development `yumed` and `yume` processes compose direct routes, SOCKS5 CONNECT
 and UDP ASSOCIATE, forwards, server modules and managed Linux TUN.
-Production qualification remains open, as listed below.
+Qualification is tracked in [implementation status](../IMPLEMENTATION_STATUS.md).
 
 ## Conventions and compatibility
 
@@ -849,29 +846,13 @@ real TCP/TLS/H2, AUTH, OPEN refusal followed by acceptance, data, rekey,
 half-close and final ownership drain. This is an internal runtime seam; its
 tests do not establish production qualification.
 
-Not implemented or not qualified as a production YTP/1 path:
-
-- production qualification of `yume`, `yumed` and the experimental ABI
-  backend;
-- application-service ports beyond the native SOCKS, managed TUN and ABI
-  stream/packet paths;
-- complete deterministic asymmetric AUTH/rekey interoperability with an
-  independent peer; published construction vectors cover the deterministic
-  transcript, schedule, record and rekey calculations;
-- production resource-exhaustion and complete adapter lifecycle qualification;
-  and
-- production runtime, interoperability, fuzz, soak, sanitizer, active-probe,
-  performance, or independent security-review qualification.
-
 The native endpoint and its providers are internal C++ components. The native
 executables are installed by default; the experimental C SDK has a separate
 installation opt-in. Enabling the native programs or the shared ABI builds
 the complete native provider graph. The relay module, the GUI and other
 product-specific surfaces are not part of YTP/1.
 
-`yume` and `yumed` run on this contract. Remaining adapters, independent peer
-interoperability and production qualification are open.
-The fixed composition is an experimental candidate, not a production security
-claim. It is not an
-independent security proof, audit, post-quantum-security certification,
-anonymity claim, or production support statement.
+Published construction vectors cover deterministic transcript, key-schedule,
+record and rekey calculations. Complete AUTH/rekey interoperability with an
+independent peer remains open. The [status page](../IMPLEMENTATION_STATUS.md)
+owns the remaining runtime and release qualification.

@@ -16,7 +16,7 @@ the circuit service around `runtime/circuit_node.*` and the client's
 circuits in `runtime/circuit_pool.*`, which `yume-setup`'s cluster commands
 write for. Servers know and authenticate each other, their links carry
 [circuits](CIRCUIT_1.md), and `yume` builds them for a client with a
-`circuits` section. This page is not a cryptographic proof.
+`circuits` section.
 
 ## Purpose
 

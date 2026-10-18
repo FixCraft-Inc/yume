@@ -93,7 +93,7 @@ A server names seven:
 | --- | --- |
 | `composite_key` | The server's composite private key |
 | `authorized_keys` | The client identities allowed traffic, each with its access PSK, granted services and optional `max_sessions` and `weight` |
-| `admin_keys` | The identities allowed administration, a different file from `authorized_keys`, so one edit cannot give a traffic identity the second factor |
+| `admin_keys` | Reserved second-factor identities in a separate store from `authorized_keys`. The second-factor AUTH exchange is planned; this store grants no traffic |
 | `tls_certificate`, `tls_key` | The TLS certificate chain and its private key |
 | `admission_key` | The 32-byte admission key |
 | `mlkem_key` | The server's ML-KEM-1024 private key |
@@ -258,9 +258,10 @@ stealth-16`, or set one expert value with `--set max_epoch_bytes=2097152`.
 The latter accepts any schema-valid value of the four tuning keys. Both
 validate the entire original and resulting configuration, then atomically
 replace the file while preserving other members. Restart the client to apply
-it. The command neither changes the server nor promises the selected epoch:
-compare it with the connected session's `posture.limits` to see the negotiated
-cap. See `yume-setup(1)` for file handling and failure behavior.
+it. The command changes the client's allowance. While connected,
+`posture.epoch_bytes` reports the negotiated epoch, and `posture.limits`
+reports the client's configured limits. See `yume-setup(1)` for file handling
+and failure behavior.
 
 One emulator run on one host measured these rates for a single download, in
 Mbit/s at 40, 100 and 200 ms round trips without loss, each preset with its

@@ -12,8 +12,7 @@ catalog-order: 157
 ---
 Status: normative contract for `runtime/sealed_kit.*`, which `yume
 --seal-kit`, `yume --import-kit` and the C ABI's `yume_kit_open` use. It
-needs only the core's OpenSSL 3.5 primitives and no BaseFWX. This page is
-not a cryptographic proof.
+uses the core's OpenSSL 3.5 primitives.
 
 ## Purpose
 

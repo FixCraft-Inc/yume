@@ -140,16 +140,14 @@ approves the shorter length in advance.
 .SH OPTIONS
 .TP
 .BI "--config " path
-Read exactly one schema-1 JSON configuration.
+Read one schema-1 JSON configuration.
 Its role must match the program: client for
 .BR yume ,
 server for
 .BR yumed .
-Required unless
-.B --help
-or
-.B --version
-is requested.
+Required for endpoint startup,
+.B --validate
+and control requests.
 Security policy has no command-line overrides.
 .TP
 .B --validate

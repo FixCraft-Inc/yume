@@ -62,18 +62,20 @@ besides **--config**.
 
 ## CLUSTER
 
-A server's **cluster** object names five files: **operator_key**, the
-operator's composite public key, **list**, the cluster list, **signature**,
-its composite signature, **peers**, the peer store, and **state**, where the
-daemon saves the highest list serial it has loaded. The list names at
+A server's **cluster** object names seven files: **operator_key**, the
+operator's composite public key, **list** and **signature**, the signed server
+list, **routes** and **routes_signature**, the signed client routes view,
+**peers**, the peer store, and **state**, where the daemon saves the highest
+list serial it has loaded. The list names at
 most 64 servers with their addresses and public keys, and the operator signs
 it with a key that stays off the servers. The daemon refuses to start with a
 list whose signature does not verify, whose **not_after** has passed or that
 does not name the daemon itself. The peer store gives each peer an outbound
 PSK, an inbound PSK and the peer's admission key. Every PSK differs from
 every other PSK, admission key and client PSK, and a peer is never also a
-client or administrator. All five files are owner-only like the other
-credential files. The daemon creates and replaces **state** itself, so its
+client or administrator. The routes view must verify under the same operator
+key and match the list's header and nodes. All seven files are owner-only
+like the other credential files. The daemon creates and replaces **state** itself, so its
 directory must exist and be writable by the daemon, for example
 **/var/lib/yume/cluster-state.json** under the packaged unit, whose
 **/etc/yume** is read-only. It refuses a list with a lower serial than the
@@ -96,10 +98,9 @@ sessions until a reload loads a newer list.
 
 The daemon loads an operator-provided static site with explicit index and
 not-found files. It has no built-in fallback site or reverse-proxy backend.
-Ordinary cover requests use HTTP/2 over TLS 1.2 or TLS 1.3. HTTP/1.1 and
-connections without ALPN are refused before serving HTTP.
-YTP/1 promotion requires TLS 1.3, HTTP/2 and authenticated admission bound to
-the connection's TLS exporter. Failed admission remains cover traffic.
+Failed admission remains cover traffic.
+
+@include shared/public_tls.part
 
 ## MODULE STREAMS
 

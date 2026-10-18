@@ -12,7 +12,7 @@ together.
 | Admission | The keyed, replay-protected check a tunnel request passes before YUME authentication starts. Failures stay on the cover path. |
 | AEAD | Authenticated encryption with associated data: encryption that also detects tampering. YUME uses AES-256-GCM. |
 | ClientHello | The first TLS message. Its structure can fingerprint a TLS implementation, but does not prove which software sent it. |
-| Cover site | The ordinary website a visitor without admission sees. YUME has no built-in cover page, so the operator configures one. |
+| Cover site | The operator's static website, served for ordinary HTTP/2 GET and HEAD requests on the public listener. |
 | Epoch | A span of message keys from one root. Rekeying starts the next epoch with fresh key material. |
 | Exporter | A value both ends derive from one TLS connection, used to bind YUME's keys to that connection. |
 | Extended CONNECT | The HTTP/2 way to open a WebSocket, defined in RFC 8441. |

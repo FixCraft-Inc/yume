@@ -4,7 +4,6 @@
 Status: normative contract for the relay channel library in
 `src/modules/relay`, which builds only with `YUME_BUILD_BASEFWX_MODULES=ON`.
 No shipped program speaks it yet. The planned chat and file modules will.
-This page is not a cryptographic proof or a production-readiness claim.
 
 A relay channel protects traffic between two YUME users whose bytes a server
 relays. The server sees the handshake records, which carry both identities and

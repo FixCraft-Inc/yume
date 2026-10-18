@@ -2,7 +2,7 @@
   "name": "trust_boundary",
   "type": "flow",
   "title": "Where application encryption ends",
-  "summary": "YUME protection ends at yumed. Application HTTPS can continue through it to the origin. An outside observer still sees the tunnel endpoint and encrypted sizes and timing.",
+  "summary": "For a direct session, YUME protection ends at yumed. Application HTTPS continues to the origin. A path observer still sees the endpoint, encrypted sizes and timing.",
   "targets": {
     "web": true
   },
@@ -44,7 +44,7 @@
       "kind": "target",
       "title": "Origin",
       "sub": "HTTPS ends here",
-      "note": "Authenticates the application connection and decrypts its HTTPS content. It sees the exit server's address.",
+      "note": "Terminates HTTPS and decrypts the request. It sees the exit server's address.",
       "source": [
         "docs/THREAT_MODEL.md"
       ]

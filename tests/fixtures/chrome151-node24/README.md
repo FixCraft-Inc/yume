@@ -1,9 +1,7 @@
 # Chrome 151 / Node 24 reference fixture
 
-This is YUME's single evidence-backed cover identity, transport profile
-`chrome151-node24-v1`, shared by the transport-v2 runtime and the YTP/1
-development suite. Five fresh,
-normal (non-headless) Google Chrome `151.0.7922.71` profiles were captured on
+This fixture defines the `chrome151-node24-v1` cover identity used by native
+YTP/1. Five fresh, normal (non-headless) Google Chrome `151.0.7922.71` profiles were captured on
 Debian 13 against `tools/cover-node/server.mjs` under official Node
 `24.18.0`.
 
@@ -69,12 +67,10 @@ and TLS record lengths. It accepts Chrome's measured middle-extension shuffle
 and GREASE-ECH length distribution, while rejecting a helper that emits one
 stable order or size marker.
 
-`helper_tls_wire_run_1.json` through `helper_tls_wire_run_5.json` are sanitized
-first flights from five complete authenticated YUME flows using the pinned
-uTLS helper and the same local certificate/ALPN conditions. The gate reports
-`PARITY` for the Chrome ClientHello structural distribution and direct-Node
-ServerHello structure: five distinct middle orders, three measured GREASE-ECH
-lengths, and no stable helper marker. The five full normal-Chrome NetLog runs
-predate relay integration, so a fresh same-session Chrome NetLog plus wire
-recapture remains a release evidence-quality gate; it is not a known helper
-wire drift.
+`helper_tls_wire_run_1.json` through `helper_tls_wire_run_5.json` retain
+historical first flights from five authenticated flows through the former
+uTLS helper. That comparison reported `PARITY`: five middle-extension orders,
+three GREASE-ECH lengths and matching direct-Node ServerHello structure.
+The helper has been removed. These files preserve that comparison's
+provenance; current native OpenSSL evidence and remaining capture work are
+described in [the stealth reference](../../../docs/STEALTH.md#native-tls-evidence).

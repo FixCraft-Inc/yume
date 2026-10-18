@@ -120,10 +120,14 @@ The native `H2WebFrontDoor` implements this boundary with a native TCP listener
 and `AsioTcpAcceptedChannelOwner`. Its configured immutable static site loads
 through `runtime::FileRoot`, requires an index and explicit not-found file,
 and serves ordinary and rejected-admission requests from the same content.
-The public TLS connection supports TLS 1.2/1.3 H2 cover and refuses HTTP/1.1
-and no-ALPN clients before serving HTTP. Its separate promotion operation
-publishes strict TLS 1.3/H2 provenance only after admission.
 SNI and exporter bytes come from the accepted SSL connection.
+
+Ordinary cover uses HTTP/2 over TLS 1.2 or TLS 1.3. HTTP/1.1-only ALPN
+offers fail the TLS handshake. A connection without ALPN completes TLS,
+receives the Node reference's fixed 239-byte HTTP/1.0 403 response and closes.
+
+YTP/1 promotion requires TLS 1.3, HTTP/2 and valid exporter-bound admission,
+and occurs at most once per TLS connection.
 
 Promotion transfers the same TLS/BIO and H2 parser state after cover output
 and the connection timer have drained. The carrier retains the accepted TCP
@@ -490,15 +494,6 @@ containers to the module libraries only. It is a separate ignored checkout
 pinned by `config/dependencies.json`. The [source map](SOURCE_MAP.md#authentication-and-cryptographic-ownership)
 connects each mechanism to its implementation and explains the data path.
 
-The intended primary transport does not require BaseFWX. Any retained BaseFWX
-integration belongs to optional file encryption or file-format support outside
-the live-traffic core. Dependency removal must preserve required authentication,
-ratchet/rekey, post-quantum, secret-lifetime and relay/hop security properties
-through tested reuse or ports. Keeping those properties does not require the
-same primitive library: native YTP obtains its post-quantum algorithms from
-OpenSSL 3.5. Its direct-session implementation does not establish completion of
-the relay/hop migration.
-
 ## Public ABI boundary
 
 The explicitly enabled candidate builds as unversioned
@@ -583,10 +578,9 @@ instead carry its streams through a [circuit](protocol/CIRCUIT_1.md) of two or
 three servers of one operator's [cluster](protocol/CLUSTER_1.md), where the
 entry knows the client but not the destinations and the exit knows the
 destinations but not the client. The operator runs every server of a cluster
-and can match what they see. Circuits across operators, a decentralized
-directory, reverse administration, command execution and host-controller
-modes do not exist. Chat and file relay are planned as modules on the relay
-channel library.
+and can match what they see. Circuits across operators and a decentralized
+directory are planned. Chat and file relay are planned as modules on the
+relay channel library.
 
 See [YTP/1](protocol/YTP_1.md), [C ABI](ABI.md), and the
 [threat model](THREAT_MODEL.md) for the normative boundaries.

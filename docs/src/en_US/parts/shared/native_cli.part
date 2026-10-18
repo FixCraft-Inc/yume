@@ -4,10 +4,10 @@
 @cli spell: --config <path>
 @cli help: Read a schema-1 configuration
 
-Read exactly one schema-1 JSON configuration. Its role must match the
-program: client for **yume**, server for **yumed**. Required unless
-**--help** or **--version** is requested. Security policy has no
-command-line overrides.
+Read one schema-1 JSON configuration. Its role must match the program:
+client for **yume**, server for **yumed**. Required for endpoint startup,
+**--validate** and control requests. Security policy has no command-line
+overrides.
 @opt **--validate**
 @cli spell: --validate
 @cli help: Check local configuration and credentials, then exit

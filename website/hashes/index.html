@@ -34,7 +34,7 @@ footer_statement: Release files are useful only when their origin is verifiable.
       </div>
     </div>
     <div class="panel-foot">
-      <a class="btn secondary" href="{{ '/' | relative_url }}#status">Why there is no release</a>
+      <a class="btn secondary" href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}">Implementation status</a>
     </div>
   </div>
 </section>
@@ -42,8 +42,8 @@ footer_statement: Release files are useful only when their origin is verifiable.
 <section id="linux">
   <h2 class="section-title">Linux x86-64</h2>
   <p class="section-lead">
-    These two artifacts are the expected first stable CLI release surface. Anything else claiming to be a
-    YUME build did not come from this workflow.
+    The release workflow produces these two Linux artifacts, plus their checksums,
+    signatures when configured, and a release manifest.
   </p>
   <div class="table-scroll">
     <table class="artifact-table hash-manifest-table">
@@ -99,8 +99,8 @@ footer_statement: Release files are useful only when their origin is verifiable.
       </div>
     </div>
     <div class="card">
-      <h3>No MD5</h3>
-      <p>MD5 sidecars are not produced. A page or mirror offering YUME MD5 sums is not reproducing this release workflow.</p>
+      <h3>SHA-256</h3>
+      <p>Use the SHA-256 sidecars or aggregate list to check file integrity, and verify signatures to authenticate their origin.</p>
     </div>
   </div>
 </section>

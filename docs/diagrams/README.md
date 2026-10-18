@@ -47,8 +47,10 @@ copy is ignored and rebuilt by `scripts/sync_website_docs.sh`.
 
 ## How a figure is styled
 
-The SVG paints and animates itself. Colors and fonts are derived from `website/assets/tokens.css`. Each color
-reads its website token first and falls back to a generated sRGB value:
+The SVG paints and animates itself. `config/palette.json` owns the colours;
+`website/assets/tokens.css` exports them and declares the fonts. The SVG renderer
+reads those tokens. Each colour reads its website token first and falls back
+to a generated sRGB value:
 
 ```css
 fill: var(--color-cloud, #fffcfe);
@@ -138,7 +140,7 @@ field and package diagrams.
 | `name` | matches the file name, lowercase with underscores |
 | `type` | `route` (an ordered chain), `flow` (a chain whose nodes may branch to side nodes), `layers` (one wrapping, innermost first), or `sequence` (messages between parties, in order) |
 | `title` | the accessible name of the figure |
-| `summary` | one sentence, used as the SVG description and the web caption |
+| `summary` | plain caption, used as the SVG description and the web caption |
 | `comment` | optional notes for maintainers, never rendered |
 | `width` | optional SVG card tier, `34` or `72`, otherwise picked from the longest label |
 | `indent` | optional leading spaces for a nested Markdown block |
@@ -223,8 +225,8 @@ drift.
 ### Reading and editing a figure
 
 ```bash
-scripts/yume_diagrams.py render yume_connection          # ASCII
-scripts/yume_diagrams.py render yume_connection --key    # the key of notes
+scripts/yume_diagrams.py render direct_route             # ASCII
+scripts/yume_diagrams.py render direct_route --key       # the key of notes
 python3 scripts/yume_docs.py sync --all-languages         # every layer
 ```
 
@@ -285,11 +287,12 @@ which documents already point at, and another language writes
 `docs/diagrams/<language>/*.svg`. `scripts/yume_diagrams.py svg --language
 <lang>` renders them.
 
-A translated label is measured the same way a source label is. One that no
-longer fits its box is rejected, because a translation can break a drawing
-just as easily as a source string can. The ASCII form sizes each box to the
-longest label in that language, so a figure that says less in one language is
-drawn narrower there.
+The validator checks character counts against card tiers, and the renderer
+estimates widths from those counts without font metrics. The ASCII form also
+counts characters, rather than terminal display columns. Review translated
+SVGs in a browser with the intended fonts, and check terminal output for wide
+glyphs before publication. Passing generation alone does not establish that a
+translation fits.
 
 ## Rules
 

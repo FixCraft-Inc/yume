@@ -2,13 +2,13 @@
 name: changelog
 kind: page
 title: Development changelog
-summary: Development changes and withdrawn version plans; not a stable-release support contract.
+summary: Development changes and withdrawn version plans.
 markdown: docs/release/CHANGELOG.md
 web: yes
 ---
-YUME has no stable release. These entries record development work, including
-withdrawn version plans and test builds. They are not support contracts. See
-[implementation status](../IMPLEMENTATION_STATUS.md) for current support.
+These entries record development changes, including withdrawn version plans
+and test builds. [Implementation status](../IMPLEMENTATION_STATUS.md) describes
+current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 

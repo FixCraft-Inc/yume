@@ -29,7 +29,7 @@
       "kind": "server",
       "title": "yumed",
       "sub": "server",
-      "note": "Its front door answers every request without a valid proof from the static site, and turns at most one stream per TLS connection into the carrier.",
+      "note": "Its front door serves ordinary HTTP/2 cover requests and turns at most one stream per TLS connection into a carrier after checking a fresh admission proof.",
       "source": [
         "src/runtime/native_server_runtime.cpp",
         "src/providers/h2_web_front_door.cpp",
@@ -89,7 +89,7 @@
     {
       "from": "yumed",
       "to": "yume",
-      "label": "CAPABILITIES, sealed from here",
+      "label": "CAPABILITIES, sealed",
       "channel": "tunnel"
     },
     {

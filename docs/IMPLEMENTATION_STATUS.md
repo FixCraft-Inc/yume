@@ -9,13 +9,10 @@ three terms deliberately:
 - **Qualified** means the exact candidate passed the complete gate for the
   named platform and environment.
 
-YUME is development software at product version `0.3.0-dev1`, with no deployed
-users or stable interface. The CMake graph composes native YTP/1 as `yume` and
-`yumed`, using schema-1 configuration. Transport v2 has been removed, and
-commit `9070b0a` is the last that contains it. Native YTP/1 is not
-production-qualified. Manuals and package definitions follow schema 1, and
-package and service qualification, the GUI and other consumers keep separate
-gates.
+YUME `0.3.0-dev1` composes native YTP/1 as `yume` and `yumed`, using schema-1
+configuration. The C ABI is an experimental interface. Release qualification
+is tracked by surface below: the native programs, SDK, installed packages and
+GUI each need evidence for their own environment.
 
 ## Current 0.3 foundation
 
@@ -83,9 +80,9 @@ Implemented and covered by focused tests:
   provenance immutable. Its client applies the shared browser profile through
   patched OpenSSL, while refusing negotiated TLS 1.2 or HTTP/1.1 before
   publication. The separate server-cover entry accepts ordinary TLS 1.2/1.3
-  H2 cover and refuses HTTP/1.1 and no-ALPN clients before serving HTTP.
-  NativeEndpoint
-  composes both paths. Full-session stealth qualification remains open.
+  H2 cover, refuses HTTP/1.1-only ALPN offers and sends a fixed HTTP/1.0 403
+  response to clients without ALPN. `NativeEndpoint` composes both paths.
+  Full-session stealth qualification remains open.
 - exporter-bound H2 admission helpers with a separate YTP domain, exact
   32-byte key, strict name/path encoding, and client-carrier proof generation.
   Shared replay reservations use monotonic expiry and refuse saturation or
@@ -120,12 +117,12 @@ Implemented and covered by focused tests:
 
 ### Ingress front door
 
-The native `H2WebFrontDoor` now implements a TCP listener over the
-accepted-channel owner, ordinary TLS 1.2/1.3 H2 cover traffic, refusing
-HTTP/1.1 and no-ALPN clients before HTTP parsing,
-and strict TLS 1.3/H2 admission promotion. Its operator-supplied immutable
+The native `H2WebFrontDoor` implements a TCP listener over the
+accepted-channel owner, ordinary TLS 1.2/1.3 H2 cover traffic and strict
+TLS 1.3/H2 admission promotion. Its operator-supplied immutable
 static site uses confined `FileRoot` reads and has no fallback content.
-Invalid, missing, replayed or saturated admission serves that configured site.
+Invalid, missing, replayed or saturated admission stays in cover handling.
+GET and HEAD serve static routes. Other methods receive the fixed 405.
 Actual received SNI and locally derived TLS exporter bytes bind verification;
 a shared bounded replay cache and permanent per-connection state allow at most
 one promotion during the TLS connection's lifetime.
@@ -605,31 +602,36 @@ policy, DNS queries through the tunnel, reconnect and shutdown cleanup. The
 regular TUN test still exercises DNS-free configurations. Service deployment
 and managed TUN DNS have separate lifetime and privilege boundaries.
 
-## Not yet implemented end to end
+## Remaining qualification and integration
 
-The following required 0.3 paths are still open in this development tree and
-must not be advertised as working:
+These qualification and integration tasks remain open:
 
 - complete-session qualification of the native FrontDoor, including external
   comparison of ordinary and rejected-admission cover behavior;
 - production qualification of `yume`, `yumed` and the experimental schema-1
   ABI backend;
-- comprehensive real-carrier rekey, close-ordering and credit/backpressure
+- extended real-carrier rekey, close-ordering and credit/backpressure
   qualification beyond the focused native-session regressions;
 - acceptance evidence for automatic directional root rotation and competing-stream
   scheduling, including stalled readers, cancellation and real-carrier pressure;
 - production qualification of module adapters and managed TUN;
-- circuits beyond their first test: a held-out classifier comparison of client
-  sessions and node links (one baseline capture exists), a soak, a cross-host
-  run with emulated delay per hop, exit windows that grow for what a client
-  sends, UDP and IP packets over circuits, a consent interface in the C ABI,
-  and decentralized server lists;
+- circuits: held-out classifier comparisons of client sessions and node links,
+  sustained cross-host loss and latency testing, upload window growth at the
+  exit, UDP and IP carriage, and a consent interface in the C ABI;
 - complete installed-SDK qualification across the supported build/toolchain matrix;
 - installed package/service, including the module units' user and sandbox,
   and remaining consumer migration around native `yume` and `yumed`, and a
   qualified setup-to-first-SOCKS path over a real network;
-- external active-probe, classifier, performance, soak, fuzz, sanitizer, and
-  security-review gates.
+- release publication controls: remove the obsolete independent-review check
+  and require trusted commit/tag verification, signatures, manifest/signature
+  consistency and immutable assets, as
+  [operations](OPERATIONS.md#release-verification) describes;
+- complete-session active-probe, classifier, performance, soak, fuzz and
+  sanitizer qualification.
+
+Across-operator transit and decentralized discovery are later design work.
+
+### Existing integration coverage
 
 Native CTest registration includes the schema-1 setup and doctor negative
 cases, a sweep of one allocation failure across key generation, `init`,
@@ -701,10 +703,10 @@ cover the matching record and resource contracts. Native endpoint integration
 connects the live TLS exporter, carrier and session security. Published
 synthetic construction vectors check deterministic transcript, key schedule,
 record protection and rekey calculations against an independent generator.
-Complete asymmetric peer interoperability, broader qualification and
-independent review remain open. Existing tests are not a product security
-guarantee, independent proof, audit or certification. The ratchet is described
-only as post-compromise-oriented.
+Independent-peer interoperability, broader qualification and an independent
+security review remain open. Review is planned alongside development and is
+not a release prerequisite. Ratchet recovery depends on fresh uncompromised
+contributions and erasure, as the [threat model](THREAT_MODEL.md) describes.
 
 ## Ingress evidence boundary
 
@@ -717,8 +719,9 @@ insufficient.
 
 ## Performance boundary
 
-No 0.3 performance claim exists. Throughput tuning has matched measurements
-of carrier buffering and event-loop scaling on loopback and emulated paths.
+Throughput tuning has matched measurements of carrier buffering and event-loop
+scaling on loopback and emulated paths, including the preset measurements in
+the [configuration reference](CONFIGURATION.md#tuning-presets).
 Those measurements do not establish real-path speed, latency, or fairness.
 A comparison must report its connection geometry: YUME multiplexes streams
 inside one session, while an unmultiplexed reference uses a connection per
@@ -741,9 +744,7 @@ Before `0.3.0-rc1`, the exact candidate must pass:
   smoke tests;
 - immutable ingress/profile evidence and reproducible performance evidence;
 - synchronized source, tests, help, manual pages, package metadata, website,
-  declared-dependency/SBOM, and documentation drift checks;
-- an external protocol and cryptography review.
+  declared-dependency/SBOM, and documentation drift checks.
 
-Until those gates close, report only the focused evidence above and do not
-claim production readiness, browser identity, DPI resistance, anonymity,
-post-quantum security certification, or setup-to-tunnel completion.
+Record each gate against the exact candidate, platform and environment. Use
+the implemented and tested descriptions above when reporting a narrower check.

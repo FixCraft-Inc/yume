@@ -84,8 +84,8 @@ names the kit to act on.
 @cli spell: --page <page>
 @cli help: Open this page: overview, connect, logs, posture or credits
 
-Open the window on *page*: **overview**, **connect**, **logs** or
-**posture**.
+Open the window on *page*: **overview**, **connect**, **logs**, **posture** or
+**credits**.
 @opt **--theme** *theme*
 @cli values: light dark system
 @cli spell: --theme <theme>
@@ -93,7 +93,7 @@ Open the window on *page*: **overview**, **connect**, **logs** or
 
 Use **light**, **dark** or the desktop's **system** theme for this run
 instead of the one chosen in the window, which is saved in
-*$XDG_CONFIG_HOME/yume/gui.conf*. Light is the default.
+*$XDG_CONFIG_HOME/yume/gui.conf*. The default follows the desktop's theme.
 @opt **--layout-direction** *direction*
 @cli values: ltr rtl
 @cli spell: --layout-direction <direction>
@@ -180,10 +180,11 @@ Print a short usage summary.
 
 ## FILES
 
-*$XDG_CONFIG_HOME/yume/kits/*name** is a kit. *$XDG_RUNTIME_DIR/yume/*name*.sock*
-is its running client's control socket, and *$XDG_RUNTIME_DIR/yume/*name*.log*
-holds what that client printed since this GUI last started it. The runtime
-directory must be set, and *yume* in it is kept private to the user.
+*$XDG_CONFIG_HOME/yume/kits/NAME* is a kit. Its running client's control socket
+is *$XDG_RUNTIME_DIR/yume/NAME.sock*, and *$XDG_RUNTIME_DIR/yume/NAME.log* holds
+what that client printed since this GUI last started it. *NAME* is the kit's
+name. The runtime directory must be set, and *yume* in it is kept private to
+the user.
 
 ## EXIT STATUS
 

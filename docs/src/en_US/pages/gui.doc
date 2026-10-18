@@ -12,8 +12,8 @@ catalog-order: 75
 ---
 `yume-gui` is a desktop window for YUME clients on Linux. It imports sealed
 kits, starts and stops each kit's `yume`, and shows what the running client
-reports. It is optional: the client runs the same without it, and the window
-adds no capability to the tunnel. The manual is `docs/man/yume-gui.1`.
+reports. Build it with `YUME_BUILD_GUI=ON`.
+The manual is `docs/man/yume-gui.1`.
 
 ## How it relates to yume
 
@@ -40,11 +40,9 @@ program to validate, start and import kits, and `yume-setup` to apply tuning.
 - **Watch.** While a client runs, the window asks for its status every second
   and for new printed lines every 1.5 seconds.
 
-The owner chose this design on 2026-09-30 over a systemd user service. It
-works on any Linux desktop and lets every lifecycle test run without a
-service manager. The costs: a `yume` that crashes is not restarted, and
-nothing starts a tunnel at login. A packaged user unit may take over starting
-later, as its own change. A kit with a managed TUN adapter needs privileges a
+This process lifecycle works without a service manager. A `yume` that crashes
+is not restarted, and tunnels do not start at login. A packaged user unit may
+provide those features later. A kit with a managed TUN adapter needs privileges a
 user process does not have, so the window cannot start one. Run such a kit as
 a system service instead.
 

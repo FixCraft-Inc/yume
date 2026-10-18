@@ -14,7 +14,7 @@ the real connection and sends the answer back the same way.
 <summary>What each part does</summary>
 
 - **yume**: Collects traffic from applications and sends it to the server inside one long-lived connection that looks like a browser visiting a website. ([`src/runtime/native_client_runtime.cpp`](../src/runtime/native_client_runtime.cpp))
-- **Front door**: Answers every request without a valid admission proof from the static website, so a scanner sees an ordinary site. ([`src/providers/h2_web_front_door.cpp`](../src/providers/h2_web_front_door.cpp), [`src/providers/ytp1_h2_admission.cpp`](../src/providers/ytp1_h2_admission.cpp))
+- **Front door**: Serves ordinary HTTP/2 requests from the static site and promotes at most one stream per TLS connection after a fresh admission proof verifies. ([`src/providers/h2_web_front_door.cpp`](../src/providers/h2_web_front_door.cpp), [`src/providers/ytp1_h2_admission.cpp`](../src/providers/ytp1_h2_admission.cpp))
 - **YTP/1 session**: Both identities are proven with Ed25519 and ML-DSA-87, and the session keys mix X25519, ML-KEM-1024, the client's access PSK and the TLS connection. ([`src/engine/session_engine.cpp`](../src/engine/session_engine.cpp), [`src/providers/openssl_security_provider.cpp`](../src/providers/openssl_security_provider.cpp))
 - **Policy check**: Each stream names a service. yumed checks that this client may use it and that every address of the destination is allowed before it opens a socket. ([`src/runtime/native_credentials.cpp`](../src/runtime/native_credentials.cpp), [`src/runtime/native_egress_policy.cpp`](../src/runtime/native_egress_policy.cpp))
 - **Cover website**: The operator's own static site, loaded when yumed starts. There is no built-in fallback site. ([`src/providers/cover_site.cpp`](../src/providers/cover_site.cpp))
@@ -37,15 +37,15 @@ the real connection and sends the answer back the same way.
 +-----------+-----------+
             |
             v ==YUME==> TLS 1.3 + HTTP/2
-+-----------+-----------+                  +----------------+
-|  Front door           +----------------->|  Cover website |
-|  checks the proof     |  no valid proof  |  static pages  |
-+-----------+-----------+                  +----------------+
++-----------+-----------+                 +----------------+
+|  Front door           +---------------->|  Cover website |
+|  checks the proof     |  cover request  |  static pages  |
++-----------+-----------+                 +----------------+
             |
             v valid proof
 +-----------+-----------+
 |  YTP/1 session        |
-|  authenticated        |
+|  AUTH, then records   |
 +-----------+-----------+
             |
             v OPEN a stream
@@ -87,10 +87,10 @@ public keys, so the client knows exactly which server it must reach.
    then sends an extended CONNECT request carrying an admission proof. The proof is
    derived from the admission key and bound to this TLS connection, so it
    cannot be replayed on another one.
-4. `yumed` checks the proof. Anything without a valid proof, including a
-   scanner or a curious visitor, gets the static website and nothing else. A
-   valid proof turns that HTTP/2 stream into the YUME carrier. One TLS
-   connection can be promoted once.
+4. `yumed` checks the proof. Requests that fail admission stay in the cover
+   handler, which serves GET and HEAD from the static site and refuses other
+   methods. A valid proof turns that HTTP/2 stream into the YUME carrier.
+   One TLS connection can be promoted once.
 5. Inside the carrier both sides run YTP/1 authentication, described next.
 
 <!-- yume-diagram: connection_opening -->
@@ -100,7 +100,7 @@ public keys, so the client knows exactly which server it must reach.
 <summary>What each part does</summary>
 
 - **yume**: Dials the server and opens it the way the pinned Chrome release would, then proves it holds the admission key before YTP/1 starts. ([`src/runtime/native_client_runtime.cpp`](../src/runtime/native_client_runtime.cpp), [`src/providers/h2_duplex_carrier.cpp`](../src/providers/h2_duplex_carrier.cpp), [`src/stealth/h2_carrier.cpp`](../src/stealth/h2_carrier.cpp))
-- **yumed**: Its front door answers every request without a valid proof from the static site, and turns at most one stream per TLS connection into the carrier. ([`src/runtime/native_server_runtime.cpp`](../src/runtime/native_server_runtime.cpp), [`src/providers/h2_web_front_door.cpp`](../src/providers/h2_web_front_door.cpp), [`src/providers/cover_site.cpp`](../src/providers/cover_site.cpp))
+- **yumed**: Its front door serves ordinary HTTP/2 cover requests and turns at most one stream per TLS connection into a carrier after checking a fresh admission proof. ([`src/runtime/native_server_runtime.cpp`](../src/runtime/native_server_runtime.cpp), [`src/providers/h2_web_front_door.cpp`](../src/providers/h2_web_front_door.cpp), [`src/providers/cover_site.cpp`](../src/providers/cover_site.cpp))
 
 </details>
 
@@ -141,7 +141,7 @@ public keys, so the client knows exactly which server it must reach.
      |  AUTH_RESULT: accepted              |
      |<==============================YUME==|
      |                                     |
-     |  CAPABILITIES, sealed from here     |
+     |  CAPABILITIES, sealed               |
      |<==============================YUME==|
      |                                     |
      |  CAPABILITIES, sealed               |
@@ -159,16 +159,18 @@ public keys, so the client knows exactly which server it must reach.
 
 Authentication proves both identities with both signature algorithms. Key
 establishment combines X25519, ML-KEM-1024, the client's access PSK and a
-secret exported from the live TLS connection. Breaking one of these is not
-enough. The transcript binds the suite, both identities, both service lists and
-the security parameters, so neither side can be talked into a weaker setup.
+secret exported from the live TLS connection. Both signatures and every
+key-schedule input are required. The transcript binds the suite, both
+identities, both service lists and the security parameters.
 There is one suite and no negotiation or fallback.
 
-After authentication every record is sealed with AES-256-GCM under a key that
-is used once. Each direction has its own key epoch and rotates it on its own
-after one MiB of data, 512 records or 500 ms, whichever comes first. A
-rotation starts halfway to those limits, and the old key keeps sending until
-the peer confirms the new one, so rotating does not pause the connection. Both sides
+After authentication application data is sealed with AES-256-GCM under a key
+that is used once per record. Each direction has its own key epoch. At the
+default size, it rotates after one MiB of data, 512 records or 500 ms,
+whichever comes first. A rotation starts halfway to those limits.
+The old epoch carries data while
+confirmation is pending, up to its limits. Further data then waits for the
+acknowledgement; a missed acknowledgement deadline ends the session. Both sides
 may allow a larger epoch, up to 64 MiB. The session then uses the smaller
 of the two sizes, still with one record per 2 KiB, so either side can keep
 rotation at its own setting.
@@ -181,7 +183,7 @@ rotation at its own setting.
 
 - **Your data**: What the application sent: bytes of a stream, or one whole packet for UDP and TUN. ([`src/engine/session_engine.cpp`](../src/engine/session_engine.cpp))
 - **YTP/1 frame**: A 12-byte header names the record type, the stream and the payload length. Frames are what both ends of a session exchange. ([`src/ytp/protocol.hpp`](../src/ytp/protocol.hpp))
-- **Sealed record**: The frame is encrypted and authenticated with a key used for this record only, named by its direction, epoch and sequence. ([`src/providers/openssl_security_provider.cpp`](../src/providers/openssl_security_provider.cpp))
+- **Sealed record**: Each data frame has a one-use AES-256-GCM key bound to direction, epoch and sequence. The REKEY_ACK control frame instead uses a candidate-root confirmation MAC inside TLS. ([`src/providers/openssl_security_provider.cpp`](../src/providers/openssl_security_provider.cpp), [`src/engine/session_engine.cpp`](../src/engine/session_engine.cpp))
 - **Carrier envelope**: Keeps each sealed record whole across partial reads and however WebSocket splits or joins messages. ([`src/providers/h2_duplex_carrier.cpp`](../src/providers/h2_duplex_carrier.cpp))
 - **WebSocket**: The carrier speaks ordinary WebSocket, with client frames masked as a browser masks them. ([`src/stealth/websocket_codec.cpp`](../src/stealth/websocket_codec.cpp))
 - **HTTP/2**: One RFC 8441 CONNECT stream on a connection that has already loaded the cover site like a browser. ([`src/stealth/h2_carrier.cpp`](../src/stealth/h2_carrier.cpp))

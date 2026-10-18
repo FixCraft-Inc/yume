@@ -39,7 +39,8 @@ The unified sync does not silently delete retired files.
 | Website card summary and page description | `summary:` in the document |
 | Catalog grouping and order | `catalog-group:`, optional `catalog-home:`, and `catalog-order:` in the document |
 | Available catalog groups and repository-specific output policy | `docs/src/site.json` |
-| Diagram colors, diagram role colors and fonts | `website/assets/tokens.css`, from which standalone SVG values are derived |
+| Shared colors and diagram role colors | `config/palette.json`; `scripts/yume_palette.py` exports them to the apps and `website/assets/tokens.css`, which the SVG renderer reads |
+| Diagram fonts | `website/assets/tokens.css` |
 | Site navigation, landing-page copy and layout | `website/_data/nav.yml`, HTML pages and `_includes/` |
 | YUME option help and completion metadata | `@opt` and `@cli` entries in its manual sources |
 
@@ -55,8 +56,8 @@ line-count target: that multiplies the files a translator or agent must edit.
 
 The generators synchronize presentation. They cannot establish that a security
 claim agrees with executable code. Verify changed claims against source and
-focused tests. Preserve YUME's transport-v2 versus YTP/1 boundaries and
-independent versions, and BaseFWX's runtime and format compatibility limits.
+focused tests. Preserve YUME's independent product, wire, schema, ABI and
+evidence-profile versions, and BaseFWX's runtime and format compatibility limits.
 An intentional web title may clarify those boundaries; do not replace it with
 a filename-derived title.
 
@@ -66,6 +67,25 @@ and private notes are edited directly. Product documents and changelogs are
 claims with a behavior change. BaseFWX's native help is runtime code, while
 its manual and web reference share a source. The tooling does not claim to
 derive either project's parser behavior from documentation.
+
+## Writing and review
+
+Lead with the operation or fact the reader needs. Name the actor, input,
+result and relevant trust boundary. Distinguish implemented behavior,
+requirements, proposals and measured results, and link each claim to its
+owning contract or test.
+
+Keep a fact at one owner and link to it elsewhere. Remove repeated status
+caveats, generic assurances and sections that list what the project is not.
+Keep limits where they affect a reader's decision, such as who can read
+traffic or which permissions a command needs. Current qualification belongs
+in implementation status; historical behavior belongs in the changelog.
+
+Use short, complete sentences and consistent technical terms. Avoid idioms,
+rhetorical contrasts and sentence fragments that depend on adjacent UI or
+diagram text. Keep identifiers, commands, paths, protocol labels and links
+stable when editing prose. This gives translators context without making
+them reconstruct a sentence from separate pieces.
 
 ## Source format
 
@@ -172,8 +192,8 @@ flag. Every printed option must be referenced exactly once. Each layout
 generates one header of two string constants, the help text and the Bash
 completion script: `src/runtime/yume_help_text.hpp`,
 `src/runtime/yumed_help_text.hpp` and `src/gui/yume_gui_help_text.hpp`. Each
-program prints its help for `--help`, and `yume` and `yumed` print the
-completion for `--completion bash`. The native parsers support only the
+program prints its help for `--help` and its completion for
+`--completion bash`. The native parsers support only the
 options documented in these layouts. Use
 `python3 scripts/yume_cli.py render yume --layer help` to preview the help,
 and `--layer completion` for the completion script.
@@ -263,11 +283,18 @@ Run the workflow from the repository root:
 python3 scripts/yume_translations.py add network.example "Example %s" \
   --context "Network card" --owner "desktop.gui.NetworkCard" \
   --notes "Keep %s unchanged."
-# Edit the three translations in translations/catalog.json.
+# Fill each maintained language in translations/catalog.json.
 python3 scripts/yume_translations.py validate
 python3 scripts/yume_translations.py generate
 python3 tests/test_yume_translations.py
 ```
+
+`requirements.placeholders` is checked in every translation. A
+`character_limit` is enforced on English source text only; translated text
+still needs a length and layout review. `multiline` and `plural: count` are
+translator hints. The generators emit one string per message and language,
+with no Qt numerus or Kotlin plural-form selection. Count-sensitive copy must
+work in that form until plural support is implemented in both consumers.
 
 `generate` writes Qt TS files under `src/gui/translations/` and the desktop
 loads the compiled catalog of the system language when one exists, with the

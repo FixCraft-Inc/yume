@@ -6,9 +6,8 @@ connection that looks like a browser visiting an ordinary HTTPS site. The
 client is `yume` and the server is `yumed`. Both speak YTP/1, the YUME
 Transport Protocol.
 
-The current version is `0.3.0-dev1`. It builds from source on Linux x86-64.
-An independent security review comes before the first release candidate.
-Until it is published, use YUME where your safety does not depend on it.
+YUME `0.3.0-dev1` builds from source on Linux x86-64 and is in active
+development, with an independent security review planned.
 
 - Website: <https://yume.fixcraft.jp>
 - Source: <https://github.com/FixCraft-Inc/yume>
@@ -23,14 +22,15 @@ opens the destination sockets allowed by its policy. Configured TCP circuits
 can instead leave through two or three servers in one operator's cluster.
 
 On the wire the session is TLS 1.3 with a pinned Chrome ClientHello, HTTP/2
-and WebSocket framing. A connection without a valid admission proof gets the
-server's cover website. Clients authenticate with composite Ed25519 and
-ML-DSA-87 identities. Session keys combine ML-KEM-1024, X25519, a pre-shared
-key and the TLS exporter, and every record uses a one-use AES-256-GCM key.
+and WebSocket framing. The front door serves ordinary HTTP/2 requests from the
+cover site. A fresh admission proof opens a carrier, where clients authenticate
+with composite Ed25519 and ML-DSA-87 identities. Session keys combine
+ML-KEM-1024, X25519, a pre-shared
+key and the TLS exporter. Application data uses one-use AES-256-GCM record keys.
 
-`yumed` ends the tunnel, so it knows which client connected and where its
-traffic goes. HTTPS inside the tunnel keeps page content between the
-application and the site. [Implementation status](docs/IMPLEMENTATION_STATUS.md)
+In a direct session, `yumed` ends the tunnel, so it knows which client connected
+and where its traffic goes. HTTPS inside the tunnel keeps page content between
+the application and the site. [Implementation status](docs/IMPLEMENTATION_STATUS.md)
 lists what each part is tested with.
 
 ## Build
@@ -75,9 +75,9 @@ CA key off the server.
 | `yume-gui` | Optional desktop window that imports kits and starts, stops and shows clients |
 
 The [desktop GUI](docs/GUI.md) builds with Qt 6 when enabled and talks to each
-client only through its control socket. Relay chat and file transfer exist as
-libraries for planned [modules](docs/MODULES.md). Transport v2, the protocol
-before YTP/1, has been removed.
+client only through its control socket. Server [modules](docs/MODULES.md)
+receive authorized streams over private UNIX sockets. Chat and file-transfer
+libraries are available for future modules.
 
 ## Documentation
 

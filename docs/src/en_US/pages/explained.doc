@@ -41,10 +41,10 @@ public keys, so the client knows exactly which server it must reach.
    then sends an extended CONNECT request carrying an admission proof. The proof is
    derived from the admission key and bound to this TLS connection, so it
    cannot be replayed on another one.
-4. `yumed` checks the proof. Anything without a valid proof, including a
-   scanner or a curious visitor, gets the static website and nothing else. A
-   valid proof turns that HTTP/2 stream into the YUME carrier. One TLS
-   connection can be promoted once.
+4. `yumed` checks the proof. Requests that fail admission stay in the cover
+   handler, which serves GET and HEAD from the static site and refuses other
+   methods. A valid proof turns that HTTP/2 stream into the YUME carrier.
+   One TLS connection can be promoted once.
 5. Inside the carrier both sides run YTP/1 authentication, described next.
 
 @diagram connection_opening
@@ -53,16 +53,18 @@ public keys, so the client knows exactly which server it must reach.
 
 Authentication proves both identities with both signature algorithms. Key
 establishment combines X25519, ML-KEM-1024, the client's access PSK and a
-secret exported from the live TLS connection. Breaking one of these is not
-enough. The transcript binds the suite, both identities, both service lists and
-the security parameters, so neither side can be talked into a weaker setup.
+secret exported from the live TLS connection. Both signatures and every
+key-schedule input are required. The transcript binds the suite, both
+identities, both service lists and the security parameters.
 There is one suite and no negotiation or fallback.
 
-After authentication every record is sealed with AES-256-GCM under a key that
-is used once. Each direction has its own key epoch and rotates it on its own
-after one MiB of data, 512 records or 500 ms, whichever comes first. A
-rotation starts halfway to those limits, and the old key keeps sending until
-the peer confirms the new one, so rotating does not pause the connection. Both sides
+After authentication application data is sealed with AES-256-GCM under a key
+that is used once per record. Each direction has its own key epoch. At the
+default size, it rotates after one MiB of data, 512 records or 500 ms,
+whichever comes first. A rotation starts halfway to those limits.
+The old epoch carries data while
+confirmation is pending, up to its limits. Further data then waits for the
+acknowledgement; a missed acknowledgement deadline ends the session. Both sides
 may allow a larger epoch, up to 64 MiB. The session then uses the smaller
 of the two sizes, still with one record per 2 KiB, so either side can keep
 rotation at its own setting.

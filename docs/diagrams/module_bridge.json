@@ -2,7 +2,7 @@
   "name": "module_bridge",
   "type": "route",
   "title": "An authorized stream reaches a module program",
-  "summary": "yumed authorizes the OPEN and connects to the module's socket, which a service manager owns. The module runs as a user of its own.",
+  "summary": "yumed authorizes the OPEN and connects to the module's UNIX socket. Packaged systemd units run the module under a separate dynamic user.",
   "targets": {
     "web": true
   },
@@ -34,7 +34,7 @@
       "kind": "server",
       "title": "Module bridge",
       "sub": "private UNIX connection",
-      "note": "Connects to the module's socket, which only the daemon's user can reach, and writes the version, identity and service header before the stream bytes. It preserves both half-closes.",
+      "note": "Connects to the configured UNIX socket and writes the version, identity and service header before the stream bytes. It preserves both half-closes.",
       "source": [
         "src/runtime/module_connector.cpp"
       ]
@@ -44,9 +44,10 @@
       "kind": "process",
       "title": "Module program",
       "sub": "accepts on descriptor 3",
-      "note": "Accepts the connection and serves it without linking YUME. systemd runs it as a user of its own with the socket as descriptor 3, so it cannot read the daemon's credential files.",
+      "note": "The packaged systemd units give the module descriptor 3 and a separate dynamic user, with access to the daemon's credential directories blocked. The program serves streams without linking YUME.",
       "source": [
-        "src/modules/echo/echo_module.cpp"
+        "src/modules/echo/echo_module.cpp",
+        "debian"
       ]
     }
   ],

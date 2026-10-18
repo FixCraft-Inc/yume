@@ -208,9 +208,10 @@ Open the window on
 .IR page :
 .BR overview ,
 .BR connect ,
-.B logs
+.BR logs ,
+.B posture
 or
-.BR posture .
+.BR credits .
 .TP
 .BI "--theme " theme
 Use
@@ -221,7 +222,7 @@ or the desktop's
 theme for this run instead of the one chosen in the window, which is
 saved in
 .IR $XDG_CONFIG_HOME/yume/gui.conf .
-Light is the default.
+The default follows the desktop's theme.
 .TP
 .BI "--layout-direction " direction
 Lay the window out
@@ -321,12 +322,15 @@ This opens no window.
 .B --help
 Print a short usage summary.
 .SH FILES
-.IR $XDG_CONFIG_HOME/yume/kits/ name**
+.I $XDG_CONFIG_HOME/yume/kits/NAME
 is a kit.
-.IR $XDG_RUNTIME_DIR/yume/ name .sock
-is its running client's control socket, and
-.IR $XDG_RUNTIME_DIR/yume/ name .log
+Its running client's control socket is
+.IR $XDG_RUNTIME_DIR/yume/NAME.sock ,
+and
+.I $XDG_RUNTIME_DIR/yume/NAME.log
 holds what that client printed since this GUI last started it.
+.I NAME
+is the kit's name.
 The runtime directory must be set, and
 .I yume
 in it is kept private to the user.

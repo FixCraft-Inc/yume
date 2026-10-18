@@ -17,9 +17,10 @@ is [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 | Application peer | Receives an authenticated YUME identity and named service, not proof that either endpoint is uncompromised |
 | Destination | Sees the chosen route provider's egress address and application traffic |
 
-YUME protects a session to its terminating endpoint. It is not an anonymity
-network, endpoint sandbox, traffic-volume concealment system, or substitute for
-application-layer encryption.
+YUME protects traffic between a client and its terminating endpoint.
+Application encryption, such as HTTPS, keeps content private from that
+endpoint. Host security and traffic-analysis resistance have the boundaries
+described below.
 
 <!-- yume-diagram: trust_boundary -->
 <img src="diagrams/trust_boundary-vertical.svg" alt="Where application encryption ends" width="388" height="480">
@@ -30,7 +31,7 @@ application-layer encryption.
 - **Application HTTPS**: The application authenticates and encrypts to its own destination independently of YUME. ([`docs/THREAT_MODEL.md`](THREAT_MODEL.md))
 - **yume or libyume**: Seals the application's bytes into YTP records inside TLS to yumed. It does not replace the application's TLS. ([`src/engine/session_engine.cpp`](../src/engine/session_engine.cpp), [`src/providers/tls13_secure_channel.cpp`](../src/providers/tls13_secure_channel.cpp))
 - **yumed**: Reads identities and destinations and removes YUME protection. HTTPS content remains encrypted, while plain application content is readable. ([`src/providers/direct_route_handler.cpp`](../src/providers/direct_route_handler.cpp), [`src/runtime/native_egress_policy.cpp`](../src/runtime/native_egress_policy.cpp))
-- **Origin**: Authenticates the application connection and decrypts its HTTPS content. It sees the exit server's address. ([`docs/THREAT_MODEL.md`](THREAT_MODEL.md))
+- **Origin**: Terminates HTTPS and decrypts the request. It sees the exit server's address. ([`docs/THREAT_MODEL.md`](THREAT_MODEL.md))
 - **Path observer**: Observes the client-to-server connection. TLS hides payloads, but ClientHello, site name, endpoint IP and traffic geometry remain visible. ([`docs/STEALTH.md`](STEALTH.md))
 
 </details>
@@ -200,9 +201,8 @@ encrypted timing, direction, size, concurrency, and volume. Traffic geometry
 is not constant-rate padding and no universal classifier result transfers to a
 different browser, server, network, or application mix.
 
-Claims therefore name the exact profile and evidence environment. YUME does
-not claim byte-identical browser behavior, DPI-proof transport, universal
-indistinguishability, or anonymity.
+Claims name the exact profile, observer and evidence environment. Measured
+resistance applies to those conditions.
 
 ## Replacement scope
 
@@ -215,11 +215,8 @@ each needs its own design before it ships. The desktop GUI is a separate
 client of the control socket. See
 [implementation status](IMPLEMENTATION_STATUS.md).
 
-## Evidence required for release
+## Validation
 
-Before `0.3.0-rc1`, require mutation/stripping/replay/role/rekey tests,
-parser fuzzing, sanitizer and failure-injection suites, resource floods,
-installed ABI consumers, setup-to-first-stream and browser-cover smokes,
-profile captures/classifier gates, cross-platform builds, and external
-protocol/cryptography review. Unit tests alone do not justify production,
-performance, post-compromise recovery, or ingress-indistinguishability claims.
+[Implementation status](IMPLEMENTATION_STATUS.md#freeze-gates) owns release
+gates and remaining qualification. Security claims require evidence for the
+property and environment they describe.

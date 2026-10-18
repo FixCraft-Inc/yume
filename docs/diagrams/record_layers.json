@@ -2,7 +2,7 @@
   "name": "record_layers",
   "type": "layers",
   "title": "What wraps your data on the wire",
-  "summary": "After authentication each YTP/1 frame is sealed, framed for the carrier and sent as WebSocket data on an HTTP/2 stream inside TLS 1.3.",
+  "summary": "Application data is framed by YTP/1, sealed, then sent through the carrier envelope, WebSocket and HTTP/2 inside TLS 1.3.",
   "comment": [
     "Checked against docs/protocol/YTP_1.md (frame header, post-AUTH record",
     "protection, H2-duplex carrier framing) and src/providers/h2_duplex_carrier.cpp."
@@ -32,8 +32,8 @@
       "role": "keys",
       "title": "Sealed record",
       "sub": "AES-256-GCM, one-use key",
-      "note": "The frame is encrypted and authenticated with a key used for this record only, named by its direction, epoch and sequence.",
-      "source": ["src/providers/openssl_security_provider.cpp"]
+      "note": "Each data frame has a one-use AES-256-GCM key bound to direction, epoch and sequence. The REKEY_ACK control frame instead uses a candidate-root confirmation MAC inside TLS.",
+      "source": ["src/providers/openssl_security_provider.cpp", "src/engine/session_engine.cpp"]
     },
     {
       "id": "envelope",

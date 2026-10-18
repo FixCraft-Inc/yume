@@ -23,10 +23,10 @@ Transport v2, the protocol before YTP/1, has been removed, and commit
 | **YTP/1** | **YUME Transport Protocol 1.** The wire protocol `yume` and `yumed` speak. Version 1 of a new protocol, not "YUME 1". Its kernel is `src/ytp/` and its contract is [protocol/YTP_1.md](protocol/YTP_1.md). |
 | **schema 1** | The strict configuration schema for both roles, parsed by `src/config/v1/`. |
 | **ABI v1** | The role-neutral C interface in `include/yume/yume.h`. Its version is independent of every wire and product version. |
-| **admission** | The cheap, replay-protected proof a client sends before its carrier is promoted. A connection without a valid proof gets the configured cover and never reaches AUTH. |
+| **admission** | The cheap, replay-protected proof a client sends before its carrier is promoted. A request that fails this check stays in cover handling and never reaches AUTH. |
 | **admission key** | The 32-byte key the server and its clients share for admission. It must differ from every access PSK. |
 | **access PSK** | The 32-byte secret one authorized client identity shares with the server. It enters the YTP/1 key schedule. |
-| **cover** | The website a visitor without a valid admission proof sees. `yumed` serves a static site it loads at start. There is no built-in fallback site, and a configured reverse-proxy cover is refused as not implemented yet. |
+| **cover** | The static site `yumed` loads at start and serves for ordinary HTTP/2 GET and HEAD requests. It refuses other methods with a fixed 405. There is no built-in fallback site, and a configured reverse-proxy cover is refused as not implemented yet. |
 | **carrier** | The outer connection YTP records ride inside: TLS 1.3, then HTTP/2 with an RFC 8441 extended CONNECT stream of WebSocket binary frames. |
 | **relay channel** | The end-to-end channel between two users that the relay module library keeps for the planned chat and file modules. Its labels come from transport v2. See [protocol/RELAY_CHANNEL.md](protocol/RELAY_CHANNEL.md). |
 | **BaseFWX** | A separate pinned repository of cryptographic primitives, checked out at `basefwx/`. Only the module libraries build on it. `yume`, `yumed` and `libyume` do not link it. |
@@ -49,7 +49,7 @@ Implementation paths below are relative to `src/`. The candidate header in
 | `ytp/` | YTP/1 protocol kernel and security domains. Protocol and AUTH/key-schedule codecs share internal big-endian operations in `ytp/detail/byte_order.hpp`, and each codec owns its bounds checks and error order. It may not include the engine |
 | `circuit/` | The [circuit 1](protocol/CIRCUIT_1.md) codec: cells, handshake encodings and relay messages with their bounds, and its vectors and generator under `circuit/testdata/`. Like `ytp/` it performs no I/O or cryptography and builds only on YTP/1 and `common/` |
 | `providers/` | OpenSSL session security, internal deterministic `ytp1_crypto` constructions, TLS channels, Asio TCP/UDP routes and client/accepted TCP channels, the H2 carrier, the native FrontDoor and configured static cover. `loopback_http_fetch.*` fetches GET and HEAD from a loopback web server for a reverse-proxy cover, and `socks5_upstream.*` reaches a server through a SOCKS5 proxy. `child_process.*` starts a helper program with one passed descriptor and watches it through a pidfd, and `process_privileges.*` drops a helper's privileges before it works. `composite_keys.*` parses composite keys, signs and verifies composite signatures and hashes tagged fields in a private OpenSSL context, for cluster lists and circuit hops, and `circuit_crypto.*` holds circuit 1's handshake and layer constructions on `ytp1_crypto`'s context, whose X25519 and ML-KEM wrappers both protocols share |
-| `runtime/` | `native_credentials.*` loads protected schema-1 files and per-identity service policy. `native_endpoint.*` owns native provider/bootstrap/session composition and optional automatic server accepts, paced by the dependency-clean `accept_scheduler.hpp`, and `NativeServerShare`, what the endpoints of a server on several event loops share: its listeners' bounds, the replay cache, the credentials a reload publishes, the egress limiter and the per-identity session registry. `native_egress_policy.*` evaluates configured direct-adapter destinations and their egress lists, which `egress_lists.*` reads, with MaxMind country databases, into sorted address ranges. `local_listener.*` owns the loopback TCP and private UNIX socket accept loop that `native_socks5.*` and `native_forward.*` share. `egress_limiter.*` shares a server's configured egress rate between identities by weight, and `paced_stream.*` applies it to each stream the endpoint serves. `module_connector.*` checks each configured module's socket and hands it its service's streams, one connection each. `native_server_runtime.*`, `native_client_runtime.*`, `native_socks5.*`, `native_socks5_udp.*` and `native_cli.cpp` build the `yumed` and `yume` processes. `outer_carrier_evidence.*` writes the payload-free carrier report of `yume --outer-carrier-evidence`, `control_socket.*` serves the owner-only control socket of either program and queries it for `--status`, `control_status_text.*` turns a status reply into the text `--status` prints, `message_log.*` keeps the lines the program printed for its messages request, and `sealed_kit.*` seals and opens client kits for `yume --seal-kit` and `--import-kit`. `session_keeper.*` keeps one outbound session up with backoff for the client runtime, for each cluster link and for an embedded client with a device. `device_bridge.*` carries a TUN device's traffic as stream and packet OPENs on a client's services for the ABI, and `device_nat.*` is its packet half, which rewrites TCP segments so the host's kernel terminates each connection and depends on nothing but the standard library. `cluster_list.*` verifies and parses the operator's signed cluster list and routes view, and `cluster_state.*` keeps the highest serial a server has loaded. `circuit_node.*` is the node's `yume.circuit` service, `circuit_client.*` builds a client's circuits and carries its streams over them, and `circuit_host.*` serves the routes view on `yume.routes` and connects an exit's streams through its egress policy. On the client, `client_routes.*` checks the view the entry serves against the saved serial, `circuit_routes.*` chooses routes, `circuit_pool.*` builds circuits and opens streams through them with shorter-route proposals, `circuit_status.hpp` holds what it reports, and `plain_http_guard.*` ends plain HTTP before it leaves the client. `circuit_probe.cpp` is the test client of `yume_native_circuit_test` and is not installed |
+| `runtime/` | Native application composition, credentials, adapters, control and circuits. See [runtime owners](#runtime-owners) |
 | `setup/` | `yume-setup` and `yume-doctor`. `kit.cpp` writes kits and client bundles, `kit_layout.*` holds the files a kit contains, and `cluster.cpp` keeps an operator's cluster record, link secrets and signed list. `material.*` makes every key and certificate in one private OpenSSL context and reads each back with the `composite_keys` readers before it is written, and `files.*` creates owner-only files exclusively, stages new directories and publishes them with a no-replace rename. `doctor.*` parses a configuration with `config/v1` and checks the files it names. Before signing is published, `cluster.cpp` checks the list and routes view with `runtime/cluster_list.*`, which the `yume_cluster_list` library owns apart from the TLS provider. The tuning presets come from `config/tuning_presets.json`, which the build embeds |
 | `abi/` | The opt-in C ABI. `yume_c.cpp` owns handles, input validation, diagnostics, callback rules and backend leasing. It accepts only schema-1 documents, parses them through `config/v1` and reaches the runtime only through the embedding seam `endpoint_backend.hpp`. `native_backend.cpp` is `yume_embed`, which runs `NativeEndpoint` on its own execution thread and links no BaseFWX. It also keeps each endpoint's message feed, opens sealed kits, and composes the device bridge and session keeper for a client with a device. `compatibility_manifest.hpp` is the version view the ABI reports |
 | `common/` | Dependency-clean contracts shared across layers and the ABI: the canonical service-name grammar and bound, canonical destination networks, the egress address classes that configuration and native policy share, the UDP datagram budget the SOCKS5 UDP relay uses, hex encoding, best-effort secret erasure, the development timing helpers, the opt-in benchmark probes, and the product and protocol version constants |
@@ -61,6 +61,26 @@ Implementation paths below are relative to `src/`. The candidate header in
 | `gui/` | The optional Qt 6 Quick desktop program `yume-gui`, built with `YUME_BUILD_GUI=ON`. `control_client.*` speaks [control protocol 1](protocol/CONTROL_1.md) over the owner-only socket, `tunnel.*` starts a kit's `yume` detached, polls it and stops it, `kit_store.*` lists kits and imports them through `yume --import-kit`, `tuning.*` delegates validated settings writes to `yume-setup` and sequences restart, and `app_state.*` is what the QML pages under `qml/` see. `headless.*` and `capture.*` are its display-free lifecycle and page capture. It includes no other YUME layer, and no other layer includes Qt |
 | `test_support/` | Allocation-failure hooks, generated TLS identities, JA3/JA4 ClientHello analysis and the in-memory circuit fixtures (an execution thread, packet stream pairs, an echoing destination and node identities) for isolated tests, with no production allocator or runtime dependency |
 | `include/yume/` | The public candidate C header. It is unfrozen, and development SDK installation is opt-in |
+@end
+
+## Runtime owners
+
+Paths here are relative to `src/runtime/`.
+
+@table
+| Area | Source | Responsibility |
+| --- | --- | --- |
+| Credentials and sessions | `native_credentials.*`, `native_endpoint.*`, `accept_scheduler.hpp` | Protected credential files, identity grants, provider/bootstrap/session composition and paced accepts. `NativeServerShare` shares listener bounds, replay, credentials, egress limits and identity session counts across event loops |
+| Programs and local listeners | `native_cli.cpp`, `native_server_runtime.*`, `native_client_runtime.*`, `local_listener.*`, `native_socks5.*`, `native_socks5_udp.*`, `native_forward.*` | Client/server lifecycle, SOCKS5 and forwards. The local adapters share one loopback TCP and private UNIX accept loop |
+| Egress policy and pacing | `native_egress_policy.*`, `egress_lists.*`, `egress_limiter.*`, `paced_stream.*` | Destination checks, address-range lists including MaxMind country data, and the server's weighted per-identity egress rate |
+| Modules | `module_connector.*` | Validates each module socket and connects once per authorized service stream |
+| Control and evidence | `control_socket.*`, `control_status_text.*`, `message_log.*`, `outer_carrier_evidence.*` | Owner-only control requests, text status, printed-message history and payload-free outer-carrier reports |
+| Kits | `sealed_kit.*` | Sealing and opening client kits for `--seal-kit` and `--import-kit` |
+| Reconnection and devices | `session_keeper.*`, `device_bridge.*`, `device_nat.*` | Retried client and cluster sessions. The device bridge carries TUN traffic as stream/packet OPENs; dependency-clean NAT rewrites TCP segments so the host kernel terminates each connection |
+| Cluster state | `cluster_list.*`, `cluster_state.*` | Verification and parsing of signed lists/routes, and the highest serial a server has loaded |
+| Circuit services | `circuit_node.*`, `circuit_client.*`, `circuit_host.*` | The node's `yume.circuit` service, client circuit construction/carriage, the `yume.routes` view and exit egress policy |
+| Client routes | `client_routes.*`, `circuit_routes.*`, `circuit_pool.*`, `circuit_status.hpp`, `plain_http_guard.*` | Route-view anti-rollback, route selection, pooling, shorter-route proposals, status and the plain-HTTP rule |
+| Circuit test client | `circuit_probe.cpp` | Client of `yume_native_circuit_test`; it is not installed |
 @end
 
 ## Composition and open gaps
@@ -107,9 +127,8 @@ caller-shared replay cache, configured cover and one promotion per TLS lifetime.
 through `runtime::FileRoot`, including an index and explicit not-found file.
 Requests select preloaded routes without filesystem access or DNS. There is
 no built-in fallback site or reverse-proxy implementation yet.
-The public TLS entry accepts ordinary TLS 1.2/1.3 H2 cover traffic and refuses
-HTTP/1.1 and no-ALPN clients before serving HTTP. Only TLS 1.3 with H2 can
-become a YTP `SecureChannel`.
+
+@include shared/public_tls.part
 
 `AsioTcpAcceptedChannelOwner` adopts already-connected TCP or UNIX stream
 sockets using the same bounded channel state and registry as client TCP. It
@@ -203,9 +222,8 @@ sessions.
 @end
 
 Exact encodings, domain strings, AUTH flights and the special REKEY_ACK
-protection rule belong to [YTP/1](protocol/YTP_1.md). The algorithms and focused
-tests do not establish complete-session stealth, independent cryptographic
-review or measured performance.
+protection rule belong to [YTP/1](protocol/YTP_1.md). Qualification and
+measurement boundaries belong to [implementation status](IMPLEMENTATION_STATUS.md).
 
 ## Layering, and where it is enforced
 

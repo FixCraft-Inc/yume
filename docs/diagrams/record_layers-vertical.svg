@@ -1,6 +1,6 @@
 <svg class="dgm dgm-vertical" data-dgm="record_layers-vertical" width="386" height="474" viewBox="0 0 386 474" role="img" aria-labelledby="dgm-record_layers-vertical-title dgm-record_layers-vertical-desc" style="--dgm-dur:8.8s" xmlns="http://www.w3.org/2000/svg">
 <title id="dgm-record_layers-vertical-title">What wraps your data on the wire</title>
-<desc id="dgm-record_layers-vertical-desc">After authentication each YTP/1 frame is sealed, framed for the carrier and sent as WebSocket data on an HTTP/2 stream inside TLS 1.3.</desc>
+<desc id="dgm-record_layers-vertical-desc">Application data is framed by YTP/1, sealed, then sent through the carrier envelope, WebSocket and HTTP/2 inside TLS 1.3.</desc>
 <style>
 .dgm {
   --dgm-plate: var(--color-paper, #f7f2f5);

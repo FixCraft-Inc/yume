@@ -87,6 +87,9 @@ node it turns towards. A role is never used as a site accent.
 - Display tracking: `-0.025em`
 - Display size: `clamp(3.25rem, 7vw, 5.25rem)`
 
+The faces are served from `assets/fonts/` with their license texts, so a page
+view requests nothing from another host.
+
 ## Spacing and shape
 
 Use the named 4-point scale in `assets/tokens.css`. YUME surfaces are rounded,
@@ -121,7 +124,8 @@ come from `docs/diagrams/*.json` through the documentation sync, so the page
 includes them and never hand-draws a route. The homepage sets stacked drawings
 at their drawn size, two side by side on a wide screen, because a long band
 scaled into the reading column shrinks its labels past legibility. Documentation uses typography and generated figures only. All pages share the same header, footer, focus treatment,
-fonts, and colour tokens.
+fonts, and colour tokens. The footer is quiet chrome: the mark, the footer links
+from `_data/nav.yml` and one line of status, never display type.
 
 ## Exports
 

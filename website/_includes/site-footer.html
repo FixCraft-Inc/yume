@@ -1,12 +1,23 @@
 {%- comment -%}
-Order: a page's own front matter wins, then whatever the layout passes in,
-then the site-wide line.
+The same footer closes every page: the mark, the site's links (the phone
+header shows only Docs) and one line of status.
 {%- endcomment -%}
 <footer class="site-footer">
-  <p class="footer-statement">{{ page.footer_statement | default: include.statement | default: 'YUME is an open-source internet freedom tool.' }}</p>
+  <div class="footer-main">
+    {% include brand.html class="brand footer-brand" mark="footer-mark" %}
+    <nav class="footer-nav" aria-label="Footer navigation">
+      {%- for item in site.data.nav.footer -%}
+        {%- if item.external -%}
+          <a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.label }}</a>
+        {%- else -%}
+          <a href="{{ item.url | relative_url }}">{{ item.label }}</a>
+        {%- endif -%}
+      {%- endfor -%}
+    </nav>
+  </div>
   <p class="footer-meta">
-    <span>FixCraft YUME</span>
-    <span>Experimental development software</span>
+    <span>Experimental development software, version {{ site.product_version }}</span>
+    <span>Published from the main branch</span>
     <a href="{{ site.repo_url }}/blob/main/LICENSE" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </p>
 </footer>

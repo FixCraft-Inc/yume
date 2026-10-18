@@ -219,8 +219,8 @@ const initThemeToggle = () => {
 
   const sync = () => {
     const theme = effectiveTheme();
-    // Both authored meta tags carry the resolved colour, so an explicit
-    // override still reaches the browser chrome.
+    // The authored meta tag carries the resolved colour, so an explicit
+    // choice still reaches the browser chrome.
     document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => {
       meta.setAttribute("content", THEME_COLORS[theme]);
     });

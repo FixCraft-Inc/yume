@@ -50,9 +50,11 @@ run `python3 scripts/yume_palette.py generate`, then
 `python3 scripts/yume_palette.py generate --check`. Its lettering is stored
 as paths so GitHub needs no installed or remote font.
 
-Use the banner image as the root README's `title:` so its opening heading
-contains only the graphic. A README published on the website can keep a
-plain `web-title:` for that page and its catalog entry.
+The root README's `title:` contains a centered banner image with an explicit
+300 px width and the project name as its alternative text. Keep the width
+on the HTML image so GitHub does not expand the SVG to fill the page.
+A README published on the website can keep a plain `web-title:` for that
+page and its catalog entry.
 
 BaseFWX currently publishes generated ASCII figures. Its own animated SVG
 style is deferred; keep diagram `targets.web` false until that work is

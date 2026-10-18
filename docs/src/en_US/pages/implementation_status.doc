@@ -459,6 +459,10 @@ said, cancels a client start from another thread, and opens a
 of a real session and cancels a start against a server that never answers,
 and `yume_abi_kit_integration` opens a kit that the `yume` program sealed
 and checks what the library refuses instead.
+`yume_native_backend_open_integration` pauses notification delivery for
+both stream and packet sessions to check that `ENDED` is published with
+its typed reason and lifecycle line, and that intentional stop records
+no failure.
 
 ### Native programs
 

@@ -96,7 +96,9 @@ enum {
 
 /* A client's session. An endpoint with a device keeps its session up, so it
  * reports CONNECTING and WAITING between sessions. One without makes one
- * attempt per start and reports ENDED once its session has ended. */
+ * attempt per start and publishes ENDED with that session's typed failure
+ * after recording its lifecycle line. It may still report ACTIVE while the
+ * end notification is pending, even though I/O already reports session loss. */
 enum {
     YUME_SESSION_NONE = 0,
     YUME_SESSION_ACTIVE = 1,

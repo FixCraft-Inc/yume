@@ -579,6 +579,78 @@ struct PausedClient final {
     std::shared_ptr<NativeRun> run;
 };
 
+void test_session_end_status_publication(const std::filesystem::path& kit,
+                                         engine::ServiceKind kind,
+                                         bool stopping) {
+    const bool packet = kind == engine::ServiceKind::PacketChannel;
+    const auto server_base = kit / "server";
+    const auto client_base = kit / "client";
+    NativeBackend server(
+        read_kit_config(server_base /
+                        (packet ? "packet-services.json" : "yumed.json")),
+        server_base, {},
+        std::vector<BackendService>{
+            {"echo", packet ? BackendServiceKind::Packet
+                            : BackendServiceKind::ByteStream}},
+        {}, std::nullopt);
+    std::string error;
+    CHECK(server.start(0U, nullptr, error) == BackendIo::Ok);
+    PausedClient client(
+        read_kit_config(client_base /
+                        (packet ? "routes-udp.json" : "yume.json")),
+        client_base);
+    const auto& run = client.run;
+    BackendStatus active;
+    run->fill_status(active);
+    CHECK(active.session == BackendSession::Active);
+    CHECK(active.failure == BackendIo::Ok);
+    const auto after = run->record->messages.after(0U);
+    const auto last_seq = after.entries.empty() ? 0U : after.entries.back().seq;
+
+    if (stopping) run->begin_stop();
+    // The engine closes before its executor delivers the endpoint's end
+    // notification. Status must not pair Ended with the previous failure.
+    run->session->stop(Status(StatusCode::PermissionDenied,
+                              "test session permission revoked"));
+    CHECK(run->session->state() != engine::SessionState::Active);
+    CHECK(run->record->messages.after(last_seq).entries.empty());
+    BackendStatus pending;
+    run->fill_status(pending);
+    CHECK(pending.session ==
+          (stopping ? BackendSession::None : BackendSession::Active));
+    CHECK(pending.failure == BackendIo::Ok);
+    CHECK(pending.failure_message.empty());
+
+    run->context->poll();
+    BackendStatus ended;
+    run->fill_status(ended);
+    const auto messages = run->record->messages.after(last_seq);
+    CHECK(messages.missed == 0U);
+    if (stopping) {
+        CHECK(ended.session == BackendSession::None);
+        CHECK(ended.failure == BackendIo::Ok);
+        CHECK(ended.failure_message.empty());
+        CHECK(messages.entries.empty());
+    } else {
+        CHECK(ended.session == BackendSession::Ended);
+        CHECK(ended.failure == BackendIo::PermissionDenied);
+        CHECK(ended.failure_message == "test session permission revoked");
+        CHECK(ended.connected_ms == 0U && ended.epoch_bytes == 0U);
+        CHECK(ended.peer_fingerprint_sha256.empty());
+        CHECK(messages.entries.size() == 1U);
+        CHECK(messages.entries[0].text ==
+              "session ended: test session permission revoked");
+        run->session->stop(Status(StatusCode::Internal, "duplicate end"));
+        run->context->poll();
+        BackendStatus repeated;
+        run->fill_status(repeated);
+        CHECK(repeated.session == ended.session);
+        CHECK(repeated.failure == ended.failure);
+        CHECK(repeated.failure_message == ended.failure_message);
+        CHECK(run->record->messages.after(last_seq).entries.size() == 1U);
+    }
+}
+
 void test_open_deadline_admission(const std::filesystem::path& kit,
                                   engine::ServiceKind kind) {
     const bool packet = kind == engine::ServiceKind::PacketChannel;
@@ -653,11 +725,19 @@ void test_open_deadline_admission(const std::filesystem::path& kit,
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     if (std::filesystem::is_directory(argv[1])) {
+        for (const auto kind : {yume::engine::ServiceKind::ByteStream,
+                                yume::engine::ServiceKind::PacketChannel}) {
+            yume::embed::test_session_end_status_publication(argv[1], kind,
+                                                             false);
+            yume::embed::test_session_end_status_publication(argv[1], kind,
+                                                             true);
+        }
         yume::embed::test_open_deadline_admission(
             argv[1], yume::engine::ServiceKind::ByteStream);
         yume::embed::test_open_deadline_admission(
             argv[1], yume::engine::ServiceKind::PacketChannel);
-        std::cout << "YTP embedding OPEN admission deadline checks passed\n";
+        std::cout
+            << "YTP embedding session status and OPEN deadline checks passed\n";
         return 0;
     }
     std::ifstream input(argv[1]);

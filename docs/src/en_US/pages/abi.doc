@@ -660,6 +660,13 @@ why the previous session ended. Stopping the endpoint is not a
 failure and records nothing. The fixed composition that a posture display
 states with these limits comes from `yume_get_compatibility`.
 
+Without a device, `YUME_SESSION_ENDED` becomes visible together with that
+session's typed reason, after submitting its lifecycle line to the message
+feed. Until the backend processes the end notification, status can still
+report `YUME_SESSION_ACTIVE` while I/O already reports session loss. The
+feed's retention limit still applies; a line that cannot be stored still
+counts as missed.
+
 A server endpoint reports its role, state, limits and latest failed start.
 Its session, identity and traffic fields are zero, because the ABI does not
 report a server's sessions yet. From a callback the call returns

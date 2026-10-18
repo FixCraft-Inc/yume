@@ -1248,6 +1248,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Fixed
 
+- **ABI session-end status.** A client without a device publishes `ENDED`
+  with the ended session's typed reason after recording its lifecycle line.
+  A status read during notification delivery could previously pair `ENDED`
+  with a failure retained from an earlier start.
+
 - Release publication requires trusted signatures on the annotated tag,
   source commit, artifacts, aggregate checksums and final manifest. The
   manifest is generated after artifact signatures exist and classifies

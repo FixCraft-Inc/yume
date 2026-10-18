@@ -1762,15 +1762,12 @@ Status NativeRun::start_bridge() {
 // A client's one session ended on its own. A stop ends it too, and that is
 // not a failure.
 void NativeRun::on_session_ended(const Status& reason) noexcept {
-    if (!running()) return;
-    {
-        std::lock_guard<std::mutex> lock(ended_mutex_);
-        if (ended_) return;
-        ended_ = true;
-        ended_io_ = reason.ok() ? BackendIo::Closed : io_from(reason.code());
-        describe(ended_message_, reason, "session ended");
-    }
+    std::lock_guard<std::mutex> lock(ended_mutex_);
+    if (!running() || ended_) return;
+    ended_io_ = reason.ok() ? BackendIo::Closed : io_from(reason.code());
+    describe(ended_message_, reason, "session ended");
     record->say("session ended", reason.message());
+    ended_ = true;
 }
 
 void NativeRun::on_keeper_status(
@@ -1858,13 +1855,13 @@ void NativeRun::fill_status(BackendStatus& status) const {
         if (ended_) {
             status.failure = ended_io_;
             status.failure_message = ended_message_;
+            if (session && running()) status.session = BackendSession::Ended;
+            return;
         }
     }
     if (!session || !running()) return;
-    if (session->state() != engine::SessionState::Active) {
-        status.session = BackendSession::Ended;
-        return;
-    }
+    // Engine closure precedes its endpoint notification. Publish the end
+    // only with the reason and lifecycle line recorded by that callback.
     status.session = BackendSession::Active;
     status.sessions = 1U;
     status.connected_ms = static_cast<std::uint64_t>(

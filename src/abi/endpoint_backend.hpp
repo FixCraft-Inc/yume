@@ -215,7 +215,8 @@ private:
 enum class BackendSession {
     None,
     Active,
-    // The client's session ended while the endpoint stayed started.
+    // The client's session ended while the endpoint stayed started. Its
+    // failure and lifecycle line are recorded before this becomes visible.
     Ended,
     // A client that keeps its session up: an attempt is in flight, or it
     // waits before the next one.

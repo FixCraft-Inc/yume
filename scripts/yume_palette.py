@@ -10,8 +10,10 @@ tray icon in src/gui/palette.hpp are generated from it. The mark keeps its
 shape in src/gui/assets/icon.svg, the original drawing. Its translucent
 gradient is made for white, so every generated mark fills that shape with the
 solid colours it shows over white: the website's yume-mark.svg and the
-Android launcher icon, whose tile is the palette's light surface. A new consumer,
-such as an iOS app, adds one renderer here.
+Android launcher icon, whose tile is the palette's light surface. The README
+banner combines that shape and these colours with the outlined lettering and
+layout in docs/assets/readme-banner.svg.in. A new consumer, such as an iOS
+app, adds one renderer here.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ import json
 import math
 from pathlib import Path
 import re
+from string import Template
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +32,8 @@ WEB_OUTPUT = Path('website/assets/tokens.css')
 CPP_OUTPUT = Path('src/gui/palette.hpp')
 MARK_SOURCE = Path('src/gui/assets/icon.svg')
 WEB_MARK_OUTPUT = Path('website/assets/yume-mark.svg')
+README_BANNER_SOURCE = Path('docs/assets/readme-banner.svg.in')
+README_BANNER_OUTPUT = Path('docs/assets/readme-banner.svg')
 ANDROID_MARK_OUTPUT = Path('app/src/main/res/drawable/ic_launcher_foreground.xml')
 ANDROID_TILE_OUTPUT = Path('app/src/main/res/values/ic_launcher_background.xml')
 ANDROID_OUTPUT = Path('app/src/main/java/com/fixcraft/yume/ui/theme/GeneratedPalette.kt')
@@ -291,6 +296,16 @@ def render_web_mark(palette: dict, path: str) -> str:
         '</svg>', ''])
 
 
+def render_readme_banner(palette: dict, root: Path, path: str) -> str:
+    """Keep the hand-drawn mark and layout separate from generated colours."""
+    values = {'mark_path': path}
+    for theme in THEMES:
+        values.update({f'{theme}_{name}': colour.hex.lower()
+                       for name, colour in palette['themes'][theme].items()})
+    template = Template((root / README_BANNER_SOURCE).read_text(encoding='utf-8'))
+    return template.substitute(values)
+
+
 def render_android_mark(palette: dict, current: str) -> str:
     light = palette['themes']['light']
     stops = re.findall(r'<item android:offset="[01]" android:color="#[0-9A-F]{6,8}"/>', current)
@@ -341,9 +356,11 @@ def render(palette: dict, root: Path, android_root: Path | None = None) -> dict[
     if palette['themes']['light']['logoFrom'].hex != palette['themes']['dark']['logoFrom'].hex or \
             palette['themes']['light']['logoTo'].hex != palette['themes']['dark']['logoTo'].hex:
         raise ValueError('the mark keeps one pair of colours in every theme')
+    path = mark_path(root)
     outputs = {root / QML_OUTPUT: render_qml(palette), root / CPP_OUTPUT: render_cpp(palette),
                root / WEB_OUTPUT: render_web(palette, (root / WEB_OUTPUT).read_text(encoding='utf-8')),
-               root / WEB_MARK_OUTPUT: render_web_mark(palette, mark_path(root))}
+               root / WEB_MARK_OUTPUT: render_web_mark(palette, path),
+               root / README_BANNER_OUTPUT: render_readme_banner(palette, root, path)}
     if android_root is not None:
         outputs[android_root / ANDROID_OUTPUT] = render_kotlin(palette)
         outputs[android_root / ANDROID_MARK_OUTPUT] = render_android_mark(

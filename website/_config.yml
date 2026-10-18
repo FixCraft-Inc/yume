@@ -3,12 +3,13 @@
 title: YUME
 product_version: 0.3.0-dev1
 description: >-
-  YUME is an open-source hybrid post-quantum transport that carries
-  TCP and UDP through a browser-shaped TLS 1.3 + HTTP/2 connection.
+  YUME is an open-source internet freedom tool. It carries TCP, UDP and IP
+  traffic through a server you control over an encrypted connection shaped
+  like a browser visiting a website.
 # Bumped whenever assets/site.css or assets/site.js changes, so returning
 # visitors are not served a cached stylesheet against new markup. One place,
 # read by _includes/head.html.
-asset_version: 17
+asset_version: 18
 
 repo_url: https://github.com/FixCraft-Inc/yume
 

@@ -106,7 +106,9 @@ keep. Values are OKLCH on one hue, the mark's, except the mark's own two
 colours, which are exact. The desktop's `Palette.js` and `palette.hpp`, the
 colour regions of `website/assets/tokens.css`, `website/assets/yume-mark.svg`,
 and Android's `GeneratedPalette.kt`, launcher gradient and launcher tile are
-generated. The mark's shape stays in `src/gui/assets/icon.svg`. Run:
+generated. The README banner combines these colours and the mark with its
+layout source, `docs/assets/readme-banner.svg.in`. The mark's shape stays in
+`src/gui/assets/icon.svg`. Run:
 
 ```bash
 python3 scripts/yume_palette.py validate

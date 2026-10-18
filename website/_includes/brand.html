@@ -1,9 +1,6 @@
 {%- comment -%}
-The mark is inlined rather than referenced with <use href="file.svg#id">.
-WebKit has never supported external references in <use>, so the Safari
-rendering of the old markup was an empty box. Inlining also lets the
-gradient follow the theme, which an <img> could not. Each copy on a page
-needs its own gradient id, passed as `mark`.
+The inline mark reads its gradient stops from the shared colour tokens.
+Each copy on a page needs its own gradient id, passed as `mark`.
 {%- endcomment -%}
 {%- assign mark = include.mark | default: 'brand-mark' -%}
 <a class="{{ include.class | default: 'brand' }}" href="{{ '/' | relative_url }}" aria-label="YUME home">
@@ -18,6 +15,6 @@ needs its own gradient id, passed as `mark`.
   </svg>
   <span>
     <span class="brand-name">YUME</span>
-    <span class="brand-sub">A FixCraft protected transport</span>
+    <span class="brand-sub">Internet freedom by FixCraft</span>
   </span>
 </a>

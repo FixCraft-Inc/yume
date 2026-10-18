@@ -1,10 +1,16 @@
 <!-- Generated from docs/src/en_US/pages/readme.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME
 
-YUME carries TCP, UDP and IP packets from a client to a server over a
-connection that looks like a browser visiting an ordinary HTTPS site. The
-client is `yume` and the server is `yumed`. Both speak YTP/1, the YUME
-Transport Protocol.
+![YUME. For a freer internet.](docs/assets/readme-banner.svg)
+
+YUME is an internet freedom tool. It carries TCP, UDP and IP packets through
+a server you control over a connection shaped like a browser visiting an
+ordinary HTTPS site. The client is `yume` and the server is `yumed`. Both speak
+YTP/1, the YUME Transport Protocol.
+
+Yume (夢) means dream in Japanese. The dream behind it is a freer internet
+for everyone. Anime openings helped inspire the name. The design puts
+security first, then stealth, then usable speed.
 
 YUME `0.3.0-dev1` builds from source on Linux x86-64 and is in active
 development, with an independent security review planned.

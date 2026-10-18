@@ -1,13 +1,20 @@
 <!-- Generated from docs/src/en_US/pages/why_yume.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Why YUME exists
 
-YUME is a transport you can run on its own or embed: one authenticated,
-browser-shaped connection that carries TCP, UDP and IP packets. Its protocol,
-YTP/1, and its implementation are written for this project. Other transports
-are useful for comparison, but they do not set YUME's design or feature list.
+YUME exists to help people reach the internet freely through servers they
+control. Its transport carries TCP, UDP and IP packets over one authenticated,
+browser-shaped connection. You can run it as a client and server or embed the
+same engine in another program.
+
+Yume (夢) means dream in Japanese. The dream behind it is a freer internet
+for everyone. Anime openings helped inspire the name.
 
 When goals conflict, YUME picks security first, then stealth, then speed. It
 still has to be fast enough for everyday use, including HD video.
+
+Its protocol, YTP/1, and its implementation are written for this project.
+Other transports are useful for comparison, but they do not set YUME's design
+or feature list.
 
 ## What a client gets
 

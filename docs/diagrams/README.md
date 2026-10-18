@@ -76,9 +76,11 @@ chips, halos or shadows: colour is spent on meaning, a node's role and the
 protected hop. A figure's cards share one height, taken from the most
 subtitle lines any card needs, so a route reads as one even row or column.
 
-`website/assets/site.css` keeps only what the figure cannot know about the page
-around it: it hides the standalone ground, because the page already has one,
-and pauses motion in a figure that has scrolled out of view.
+`website/assets/site.css` controls the website embedding. It hides the
+standalone ground, uses soft fills and the palette's corresponding ink for
+wire-layer labels, and pauses motion in a figure that has scrolled out of view.
+Reduced motion removes the figure's CSS animations. Standalone SVGs keep the
+renderer's own paint and motion rules.
 
 A packet is always in one of two places, on a wire or inside a node, and the
 figure draws both. One packet travels the route along the line each hop is

@@ -4,6 +4,7 @@ Priority: optional
 Maintainer: FixCraft Maintainers <debian@fixcraft.jp>
 Build-Depends:
  debhelper-compat (= 13),
+ dh-sequence-installsysusers,
  cmake (>= 3.20),
  g++,
  pkgconf,
@@ -27,7 +28,7 @@ Vcs-Git: https://github.com/FixCraft-Inc/yume.git
 Package: yume
 Architecture: any
 Depends:
- libssl3t64 (>= 3.5.0),
+ libssl3t64 (= ${yume:OpenSSLVersion}),
  ${shlibs:Depends},
  ${misc:Depends}
 Recommends:
@@ -44,7 +45,7 @@ Description: native YTP/1 stealth transport command-line client
 Package: yume-daemon
 Architecture: any
 Depends:
- libssl3t64 (>= 3.5.0),
+ libssl3t64 (= ${yume:OpenSSLVersion}),
  ${shlibs:Depends},
  ${misc:Depends}
 Suggests:

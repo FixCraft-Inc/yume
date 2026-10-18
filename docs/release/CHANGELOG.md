@@ -647,6 +647,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Debian service lifecycle.** Package configuration creates the locked
+  daemon account before its state directories. Upgrades restart a running
+  daemon and leave a stopped daemon stopped. Removal stops the daemon and
+  loaded module instances. Each module instance has a separate dynamic user.
+  Both packages require the exact patched OpenSSL
+  runtime version used for their build, so stock cannot replace it while
+  satisfying their dependencies.
+
 - **Cover method refusals match the reference.** The static cover answers
   methods other than GET and HEAD with Node's fixed 405 headers and
   `Method Not Allowed\n` body. Authenticated H2 admission still precedes

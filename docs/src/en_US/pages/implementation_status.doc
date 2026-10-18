@@ -585,9 +585,13 @@ refusal and closure checks between the two processes, which start from the
 generated setup kit's services and adapters.
 CMake installs these development programs together with the native schema-1
 `yume-setup` and `yume-doctor` programs, which make and check kits with the
-same OpenSSL release and credential readers. Installation does not qualify the application:
-Debian/service definitions use schema 1, while installed-service and production
-qualification remain incomplete.
+same OpenSSL release and credential readers. The Debian 13 package and systemd
+integration covers disabled installation, provisioning and doctor, checked
+loopback TCP and module streams, permission/configuration refusals, credential
+reload, stop, crash restart and client reconnection. Package checks also cover
+same-version upgrades, removal and purge, and refusal to replace the patched
+OpenSSL dependency with stock. Production and real-network qualification remain
+separate.
 
 An unrecoverable reconnect timer or SOCKS listener retry failure closes the
 client runtime and reports a typed terminal status. Both CLIs exit with failure
@@ -628,9 +632,9 @@ These qualification and integration tasks remain open:
   sustained cross-host loss and latency testing, upload window growth at the
   exit, UDP and IP carriage, and a consent interface in the C ABI;
 - complete installed-SDK qualification across the supported build/toolchain matrix;
-- installed package/service, including the module units' user and sandbox,
-  and remaining consumer migration around native `yume` and `yumed`, and a
-  qualified setup-to-first-SOCKS path over a real network;
+- distribution publication of the patched OpenSSL dependency and qualification
+  of each exact candidate package, remaining consumer migration around native
+  `yume` and `yumed`, and a qualified setup-to-first-SOCKS path over a real network;
 - a release-workflow run with the configured signing secret and existing
   release target. Local rejection tests cover trusted commit/tag verification,
   required signatures, manifest consistency and refusal of existing asset

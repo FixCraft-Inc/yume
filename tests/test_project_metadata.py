@@ -335,8 +335,91 @@ class MetadataTests(unittest.TestCase):
                      "PrivateNetwork=true", "Requires=yume-module@%i.socket"):
             self.assertIn(line + "\n", module_unit)
         self.assertIn("-/etc/yume ", module_unit)
-        self.assertNotIn("User=yume", module_unit)
+        self.assertNotIn("\nUser=yume\n", module_unit)
+        self.assertIn("\nUser=yume-module-%i\n", module_unit)
         self.assertIn("systemctl enable --now yume-module@echo.socket", readme)
+
+    @unittest.skipUnless(shutil.which("dh"), "debhelper is needed to inspect its actual sequence")
+    def test_debian_creates_service_user_before_tmpfiles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            shutil.copytree(ROOT / "debian", root / "debian")
+            result = subprocess.run(
+                ["dh", "binary", "--no-act", "--buildsystem=cmake"],
+                cwd=root, capture_output=True, text=True, timeout=30,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            sequence = result.stdout.splitlines()
+            users = next((i for i, line in enumerate(sequence)
+                          if line.strip().startswith("dh_installsysusers ")), None)
+            tmpfiles = next((i for i, line in enumerate(sequence)
+                             if line.strip().startswith("dh_installtmpfiles ")), None)
+            self.assertIsNotNone(users, "the package must create its service account on install")
+            self.assertIsNotNone(tmpfiles, "the package must create its service directories")
+            self.assertLess(users, tmpfiles, "tmpfiles needs the service account first")
+
+    @unittest.skipUnless(shutil.which("dh_installsystemd"), "debhelper generates the maintainer scripts")
+    def test_debian_maintainer_scripts_preserve_explicit_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            shutil.copytree(ROOT / "debian", root / "debian")
+            for command in (
+                    ["make", "-f", "debian/rules", "override_dh_installsystemd"],
+                    ["dh_installdeb", "-pyume-daemon"]):
+                result = subprocess.run(command, cwd=root, capture_output=True,
+                                        text=True, timeout=30, check=False,
+                                        env=dict(os.environ, DEB_RULES_REQUIRES_ROOT="no"))
+                self.assertEqual(result.returncode, 0, result.stderr)
+            scripts = root / "debian/yume-daemon/DEBIAN"
+            postinst = (scripts / "postinst").read_text(encoding="utf-8")
+            self.assertIn('if [ -n "$2" ]; then', postinst)
+            self.assertIn("deb-systemd-invoke try-restart 'yumed.service'", postinst)
+            preinst = scripts / "preinst"
+            self.assertFalse(preinst.exists(), "upgrade must keep the daemon up until configuration")
+            prerm = scripts / "prerm"
+            self.assertTrue(prerm.is_file(), "removal needs to stop running units")
+            removal = prerm.read_text(encoding="utf-8")
+            self.assertIn('[ "$1" = remove ]', removal)
+            self.assertIn('[ -z "${DPKG_ROOT:-}" ]', removal)
+            self.assertIn("deb-systemd-invoke stop yumed.service "
+                          "'yume-module@*.socket' 'yume-module@*.service'", removal)
+
+    @unittest.skipUnless(shutil.which("dh_gencontrol"), "debhelper generates binary dependency fields")
+    def test_debian_dependencies_use_the_build_runtime_version(self) -> None:
+        for query_status in (0, 23):
+            with self.subTest(query_status=query_status), tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                shutil.copytree(ROOT / "debian", root / "debian")
+                programs = root / "programs"
+                programs.mkdir()
+                query = programs / "dpkg-query"
+                version = "3.5.7-1~deb13u3+yume.fixture"
+                query.write_text(
+                    "#!/bin/sh\n"
+                    "test \"$1\" = -W && test \"$2\" = '-f=${Version}' || exit 24\n"
+                    f"printf '%s' '{version}'\nexit {query_status}\n",
+                    encoding="utf-8")
+                query.chmod(0o755)
+                for package in ("yume", "yume-daemon"):
+                    (root / "debian" / package).mkdir()
+                result = subprocess.run(
+                    ["make", "-f", "debian/rules", "override_dh_gencontrol"],
+                    cwd=root, capture_output=True, text=True, timeout=30,
+                    env=dict(os.environ, PATH=str(programs) + os.pathsep + os.environ["PATH"],
+                             DEB_RULES_REQUIRES_ROOT="no"),
+                    check=False,
+                )
+                if query_status:
+                    self.assertNotEqual(result.returncode, 0)
+                    for package in ("yume", "yume-daemon"):
+                        self.assertFalse((root / "debian" / package / "DEBIAN/control").exists(),
+                                         "a missing runtime version must stop package generation")
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    for package in ("yume", "yume-daemon"):
+                        control = (root / "debian" / package / "DEBIAN/control").read_text(encoding="utf-8")
+                        self.assertIn(f"Depends: libssl3t64 (= {version})\n", control)
 
     def test_installed_documentation_keeps_authoritative_links(self) -> None:
         for document in (

@@ -17,6 +17,9 @@ UMask=0077
 # A user of its own while it runs, so the module cannot read yumed's
 # credentials or reach another module's socket.
 DynamicUser=true
+# Include the instance: the implicit template account is shared by instances.
+# Dotted or long instances need a unique short User= in a service drop-in.
+User=yume-module-%i
 StateDirectory=yume-modules/%i
 InaccessiblePaths=-/etc/yume -/var/lib/yume -/var/log/yume -/run/yume
 

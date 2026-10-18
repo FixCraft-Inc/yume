@@ -59,21 +59,29 @@ two packages:
   service account and hardened systemd unit.
 
 The service is neither enabled nor started on installation. The bootstrap
-ships no credentials. Operators must install a provisioned server kit,
-review endpoint and destination policy, and validate it as the service
-account before starting it. The unit checks required paths and runs native
-configuration validation before startup. `systemctl reload yumed` validates
+ships no credentials. Package configuration creates the locked `yume` account
+before creating its state, log and runtime directories. Operators must install
+a provisioned server kit, review endpoint and destination policy, and validate
+it as the service account before starting it. The unit checks required paths
+and runs native configuration validation before startup. `systemctl reload yumed` validates
 again and then sends SIGHUP, which reloads the credential stores without
 dropping other clients. The server serves its cover site in-process.
 See the package's `README.Debian` for paths and permissions.
 
+Upgrading restarts a running daemon and leaves a stopped daemon stopped.
+Removal stops the daemon and loaded module socket/service instances through
+Debian's service-policy helper. Removal preserves `/etc/yume/yumed.json`;
+purge removes that conffile but retains operator-installed credentials and
+the service account.
+
 Debian builds use system dependencies and dynamically linked OpenSSL; they
 must not download dependencies. The build still requires OpenSSL 3.5 or newer
-with YUME's reviewed ClientHello patch. A separately packaged patched
-OpenSSL and its exact binary-package dependency remain publication
-prerequisites. Metadata, configure probes and archive tests do not qualify
-Debian build/install/upgrade behavior or a running packaged service. Those
-checks remain release gates.
+with YUME's reviewed ClientHello patch. Both binary packages require the exact
+`libssl3t64` version installed for their build. The separately packaged patched
+OpenSSL must use a package revision distinct from stock and remains a
+publication prerequisite. Each publication candidate needs distribution-specific
+build, install, upgrade and running-service checks. Metadata, configure probes
+and archive tests cover separate boundaries.
 
 No `libyume1` or `libyume-dev` release package is emitted before ABI freeze
 and release qualification. Their eventual split will separate the frozen

@@ -16,19 +16,26 @@ client. The daemon ships an unprovisioned schema-1 bootstrap and a disabled
 service. No private keys or usable authorization records are shipped or
 generated on install.
 
+The explicit installsysusers sequence creates the locked yume account before
+tmpfiles creates its state, log and runtime directories. Compat level 13
+does not include that sequence by default.
+
 The package is UNRELEASED and deliberately fails against stock Debian
 libssl-dev: native TLS requires the reviewed ClientHello API in
 patches/openssl/series. The build environment must provide a separately
-packaged OpenSSL 3.5+ carrying that API. Publishing that dependency and naming
-its exact binary-package requirement remain publication prerequisites.
-debian/rules never downloads or builds OpenSSL. Dynamic linking lets
-dpkg-shlibdeps record its runtime edge; debian/control also states the 3.5
-floor because provider-based ML-DSA lookup has no 3.5-only ELF symbol.
+packaged OpenSSL 3.5+ carrying that API. Publishing that dependency with a
+distinct package revision remains a prerequisite: patched bytes must not
+reuse a stock package version. debian/rules never downloads or builds
+OpenSSL. It records the build architecture's installed libssl3t64 version as
+an exact dependency of both binary packages, in addition to dpkg-shlibdeps'
+symbol requirements. The build-time 3.5 floor and ClientHello probe remain
+necessary because provider-based ML-DSA lookup and the patch's controls do
+not introduce an identifying ELF symbol.
 
 The BaseFWX modules remain available for explicit development builds,
 outside this package payload, as does the optional Qt desktop GUI
 (YUME_BUILD_GUI), which no package installs yet. Neither libyume1 nor
 libyume-dev is emitted before ABI freeze and release qualification;
-debian/libyume1.symbols is candidate review metadata only. Full Debian build,
-install, upgrade and service tests still have to pass in the intended
-distribution environment.
+debian/libyume1.symbols is candidate review metadata only. Each publication
+candidate needs Debian build, install, upgrade and service qualification in
+the intended distribution environment.

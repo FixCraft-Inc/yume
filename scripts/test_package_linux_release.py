@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tarfile
@@ -234,6 +235,83 @@ class NativeLaneGuardTests(unittest.TestCase):
     def test_the_real_workflow_passes(self) -> None:
         ci_yml = (preflight.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         preflight.check_native_lanes(ci_yml, self.SETUP)
+
+
+class ReleaseWorkflowTests(unittest.TestCase):
+    """Execute the dispatch guards without building or contacting GitHub."""
+
+    @staticmethod
+    def step_script(name: str) -> str:
+        workflow = (preflight.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        step = workflow.split(f"      - name: {name}\n", 1)[1]
+        lines = step.split("        run: |\n", 1)[1].splitlines()
+        script = []
+        for line in lines:
+            if line and not line.startswith("          "):
+                break
+            script.append(line[10:])
+        return "\n".join(script)
+
+    def dispatch(self, **overrides: str) -> tuple[subprocess.CompletedProcess, list[str]]:
+        with tempfile.TemporaryDirectory(prefix="yume-release-dispatch-") as directory:
+            root = Path(directory)
+            tool = root / "python3"
+            tool.write_text(
+                "#!/usr/bin/python3\n"
+                "import json, os, pathlib, sys\n"
+                "pathlib.Path(os.environ['CALL_LOG']).write_text(json.dumps(sys.argv[1:]))\n",
+                encoding="utf-8")
+            tool.chmod(0o700)
+            log = root / "call.json"
+            env = dict(os.environ, PATH=f"{root}:/usr/bin:/bin", CALL_LOG=str(log),
+                       GITHUB_REF="refs/heads/main", YUME_RELEASE_PROFILE=preflight.PROFILE,
+                       YUME_RELEASE_TAG="v0.3.0-rc1", YUME_PUBLISH="false",
+                       YUME_RC_GATES_APPROVED="false")
+            env.update(overrides)
+            result = subprocess.run(
+                ["bash", "-c", self.step_script("Validate release source and approvals")],
+                cwd=root, env=env, capture_output=True, text=True, timeout=10)
+            return result, json.loads(log.read_text()) if log.exists() else []
+
+    def test_dispatch_requires_the_main_branch(self) -> None:
+        for ref in ("refs/heads/DEV", "refs/tags/main"):
+            with self.subTest(ref=ref):
+                result, calls = self.dispatch(GITHUB_REF=ref)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("must be started from main", result.stderr)
+                self.assertEqual(calls, [])
+
+    def test_unapproved_publication_is_refused_before_preflight(self) -> None:
+        result, calls = self.dispatch(YUME_PUBLISH="true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires every documented RC gate", result.stderr)
+        self.assertEqual(calls, [])
+
+    def test_approved_publication_and_dry_run_reach_preflight(self) -> None:
+        for publish, approved in (("false", "false"), ("true", "true")):
+            with self.subTest(publish=publish):
+                result, calls = self.dispatch(YUME_PUBLISH=publish, YUME_RC_GATES_APPROVED=approved)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(calls, ["scripts/release_preflight.py", "--profile",
+                                         preflight.PROFILE, "--tag", "v0.3.0-rc1"])
+
+    def test_tag_input_is_forwarded_as_one_literal_argument(self) -> None:
+        tag = 'v0.3.0-rc1"; exit 19; # $(exit 20) `exit 21`'
+        result, calls = self.dispatch(YUME_RELEASE_TAG=tag)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls[-2:], ["--tag", tag])
+
+    def test_publication_uses_the_integrity_helpers(self) -> None:
+        signing = self.step_script("Sign artifacts and finalize the signed manifest")
+        upload = self.step_script("Attach to existing release")
+        self.assertIn('release_integrity.py sign artifacts "${YUME_RELEASE_TAG}"', signing)
+        self.assertIn('release_integrity.py upload artifacts "${YUME_RELEASE_TAG}"', upload)
+        workflow = (preflight.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn("GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}", workflow)
+        self.assertEqual(workflow.count("ref: ${{ github.sha }}"), 3)
+        self.assertEqual(workflow.count("persist-credentials: false"), 3)
+        self.assertNotIn("independent_security_review", workflow)
+        self.assertNotIn("--clobber", workflow)
 
 
 class DependencyFallbackTests(unittest.TestCase):

@@ -18,6 +18,7 @@ import tempfile
 
 from yume_dependencies import DependencyError, load_dependencies
 from generate_transport_profiles import ProfileError, active_profile_metadata
+from release_integrity import verify_source
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -132,16 +133,8 @@ def validate_tag(tag: str | None, version: str, commit: str) -> None:
     expected = version_for_tag(tag)
     require(version == expected,
             f"Release tag {tag} requires source version {expected}, found {version}")
-    try:
-        tagged_commit = subprocess.check_output(
-            ["git", "-C", str(ROOT), "rev-list", "-n", "1", tag],
-            text=True,
-            stderr=subprocess.STDOUT,
-        ).strip()
-    except subprocess.CalledProcessError as exc:
-        raise SystemExit(f"Release tag does not exist in this checkout: {tag}") from exc
-    require(tagged_commit == commit,
-            f"Release tag {tag} does not resolve to checked-out commit {commit}")
+    require(source_commit() == commit, "Release source commit changed during preflight")
+    verify_source(ROOT, tag)
 
 
 def validate_expected_artifacts() -> None:
@@ -226,6 +219,11 @@ def validate_workflow_guards() -> None:
         "publish:",
         "default: false",
         "workflow_dispatch releases must be started from main.",
+        "release_integrity.py sign artifacts",
+        "release_integrity.py upload artifacts",
+        'GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}',
+        'ref: ${{ github.sha }}',
+        "persist-credentials: false",
     )
     for needle in required_release:
         require(needle in release_yml, f"release.yml is missing required guard: {needle}")
@@ -302,6 +300,9 @@ def validate_workflow_guards() -> None:
         "busybox", "yume-gui", "yume-amd64-linux-static", "debian archive",
     )
     lowered = release_yml.lower()
+    for marker in ("--clobber", "independent_security_review", "YUME_GPG_AVAILABLE"):
+        require(marker not in release_yml,
+                f"release.yml includes obsolete publication control: {marker}")
     for marker in forbidden:
         require(marker not in lowered,
                 f"linux-desktop-0.3.0 workflow includes unsupported marker: {marker}")

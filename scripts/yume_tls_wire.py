@@ -16,6 +16,7 @@ import dataclasses
 import errno
 import hashlib
 import json
+import math
 import os
 import pathlib
 import selectors
@@ -379,6 +380,8 @@ class RecordTimeline:
 def relay_once(listen: tuple[str, int], target: tuple[str, int],
                output: pathlib.Path, timeout: float,
                ready_file: pathlib.Path | None) -> None:
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("TLS relay timeout must be finite and positive")
     captures = {"client_to_server": bytearray(), "server_to_client": bytearray()}
     timelines: dict[str, RecordTimeline] = {}
     with socket.create_server(listen, family=socket.AF_INET, backlog=1) as listener:
@@ -419,7 +422,9 @@ def relay_once(listen: tuple[str, int], target: tuple[str, int],
                     if len(captures[direction]) < MAX_CAPTURE_BYTES:
                         available = MAX_CAPTURE_BYTES - len(captures[direction])
                         captures[direction].extend(chunk[:available])
-                    destination.setblocking(True)
+                    # A stalled receiver must not bypass the idle deadline
+                    # while sendall waits for space in its socket buffer.
+                    destination.settimeout(max(deadline - time.monotonic(), 0.001))
                     try:
                         try:
                             destination.sendall(chunk)

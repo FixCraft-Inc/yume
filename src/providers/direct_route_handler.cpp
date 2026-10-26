@@ -619,14 +619,22 @@ private:
                             StatusCode::ProviderMismatch,
                             "route provider returned an empty read");
                     }
-                } else if (result.value().size() >
-                           stream_->max_write_size() ||
-                           (kind_ == ServiceKind::PacketChannel &&
-                            result.value().size() >
-                                packet_channel_->max_packet_size())) {
+                } else if (kind_ == ServiceKind::PacketChannel &&
+                           result.value().size() >
+                               packet_channel_->max_packet_size()) {
                     failure = Status(
                         StatusCode::ProviderMismatch,
                         "route read exceeded a declared I/O bound");
+                } else if (result.value().size() > stream_->max_write_size()) {
+                    // A byte read was bounded by the stream, so exceeding it
+                    // breaks the channel contract. A datagram the session's
+                    // packet bound cannot carry is dropped, as a smaller path
+                    // would drop it, and the flow keeps reading.
+                    if (kind_ == ServiceKind::ByteStream) {
+                        failure =
+                            Status(StatusCode::ProviderMismatch,
+                                   "route read exceeded a declared I/O bound");
+                    }
                 } else {
                     stream_write_inflight_ = true;
                     stream_write_expected_ = result.value().size();

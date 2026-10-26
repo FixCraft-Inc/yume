@@ -94,7 +94,8 @@ public:
 
     // On the context: the client's current session, or null when it has
     // none. A new session's view is fetched again and earlier circuits end,
-    // including one being built.
+    // including one being built. Pending consent is discarded; an already
+    // accepted hop policy remains until the configured length works again.
     void set_session(std::shared_ptr<CircuitSession> session) noexcept;
     // On the context: opens a TCP stream to destination through a circuit,
     // or through direct_service on the session when the route in use is one
@@ -107,7 +108,8 @@ public:
               std::string direct_service,
               engine::CancellationToken cancellation, Opened done) noexcept;
     CircuitPoolStatus status() const;
-    // Accepts the current proposal. NotFound when id is not its id.
+    // Accepts the current proposal on its session's verified, unexpired view.
+    // NotFound for a stale proposal or when id is not its id.
     engine::Status accept(std::string_view id) noexcept;
     // On the context. Ends every circuit, including one being built, and
     // refuses later opens.

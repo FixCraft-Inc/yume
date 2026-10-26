@@ -170,6 +170,84 @@ class EthernetReportTest(unittest.TestCase):
 
 
 
+class WanLinkCleanupTest(unittest.TestCase):
+    """Namespace creation and commands are mocked, including every signal."""
+
+    def setUp(self) -> None:
+        contexts = contextlib.ExitStack()
+        self.addCleanup(contexts.close)
+        self.holders = [mock.Mock(pid=101), mock.Mock(pid=102)]
+        for holder in self.holders:
+            holder.poll.return_value = None
+            holder.wait.return_value = -9
+        self.spawn = contexts.enter_context(mock.patch.object(
+            wan.subprocess, "Popen", side_effect=self.holders))
+        contexts.enter_context(mock.patch.object(wan.shutil, "which", side_effect=lambda name: f"/fixture/{name}"))
+        self.readlink = contexts.enter_context(mock.patch.object(
+            wan.os, "readlink", side_effect=lambda path: "own" if path == "/proc/self/ns/net" else path))
+        self.commands = contexts.enter_context(mock.patch.object(wan, "run"))
+        contexts.enter_context(mock.patch.object(wan.time, "sleep"))
+
+    def assert_stopped(self, count: int = 2) -> None:
+        for holder in self.holders[:count]:
+            holder.kill.assert_called_once()
+            holder.wait.assert_called_once_with(timeout=5)
+
+    def test_second_spawn_failure_releases_the_first_holder(self) -> None:
+        self.spawn.side_effect = [self.holders[0], OSError("fixture spawn failed")]
+        with self.assertRaisesRegex(OSError, "fixture spawn failed"):
+            wan.Link()
+        self.assert_stopped(1)
+        self.commands.assert_not_called()
+
+    def test_namespace_readiness_failure_releases_both_holders(self) -> None:
+        self.readlink.return_value = "own"
+        self.readlink.side_effect = None
+        with mock.patch.object(wan.time, "monotonic", side_effect=[0, 11]), \
+                self.assertRaisesRegex(wan.session.SessionFailure, "namespace did not start"):
+            wan.Link()
+        self.assert_stopped()
+
+    def test_namespace_read_failure_releases_both_holders(self) -> None:
+        self.readlink.side_effect = FileNotFoundError("fixture process disappeared")
+        with self.assertRaises(FileNotFoundError):
+            wan.Link()
+        self.assert_stopped()
+
+    def test_configuration_failure_releases_both_holders(self) -> None:
+        for fail_at in (1, 2, 3, 8, 18):
+            with self.subTest(command=fail_at):
+                for holder in self.holders:
+                    holder.reset_mock()
+                self.spawn.side_effect = self.holders
+                self.commands.side_effect = [None] * (fail_at - 1) + [
+                    subprocess.CalledProcessError(1, ["fixture-ip"])]
+                with self.assertRaises(subprocess.CalledProcessError):
+                    wan.Link()
+                self.assert_stopped()
+
+    def test_cleanup_attempts_every_holder_when_one_wait_fails(self) -> None:
+        self.commands.side_effect = OSError("fixture configuration failed")
+        self.holders[0].wait.side_effect = subprocess.TimeoutExpired("fixture-holder", 5)
+        with self.assertRaisesRegex(wan.session.SessionFailure, "router: TimeoutExpired"):
+            wan.Link()
+        self.assert_stopped()
+
+    def test_successful_close_reaps_once_and_is_idempotent(self) -> None:
+        link = wan.Link()
+        for holder in self.holders:
+            holder.kill.assert_not_called()
+        link.close()
+        link.close()
+        self.assert_stopped()
+
+    def test_holder_exit_race_still_reaps_it(self) -> None:
+        link = wan.Link()
+        self.holders[0].kill.side_effect = ProcessLookupError()
+        link.close()
+        self.assert_stopped()
+
+
 class WanEmulationTest(unittest.TestCase):
     def test_condition_fields_default_to_an_unshaped_link(self) -> None:
         self.assertEqual(wan.parse_condition("rtt=100,loss=0.5"),

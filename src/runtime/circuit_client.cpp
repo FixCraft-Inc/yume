@@ -12,10 +12,14 @@
 #include <limits>
 #include <map>
 #include <new>
+#include <optional>
+#include <tuple>
 #include <utility>
 
 #include <boost/asio/basic_waitable_timer.hpp>
 #include <boost/asio/post.hpp>
+
+#include "providers/control_task.hpp"
 
 namespace yume::runtime::circuit {
 namespace {
@@ -54,6 +58,63 @@ std::array<std::uint8_t, 4> u32(std::uint32_t value) noexcept {
             static_cast<std::uint8_t>(value >> 16U),
             static_cast<std::uint8_t>(value >> 8U),
             static_cast<std::uint8_t>(value)};
+}
+
+template <typename... Args>
+void invoke(std::function<void(Args...)>& callback, Args... args) noexcept {
+    auto done = std::exchange(callback, nullptr);
+    if (!done) return;
+    try {
+        done(std::move(args)...);
+    } catch (...) {
+        // Application exceptions cannot interrupt sibling completions or
+        // escape the execution context's reserved control-task pump.
+    }
+}
+
+// Reserve delivery before accepting a callback. Completion then needs no
+// allocation, and owns its executor even after the circuit has gone away.
+template <typename... Args>
+struct Completion final : std::enable_shared_from_this<Completion<Args...>> {
+    using Callback = std::function<void(Args...)>;
+
+    explicit Completion(
+        std::shared_ptr<providers::AsioExecutionContext> runner) noexcept
+        : context(std::move(runner)) {}
+
+    static std::shared_ptr<Completion> reserve(
+        const std::shared_ptr<providers::AsioExecutionContext>& context,
+        Callback& callback) {
+        auto operation = std::make_shared<Completion>(context);
+        operation->done = std::exchange(callback, nullptr);
+        return operation;
+    }
+
+    void finish(Args... args) noexcept {
+        result.emplace(std::move(args)...);
+        context->submit(task, this->shared_from_this());
+    }
+
+    static void deliver(void* owner) noexcept {
+        auto& operation = *static_cast<Completion*>(owner);
+        std::apply(
+            [&](auto&&... args) { invoke(operation.done, std::move(args)...); },
+            std::move(*operation.result));
+        operation.result.reset();
+    }
+
+    std::shared_ptr<providers::AsioExecutionContext> context;
+    Callback done;
+    std::optional<std::tuple<Args...>> result;
+    providers::ControlTask task{&Completion::deliver};
+};
+
+using ReadDelivery = Completion<Result<ReceivedRecord>>;
+using WriteDelivery = Completion<Status, std::size_t>;
+using OpenDelivery = Completion<Result<std::shared_ptr<StreamResponder>>>;
+
+[[nodiscard]] Status copy_status(const Status& status) noexcept {
+    return Status::diagnostic(status.code(), status.message());
 }
 
 }  // namespace
@@ -162,8 +223,14 @@ struct ClientCircuit::State final : std::enable_shared_from_this<State> {
                      Opened done) noexcept;
     void fail(std::size_t hop, c1::CircuitReason reason) noexcept;
     void close(Status reason) noexcept;
+    bool has_stream_capacity() const noexcept {
+        return phase == Phase::Ready &&
+               streams.size() < limits.streams_per_circuit &&
+               next_stream != 0U && window_available(limits.stream_window);
+    }
     // How much a stream's window may grow now.
     std::uint32_t window_growth(std::uint32_t window) const noexcept;
+    bool window_available(std::uint32_t grant) const noexcept;
 };
 
 namespace detail {
@@ -179,18 +246,18 @@ public:
     using State = ClientCircuit::State;
 
     ClientStream(std::weak_ptr<State> circuit, std::uint32_t id,
-                 engine::ExecutorAffinity affinity, std::uint32_t window,
-                 ClientCircuit::Opened opened)
+                 std::shared_ptr<providers::AsioExecutionContext> context,
+                 std::uint32_t window, std::shared_ptr<OpenDelivery> opened)
         : circuit_(std::move(circuit)),
+          context_(std::move(context)),
           id_(id),
-          affinity_(affinity),
           window_(window),
           receive_allowed_(window),
           send_window_(window),
           opened_(std::move(opened)) {}
 
     engine::ExecutorAffinity executor_affinity() const noexcept override {
-        return affinity_;
+        return context_->affinity();
     }
     engine::ServiceKind service_kind() const noexcept override {
         return engine::ServiceKind::ByteStream;
@@ -202,51 +269,75 @@ public:
 
     void async_read(CancellationToken cancellation,
                     ReadCompletion completion) override {
+        std::shared_ptr<ReadDelivery> delivery;
+        try {
+            delivery = ReadDelivery::reserve(context_, completion);
+        } catch (...) {
+            invoke(completion, Result<ReceivedRecord>(
+                                   Status(StatusCode::ResourceExhausted)));
+            return;
+        }
         if (pending_read_) {
-            complete(
-                std::move(completion),
+            delivery->finish(
                 Result<ReceivedRecord>(Status(StatusCode::FailedPrecondition)));
             return;
         }
-        pending_read_ = std::move(completion);
         if (cancellation.is_cancelled()) {
-            finish_read(Result<ReceivedRecord>(Status(StatusCode::Cancelled)));
+            delivery->finish(
+                Result<ReceivedRecord>(Status(StatusCode::Cancelled)));
             return;
         }
-        auto registration =
-            cancellation.register_callback([weak = weak_from_this()] {
-                const auto self = weak.lock();
-                if (!self) return;
-                const auto state = self->circuit_.lock();
-                if (!state) return;
-                try {
-                    boost::asio::post(state->context->executor(), [weak] {
-                        if (const auto stream = weak.lock()) {
-                            stream->finish_read(Result<ReceivedRecord>(
-                                Status(StatusCode::Cancelled)));
-                        }
-                    });
-                } catch (...) {
-                }
-            });
-        if (registration.ok())
-            read_registration_ = std::move(registration).take_value();
+        try {
+            auto read = std::make_shared<PendingRead>();
+            read->delivery = delivery;
+            read->stream = weak_from_this();
+            auto registration = cancellation.register_callback(
+                [weak = std::weak_ptr<PendingRead>(read)] {
+                    if (const auto operation = weak.lock()) {
+                        operation->delivery->context->submit(
+                            operation->cancelled, operation);
+                    }
+                });
+            if (!registration.ok()) {
+                delivery->finish(
+                    Result<ReceivedRecord>(copy_status(registration.status())));
+                return;
+            }
+            read->registration = std::move(registration).take_value();
+            pending_read_ = std::move(read);
+        } catch (...) {
+            delivery->finish(
+                Result<ReceivedRecord>(Status(StatusCode::ResourceExhausted)));
+            return;
+        }
         deliver();
     }
 
     void async_write(Buffer payload, CancellationToken,
                      WriteCompletion completion) override {
+        std::shared_ptr<WriteDelivery> delivery;
+        try {
+            delivery = WriteDelivery::reserve(context_, completion);
+        } catch (...) {
+            invoke(completion, Status(StatusCode::ResourceExhausted),
+                   std::size_t{0U});
+            return;
+        }
         if (terminated() || shutdown_) {
-            complete_write(std::move(completion), Status(StatusCode::Closed),
-                           0U);
+            delivery->finish(Status(StatusCode::Closed), 0U);
             return;
         }
         const auto size = payload.size();
         if (size == 0U) {
-            complete_write(std::move(completion), Status::success(), 0U);
+            delivery->finish(Status::success(), 0U);
             return;
         }
-        writes_.push_back({std::move(payload), 0U, std::move(completion)});
+        try {
+            writes_.push_back({std::move(payload), 0U, delivery});
+        } catch (...) {
+            delivery->finish(Status(StatusCode::ResourceExhausted), 0U);
+            return;
+        }
         pump();
     }
 
@@ -269,12 +360,9 @@ public:
 
     // From the circuit, once BEGIN is queued.
     void begun() noexcept {
-        // Empty the member, which a move need not do (libc++ leaves a small
-        // target in place), or a later abort would complete the open again.
         auto opened = std::exchange(opened_, nullptr);
         if (opened) {
-            complete_open(
-                std::move(opened),
+            opened->finish(
                 Result<std::shared_ptr<StreamResponder>>(shared_from_this()));
         }
     }
@@ -316,23 +404,21 @@ public:
     }
 
     // The circuit ended, or this stream did.
-    void abort(Status reason) noexcept {
+    void abort(const Status& reason) noexcept {
         if (terminated_.exchange(true)) return;
         // Reads that come later end the same way.
-        try {
-            end_status_ = reason;
-        } catch (...) {
-            end_status_ = Status(reason.code());
-        }
+        end_status_ = copy_status(reason);
+        received_.clear();
         auto opened = std::exchange(opened_, nullptr);
         if (opened)
-            complete_open(std::move(opened),
-                          Result<std::shared_ptr<StreamResponder>>(reason));
-        finish_read(Result<ReceivedRecord>(reason));
-        auto writes = std::move(writes_);
-        writes_.clear();
-        for (auto& write : writes)
-            complete_write(std::move(write.done), reason, write.offset);
+            opened->finish(
+                Result<std::shared_ptr<StreamResponder>>(copy_status(reason)));
+        finish_read(Result<ReceivedRecord>(copy_status(reason)));
+        while (!writes_.empty()) {
+            auto write = std::move(writes_.front());
+            writes_.pop_front();
+            write.done->finish(copy_status(reason), write.offset);
+        }
         forget();
     }
 
@@ -361,7 +447,7 @@ public:
                     auto done = std::move(write.done);
                     const auto size = write.data.size();
                     writes_.pop_front();
-                    complete_write(std::move(done), Status::success(), size);
+                    done->finish(Status::success(), size);
                 }
             }
             if (writes_.empty() && shutdown_ && !end_sent_) {
@@ -378,10 +464,26 @@ public:
     std::uint32_t id() const noexcept { return id_; }
 
 private:
+    struct PendingRead final {
+        static void cancel(void* owner) noexcept {
+            auto& read = *static_cast<PendingRead*>(owner);
+            if (const auto stream = read.stream.lock();
+                stream && stream->pending_read_.get() == &read) {
+                stream->finish_read(
+                    Result<ReceivedRecord>(Status(StatusCode::Cancelled)));
+            }
+        }
+
+        std::shared_ptr<ReadDelivery> delivery;
+        std::weak_ptr<ClientStream> stream;
+        CancellationRegistration registration;
+        providers::ControlTask cancelled{&PendingRead::cancel};
+    };
+
     struct PendingWrite final {
         Buffer data;
         std::size_t offset{0U};
-        WriteCompletion done;
+        std::shared_ptr<WriteDelivery> done;
     };
 
     void send_end(c1::StreamReason reason) noexcept {
@@ -402,27 +504,33 @@ private:
     // Hands a received record to a waiting read, or reports the end.
     void deliver() noexcept {
         if (!pending_read_) return;
+        if (terminated()) {
+            finish_read(Result<ReceivedRecord>(copy_status(end_status_)));
+            return;
+        }
         if (!received_.empty()) {
-            auto buffer = std::move(received_.front());
-            received_.pop_front();
-            const auto size = buffer.size();
-            CarrierCredit credit(
-                size, [weak = weak_from_this()](std::size_t released) {
-                    if (const auto self = weak.lock()) self->consumed(released);
-                });
-            finish_read(Result<ReceivedRecord>(
-                ReceivedRecord(std::move(buffer), std::move(credit))));
+            try {
+                CarrierCredit credit(
+                    received_.front().size(),
+                    [weak = weak_from_this()](std::size_t released) {
+                        if (const auto self = weak.lock())
+                            self->consumed(released);
+                    });
+                auto buffer = std::move(received_.front());
+                received_.pop_front();
+                finish_read(Result<ReceivedRecord>(
+                    ReceivedRecord(std::move(buffer), std::move(credit))));
+            } catch (...) {
+                if (const auto state = circuit_.lock())
+                    state->close(Status(StatusCode::ResourceExhausted));
+                else
+                    abort(Status(StatusCode::ResourceExhausted));
+            }
             return;
         }
         if (remote_done_) {
             finish_read(
                 Result<ReceivedRecord>(Status(StatusCode::EndOfStream)));
-        } else if (terminated()) {
-            try {
-                finish_read(Result<ReceivedRecord>(end_status_));
-            } catch (...) {
-                finish_read(Result<ReceivedRecord>(end_status_.code()));
-            }
         }
     }
 
@@ -449,82 +557,24 @@ private:
     }
 
     void finish_read(Result<ReceivedRecord> result) noexcept {
-        auto completion = std::move(pending_read_);
-        pending_read_ = nullptr;
-        read_registration_.unregister();
-        if (completion) complete(std::move(completion), std::move(result));
+        const auto read = std::exchange(pending_read_, nullptr);
+        if (!read) return;
+        read->registration.unregister();
+        read->delivery->finish(std::move(result));
     }
 
     void forget() noexcept {
         if (const auto state = circuit_.lock()) state->streams.erase(id_);
     }
 
-    // Completions run from the executor, never inside the caller.
-    void complete(ReadCompletion completion,
-                  Result<ReceivedRecord> result) noexcept {
-        const auto state = circuit_.lock();
-        try {
-            if (!state) throw Status(StatusCode::Closed);
-            auto shared =
-                std::make_shared<Result<ReceivedRecord>>(std::move(result));
-            boost::asio::post(
-                state->context->executor(),
-                [completion = std::move(completion), shared]() mutable {
-                    try {
-                        completion(std::move(*shared));
-                    } catch (...) {
-                    }
-                });
-        } catch (...) {
-        }
-    }
-
-    void complete_write(WriteCompletion completion, Status status,
-                        std::size_t size) noexcept {
-        if (!completion) return;
-        const auto state = circuit_.lock();
-        try {
-            if (!state) throw Status(StatusCode::Closed);
-            boost::asio::post(
-                state->context->executor(),
-                [completion = std::move(completion), status, size] {
-                    try {
-                        completion(status, size);
-                    } catch (...) {
-                    }
-                });
-        } catch (...) {
-        }
-    }
-
-    void complete_open(
-        ClientCircuit::Opened opened,
-        Result<std::shared_ptr<StreamResponder>> result) noexcept {
-        const auto state = circuit_.lock();
-        try {
-            if (!state) throw Status(StatusCode::Closed);
-            auto shared =
-                std::make_shared<Result<std::shared_ptr<StreamResponder>>>(
-                    std::move(result));
-            boost::asio::post(state->context->executor(),
-                              [opened = std::move(opened), shared]() mutable {
-                                  try {
-                                      opened(std::move(*shared));
-                                  } catch (...) {
-                                  }
-                              });
-        } catch (...) {
-        }
-    }
-
     std::weak_ptr<State> circuit_;
+    std::shared_ptr<providers::AsioExecutionContext> context_;
     std::uint32_t id_;
-    engine::ExecutorAffinity affinity_;
     std::uint32_t window_;
     std::uint32_t receive_allowed_;
     std::uint32_t consumed_{0U};
     std::uint64_t send_window_;
-    ClientCircuit::Opened opened_;
+    std::shared_ptr<OpenDelivery> opened_;
     bool connected_{false};
     bool remote_done_{false};
     bool shutdown_{false};
@@ -533,8 +583,7 @@ private:
     std::atomic<bool> terminated_{false};
     Status end_status_{StatusCode::Closed};
     std::deque<Buffer> received_;
-    ReadCompletion pending_read_;
-    CancellationRegistration read_registration_;
+    std::shared_ptr<PendingRead> pending_read_;
     std::deque<PendingWrite> writes_;
 };
 
@@ -867,35 +916,46 @@ void ClientCircuit::State::resume_writers() noexcept {
 
 void ClientCircuit::State::open_stream(const ytp1::Destination& destination,
                                        Opened done) noexcept {
-    const auto refuse = [&](Status status) {
-        try {
-            boost::asio::post(context->executor(), [done = std::move(done),
-                                                    status]() mutable {
-                try {
-                    done(Result<std::shared_ptr<StreamResponder>>(status));
-                } catch (...) {
-                }
-            });
-        } catch (...) {
-        }
+    std::shared_ptr<OpenDelivery> opened;
+    try {
+        opened = OpenDelivery::reserve(context, done);
+    } catch (...) {
+        invoke(done, Result<std::shared_ptr<StreamResponder>>(
+                         Status(StatusCode::ResourceExhausted)));
+        return;
+    }
+    const auto refuse = [&](Status status) noexcept {
+        opened->finish(
+            Result<std::shared_ptr<StreamResponder>>(std::move(status)));
     };
     if (phase != Phase::Ready)
         return refuse(Status(StatusCode::FailedPrecondition));
-    if (streams.size() >= limits.streams_per_circuit || next_stream == 0U) {
+    if (!has_stream_capacity()) {
         return refuse(Status(StatusCode::ResourceExhausted));
     }
+    std::shared_ptr<detail::ClientStream> stream;
+    const auto failed = [&](StatusCode code) noexcept {
+        // Map insertion can fail before close() owns this stream. Its open
+        // operation must still settle, including that unpublished case.
+        if (stream)
+            stream->abort(Status(code));
+        else
+            refuse(Status(code));
+        close(Status(code));
+    };
     try {
         auto payload = c1::EncodeBeginPayload(destination);
         if (!payload.ok()) return refuse(Status(StatusCode::InvalidArgument));
         const auto id = next_stream++;
-        auto stream = std::make_shared<detail::ClientStream>(
-            weak_from_this(), id, context->affinity(), limits.stream_window,
-            std::move(done));
+        stream = std::make_shared<detail::ClientStream>(
+            weak_from_this(), id, context, limits.stream_window, opened);
         streams.emplace(id, stream);
         send_message(route.size(), c1::RelayType::Begin, id, *payload.value);
         stream->begun();
+    } catch (const std::bad_alloc&) {
+        failed(StatusCode::ResourceExhausted);
     } catch (...) {
-        close(Status(StatusCode::Internal));
+        failed(StatusCode::Internal);
     }
 }
 
@@ -904,9 +964,18 @@ std::uint32_t ClientCircuit::State::window_growth(
     if (window >= limits.max_stream_window) return 0U;
     const std::uint32_t growth =
         std::min(window, limits.max_stream_window - window);
-    std::uint64_t granted = growth;
-    for (const auto& [id, stream] : streams) granted += stream->window();
-    return granted <= limits.circuit_window ? growth : 0U;
+    return window_available(growth) ? growth : 0U;
+}
+
+bool ClientCircuit::State::window_available(
+    std::uint32_t grant) const noexcept {
+    if (grant > limits.circuit_window) return false;
+    auto remaining = limits.circuit_window - grant;
+    for (const auto& [id, stream] : streams) {
+        if (stream->window() > remaining) return false;
+        remaining -= stream->window();
+    }
+    return true;
 }
 
 void ClientCircuit::State::fail(std::size_t hop,
@@ -925,17 +994,12 @@ void ClientCircuit::State::close(Status reason) noexcept {
     entry->close(Status(StatusCode::Cancelled));
     forward_queue.clear();
     exchange.reset();
-    auto ending = std::move(streams);
-    streams.clear();
-    for (auto& [id, stream] : ending) stream->abort(reason);
-    auto done = std::move(built);
-    built = nullptr;
-    if (done) {
-        try {
-            done(reason);
-        } catch (...) {
-        }
+    while (!streams.empty()) {
+        auto stream = std::move(streams.begin()->second);
+        streams.erase(streams.begin());
+        stream->abort(reason);
     }
+    invoke(built, std::move(reason));
     auto observer = std::move(closed_observer);
     closed_observer = nullptr;
     if (observer) {
@@ -1008,6 +1072,10 @@ bool ClientCircuit::closed() const noexcept {
 
 std::size_t ClientCircuit::streams() const noexcept {
     return state_->streams.size();
+}
+
+bool ClientCircuit::has_stream_capacity() const noexcept {
+    return state_->has_stream_capacity();
 }
 
 void ClientCircuit::on_closed(std::function<void()> observer) noexcept {

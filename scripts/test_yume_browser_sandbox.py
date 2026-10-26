@@ -405,6 +405,7 @@ exit 0
             binary = install / "chrome"
             node = root / "node"
             sanitizer_marker = root / "sanitizer-ran"
+            chrome_exit_marker = root / "chrome-exit"
             self._write_executable(
                 launcher,
                 """#!/bin/sh
@@ -412,6 +413,10 @@ if [ "${1-}" = "--version" ]; then
     echo 'Google Chrome 151.0.7922.71'
     exit 0
 fi
+# Stay alive through readiness and fail only after the capture driver closes us.
+while [ ! -e "$CHROME_EXIT_MARKER" ]; do
+    sleep 0.01
+done
 exit 7
 """,
             )
@@ -425,7 +430,7 @@ if [ "${1-}" = "--version" ]; then
 fi
 case "${1-}" in
     *server.mjs) exec /bin/sleep 60 ;;
-    *capture_chrome.mjs) exit 0 ;;
+    *capture_chrome.mjs) touch "$CHROME_EXIT_MARKER"; exit 0 ;;
     *sanitize_netlog.mjs) touch "$SANITIZER_MARKER"; exit 0 ;;
 esac
 exit 1
@@ -513,6 +518,7 @@ exit 1
                 "DISPLAY": ":99",
                 "PATH": f"{fake_bin}:/usr/bin:/bin",
                 "SANITIZER_MARKER": str(sanitizer_marker),
+                "CHROME_EXIT_MARKER": str(chrome_exit_marker),
                 "YUME_CHROME_LAUNCHER": str(launcher),
                 "YUME_CHROME_BINARY": str(binary),
             })
@@ -531,6 +537,7 @@ exit 1
         result, sanitizer_ran = self._run_normal_capture(self._ISOLATED_IP_STUB)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Chrome exited unsuccessfully", result.stderr)
+        self.assertIn("status 7", result.stderr)
         self.assertFalse(sanitizer_ran)
 
     def test_normal_capture_requires_isolated_network(self) -> None:

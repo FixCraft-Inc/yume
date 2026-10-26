@@ -1850,6 +1850,9 @@ void NativeRun::fill_status(BackendStatus& status) const {
         }
         return;
     }
+    // This run authenticated one session, even after it ends or is stopped.
+    // The session pointer is published before start succeeds and never reset.
+    status.sessions = session ? 1U : 0U;
     {
         std::lock_guard<std::mutex> lock(ended_mutex_);
         if (ended_) {
@@ -1863,7 +1866,6 @@ void NativeRun::fill_status(BackendStatus& status) const {
     // Engine closure precedes its endpoint notification. Publish the end
     // only with the reason and lifecycle line recorded by that callback.
     status.session = BackendSession::Active;
-    status.sessions = 1U;
     status.connected_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
                                                               connected_since)
@@ -2165,6 +2167,9 @@ private:
     mutable std::mutex run_mutex_;
     std::shared_ptr<NativeRun> run_;
     std::thread runner_;
+    // The current start's counts after its run drains. Under run_mutex_.
+    std::uint64_t sessions_{0U};
+    std::uint32_t failed_attempts_{0U};
 };
 
 void NativeBackend::shutdown(const std::shared_ptr<NativeRun>& run,
@@ -2218,6 +2223,11 @@ BackendIo NativeBackend::start_run(
     if (current()) {
         describe(error, "endpoint is already running");
         return BackendIo::AlreadyRunning;
+    }
+    {
+        std::lock_guard<std::mutex> lock(run_mutex_);
+        sessions_ = 0U;
+        failed_attempts_ = 0U;
     }
     const bool server = config_.role() == v1::Role::Server;
     std::chrono::milliseconds client_deadline = kDefaultClientStart;
@@ -2361,10 +2371,16 @@ void NativeBackend::stop() noexcept {
         // between still counts its traffic.
         shutdown(run, runner);
         if (!run) return;
+        const auto counts = run->keeper
+                                ? run->keeper->session_counts()
+                                : std::pair<std::uint64_t, std::uint32_t>{
+                                      run->session ? 1U : 0U, 0U};
         {
             std::lock_guard<std::mutex> lock(run_mutex_);
             std::lock_guard<std::mutex> record_lock(record_->mutex);
             record_->retired = add(record_->retired, run->traffic());
+            sessions_ = counts.first;
+            failed_attempts_ = counts.second;
             run_.reset();
         }
         record_->say("stopped");
@@ -2390,6 +2406,8 @@ BackendStatus NativeBackend::status() const {
         std::lock_guard<std::mutex> record_lock(record_->mutex);
         run = run_;
         status.traffic = record_->retired;
+        status.sessions = sessions_;
+        status.failed_attempts = failed_attempts_;
     }
     if (run && !run->server) run->fill_status(status);
     return status;

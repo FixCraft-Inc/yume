@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <string_view>
+#include <utility>
 
 #include <boost/asio/basic_waitable_timer.hpp>
 
@@ -70,6 +71,9 @@ public:
     std::shared_ptr<engine::SessionEngine> active_session() const noexcept;
     // Callable from any thread, including after close.
     NativeClientStatus status() const;
+    // {sessions, failed_attempts}, including after close. Copies no status
+    // text, so teardown can retain these totals without allocating.
+    std::pair<std::uint64_t, std::uint32_t> session_counts() const;
     // Records a failure the owner stops for, as the status's last failure.
     void record_failure(const engine::Status& failure) noexcept;
     // On the context: when the keeper is waiting to retry, starts that

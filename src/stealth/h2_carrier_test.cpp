@@ -745,6 +745,55 @@ void ObserverClockStartsAtFirstCarrierEvent() {
     assert(snapshot.events.front().elapsed_us == 0);
 }
 
+void HostHeaderSuppliesRequestAuthority() {
+    nghttp2_session_callbacks* raw_callbacks = nullptr;
+    assert(nghttp2_session_callbacks_new(&raw_callbacks) == 0);
+    const std::unique_ptr<nghttp2_session_callbacks,
+                          decltype(&nghttp2_session_callbacks_del)>
+        callbacks(raw_callbacks, nghttp2_session_callbacks_del);
+    nghttp2_session* raw_client = nullptr;
+    assert(nghttp2_session_client_new(&raw_client, callbacks.get(), nullptr) ==
+           0);
+    const std::unique_ptr<nghttp2_session, decltype(&nghttp2_session_del)>
+        client(raw_client, nghttp2_session_del);
+    assert(nghttp2_submit_settings(client.get(), NGHTTP2_FLAG_NONE, nullptr,
+                                   0U) == 0);
+    H2Carrier server(H2CarrierRole::Server);
+    // A host-only request and the following ordinary request both remain
+    // usable on the same HTTP/2 connection.
+    for (const bool host_only : {true, false}) {
+        H2Headers fields{{":method", "GET"},
+                         {":scheme", "https"},
+                         {":path", "/"},
+                         {host_only ? "host" : ":authority", "cover.example"}};
+        std::vector<nghttp2_nv> headers;
+        for (auto& [name, value] : fields) {
+            headers.push_back({reinterpret_cast<std::uint8_t*>(name.data()),
+                               reinterpret_cast<std::uint8_t*>(value.data()),
+                               name.size(), value.size(),
+                               NGHTTP2_NV_FLAG_NONE});
+        }
+        const auto stream =
+            nghttp2_submit_request(client.get(), nullptr, headers.data(),
+                                   headers.size(), nullptr, nullptr);
+        assert(stream > 0);
+        for (;;) {
+            const std::uint8_t* wire = nullptr;
+            const auto size = nghttp2_session_mem_send(client.get(), &wire);
+            assert(size >= 0);
+            if (size == 0) break;
+            server.Feed(wire, static_cast<std::size_t>(size));
+            assert(!server.failed());
+        }
+        const auto requests = server.TakeRequests();
+        assert(requests.size() == 1U);
+        assert(requests.front().stream_id == stream);
+        assert(requests.front().authority == "cover.example");
+        assert(requests.front().method == "GET" &&
+               requests.front().path == "/");
+    }
+}
+
 // The front door answers a CONNECT that fails admission as the cover answers
 // any request, and the client then has no carrier.
 void UnadmittedConnectGetsAnOrdinaryResponse() {
@@ -1172,6 +1221,7 @@ int main() {
     ObserverDoesNotChangeOpeningWire();
     ObserverCapIsFailOpenAndBounded();
     ObserverClockStartsAtFirstCarrierEvent();
+    HostHeaderSuppliesRequestAuthority();
     UnadmittedConnectGetsAnOrdinaryResponse();
     ServerResetDropsPendingRequestAndReportsClose();
     ServerSaturationRefusalIsRetryableAndReleasesState();

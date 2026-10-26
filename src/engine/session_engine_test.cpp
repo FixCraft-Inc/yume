@@ -380,6 +380,7 @@ private:
 };
 
 struct SecurityTrace final {
+    EndpointRole local_role{EndpointRole::Server};
     // The echo service's kind in the peer's authenticated manifest.
     ytp1::ServiceKind echo_kind{ytp1::ServiceKind::ByteStream};
     std::vector<RecordKeyToken> sealed;
@@ -409,16 +410,28 @@ public:
     }
     std::size_t max_sealed_overhead() const noexcept override { return 0U; }
     Status initialize(const SessionAuthenticationContext& context) override {
-        CHECK(context.local_role == EndpointRole::Server);
+        CHECK(context.local_role == trace_->local_role);
         CHECK(context.channel_exporter.size() == kSessionExporterBytes);
-        CHECK(context.secure_channel_peer.peer_role() == EndpointRole::Client);
-        CHECK(!context.secure_channel_peer.authenticated());
-        CHECK(context.secure_channel_peer.identity().empty());
+        if (trace_->local_role == EndpointRole::Server) {
+            CHECK(context.local_role == EndpointRole::Server);
+            CHECK(context.secure_channel_peer.peer_role() ==
+                  EndpointRole::Client);
+            CHECK(!context.secure_channel_peer.authenticated());
+            CHECK(context.secure_channel_peer.identity().empty());
+        } else {
+            CHECK(context.secure_channel_peer.peer_role() ==
+                  EndpointRole::Server);
+            CHECK(context.secure_channel_peer.authenticated());
+            CHECK(context.secure_channel_peer.identity() == "server");
+        }
         ++trace_->initialized;
         return Status::success();
     }
     Result<AuthenticationOutput> start_authentication() override {
         AuthenticationOutput output;
+        if (trace_->local_role == EndpointRole::Client) {
+            return Result<AuthenticationOutput>(std::move(output));
+        }
         output.outbound_kind = AuthenticationMessageKind::Challenge;
         output.outbound_message = auth_message(ytp1::AuthMessageType::Challenge,
                                                ytp1::EndpointRole::Server);
@@ -426,14 +439,27 @@ public:
     }
     Result<AuthenticationOutput> process_authentication(
         AuthenticationMessageKind kind, std::span<const std::byte>) override {
-        CHECK(kind == AuthenticationMessageKind::Response);
         AuthenticationOutput output;
-        output.outbound_kind = AuthenticationMessageKind::Accepted;
-        output.outbound_message = auth_message(ytp1::AuthMessageType::Accepted,
-                                               ytp1::EndpointRole::Server);
+        if (trace_->local_role == EndpointRole::Client) {
+            if (kind == AuthenticationMessageKind::Challenge) {
+                output.outbound_kind = AuthenticationMessageKind::Response;
+                output.outbound_message =
+                    auth_message(ytp1::AuthMessageType::Response,
+                                 ytp1::EndpointRole::Client);
+                return Result<AuthenticationOutput>(std::move(output));
+            }
+            CHECK(kind == AuthenticationMessageKind::Accepted);
+        } else {
+            CHECK(kind == AuthenticationMessageKind::Response);
+            output.outbound_kind = AuthenticationMessageKind::Accepted;
+            output.outbound_message = auth_message(
+                ytp1::AuthMessageType::Accepted, ytp1::EndpointRole::Server);
+        }
         output.established = true;
         output.authenticated_peer = require(PeerEvidence::create(
-            EndpointRole::Client, "device-1", "composite-ed25519-mldsa87",
+            trace_->local_role == EndpointRole::Server ? EndpointRole::Client
+                                                       : EndpointRole::Server,
+            "device-1", "composite-ed25519-mldsa87",
             std::vector<std::byte>{std::byte{1}}));
         output.authenticated_peer_capability_manifest =
             capability_bytes(trace_->peer_epoch_bytes, trace_->echo_kind);
@@ -488,7 +514,10 @@ public:
           trace_(std::move(trace)) {}
     const ProviderDescriptor& descriptor() const noexcept override { return descriptor_; }
     Result<std::unique_ptr<SessionSecurityProvider>> create(EndpointRole role) override {
-        CHECK(role == EndpointRole::Server);
+        CHECK(role == trace_->local_role);
+        if (trace_->local_role == EndpointRole::Server) {
+            CHECK(role == EndpointRole::Server);
+        }
         std::unique_ptr<SessionSecurityProvider> provider =
             std::make_unique<FakeSecurity>(trace_);
         return Result<std::unique_ptr<SessionSecurityProvider>>(std::move(provider));
@@ -569,11 +598,16 @@ private:
 class FakeSecureChannel final : public SecureChannel {
 public:
     explicit FakeSecureChannel(bool exporter_available = true,
-                               std::string provider_id = "test.tls")
-        : descriptor_(make_descriptor(
-              std::move(provider_id), ProviderKind::SecureChannel)),
+                               std::string provider_id = "test.tls",
+                               EndpointRole local_role = EndpointRole::Server)
+        : descriptor_(make_descriptor(std::move(provider_id),
+                                      ProviderKind::SecureChannel)),
           exporter_available_(exporter_available),
-          peer_(SecureChannelPeerEvidence::anonymous_client()) {}
+          peer_(local_role == EndpointRole::Server
+                    ? SecureChannelPeerEvidence::anonymous_client()
+                    : require(SecureChannelPeerEvidence::authenticated(
+                          EndpointRole::Server, "server", "tls13",
+                          std::vector<std::byte>{std::byte{1}}))) {}
     const ProviderDescriptor& descriptor() const noexcept override {
         return descriptor_;
     }
@@ -611,10 +645,12 @@ class FakeCarrier final : public Carrier {
 public:
     explicit FakeCarrier(bool exporter_available = true,
                          std::string provider_id = "test.carrier",
-                         std::string secure_provider_id = "test.tls")
-        : descriptor_(make_descriptor(
-              std::move(provider_id), ProviderKind::Carrier)),
-          secure_(exporter_available, std::move(secure_provider_id)) {}
+                         std::string secure_provider_id = "test.tls",
+                         EndpointRole local_role = EndpointRole::Server)
+        : descriptor_(
+              make_descriptor(std::move(provider_id), ProviderKind::Carrier)),
+          secure_(exporter_available, std::move(secure_provider_id),
+                  local_role) {}
     const ProviderDescriptor& descriptor() const noexcept override {
         return descriptor_;
     }
@@ -677,7 +713,8 @@ private:
 std::shared_ptr<const EngineGraph> graph(
     const std::shared_ptr<FakeSecurityFactory>& security,
     const std::shared_ptr<EchoHandler>& echo,
-    std::uint32_t echo_receive_credit = 0U) {
+    std::uint32_t echo_receive_credit = 0U,
+    EndpointRole local_role = EndpointRole::Server) {
     std::vector<ProviderRequirement> providers;
     providers.push_back(requirement("test.bytes", ProviderKind::ByteChannel));
     providers.push_back(requirement("test.tls", ProviderKind::SecureChannel));
@@ -691,7 +728,7 @@ std::shared_ptr<const EngineGraph> graph(
         echo_capabilities(echo->service_kind()), echo_receive_credit)));
     auto suite = require(TransportSuiteDescriptor::create(
         "test.ytp1", "YTP/1", std::move(providers), std::move(services)));
-    EngineBuilder builder(EndpointRole::Server, std::move(suite));
+    EngineBuilder builder(local_role, std::move(suite));
     CHECK(builder.register_byte_channel_provider(std::make_shared<NullByteProvider>()).ok());
     CHECK(builder.register_secure_channel_provider(std::make_shared<NullSecureProvider>()).ok());
     CHECK(builder.register_front_door_provider(std::make_shared<NullFrontDoorProvider>()).ok());
@@ -707,18 +744,21 @@ public:
     explicit TestSession(bool exporter_available = true, bool routes = false,
                          SessionLimits limits = {},
                          std::uint32_t echo_receive_credit = 0U,
-                         ServiceKind echo_kind = ServiceKind::ByteStream)
+                         ServiceKind echo_kind = ServiceKind::ByteStream,
+                         EndpointRole local_role = EndpointRole::Server)
         : trace(std::make_shared<SecurityTrace>()),
           factory(std::make_shared<FakeSecurityFactory>(trace)),
           handler(std::make_shared<EchoHandler>(routes, echo_kind)) {
+        trace->local_role = local_role;
         if (echo_kind == ServiceKind::PacketChannel)
             trace->echo_kind = ytp1::ServiceKind::Packet;
-        auto owned_carrier =
-            std::make_unique<FakeCarrier>(exporter_available);
+        auto owned_carrier = std::make_unique<FakeCarrier>(
+            exporter_available, "test.carrier", "test.tls", local_role);
         carrier = owned_carrier.get();
         limits.max_streams = 4U;
         limits.max_pending_opens = 2U;
-        auto selected_graph = graph(factory, handler, echo_receive_credit);
+        auto selected_graph =
+            graph(factory, handler, echo_receive_credit, local_role);
         selected_route = selected_graph->route_provider();
         engine = require(SessionEngine::create(
             std::move(selected_graph), std::move(owned_carrier), limits));
@@ -734,6 +774,27 @@ public:
             ++start_completions;
             start_status = std::move(status);
         });
+        if (trace->local_role == EndpointRole::Client) {
+            CHECK(carrier->sent.empty());
+            Buffer challenge = auth_message(ytp1::AuthMessageType::Challenge,
+                                            ytp1::EndpointRole::Server);
+            carrier->deliver(
+                frame(ytp1::RecordType::Auth, 0U, challenge.bytes()));
+            CHECK(carrier->sent.size() == 1U);
+            std::this_thread::sleep_for(auth_round_trip);
+            Buffer accepted = auth_message(ytp1::AuthMessageType::Accepted,
+                                           ytp1::EndpointRole::Server);
+            carrier->deliver(
+                frame(ytp1::RecordType::AuthResult, 0U, accepted.bytes()));
+            CHECK(carrier->sent.size() == 3U);
+            CHECK(start_completions == 0);
+            carrier->deliver(copy_bytes(carrier->sent[1].bytes()));
+            CHECK(start_completions == 1);
+            CHECK(start_status.ok());
+            CHECK(trace->initialized == 1);
+            CHECK(engine->state() == SessionState::Active);
+            return;
+        }
         CHECK(carrier->sent.size() == 1U);
         std::this_thread::sleep_for(auth_round_trip);
 
@@ -1395,7 +1456,9 @@ void test_pending_write_capacity_is_shared_across_streams() {
                                         16U + ytp1::kRekeyInitMessageBytes +
                                         ytp1::kRekeyAckMessageBytes;
     constexpr std::size_t ordinary_budget = 512U;
-    limits.max_queued_bytes = control_reserve + ordinary_budget;
+    limits.max_queued_bytes = control_reserve + ordinary_budget +
+                              ytp1::kFrameHeaderSize + kProtectedEnvelopeBytes +
+                              4U;
     limits.max_stream_queued_bytes = ordinary_budget;
     fit_receive_windows(limits);
     std::array<int, 4U> completions{};
@@ -1936,7 +1999,9 @@ void test_queue_refusal_survives_diagnostic_allocation_failure() {
         constexpr std::size_t kWireOverhead = ytp1::kFrameHeaderSize + 16U;
         constexpr std::size_t kHeldPayloadBytes =
             kOrdinaryBudget - kWireOverhead - kPayloadBytes;
-        limits.max_queued_bytes = control_reserve + kOrdinaryBudget;
+        limits.max_queued_bytes = control_reserve + kOrdinaryBudget +
+                                  ytp1::kFrameHeaderSize +
+                                  kProtectedEnvelopeBytes + 4U;
         limits.max_stream_queued_bytes = kOrdinaryBudget;
         fit_receive_windows(limits);
         TestSession session(true, false, limits);
@@ -2862,7 +2927,9 @@ void test_rekey_controls_have_reserved_queue_capacity() {
         2U * (ytp1::kFrameHeaderSize + 4U) + 16U +
         ytp1::kRekeyInitMessageBytes + ytp1::kRekeyAckMessageBytes;
     const std::size_t ordinary_budget = 512U;
-    limits.max_queued_bytes = control_reserve + ordinary_budget;
+    limits.max_queued_bytes = control_reserve + ordinary_budget +
+                              ytp1::kFrameHeaderSize + kProtectedEnvelopeBytes +
+                              4U;
     limits.max_stream_queued_bytes = ordinary_budget;
     fit_receive_windows(limits);
     TestSession session(true, false, limits);
@@ -3095,7 +3162,9 @@ void test_rekey_flush_preserves_unpublished_reservations() {
         2U * (ytp1::kFrameHeaderSize + 4U) + 16U +
         ytp1::kRekeyInitMessageBytes + ytp1::kRekeyAckMessageBytes;
     const std::size_t ordinary_budget = 512U;
-    limits.max_queued_bytes = control_reserve + ordinary_budget;
+    limits.max_queued_bytes = control_reserve + ordinary_budget +
+                              ytp1::kFrameHeaderSize + kProtectedEnvelopeBytes +
+                              4U;
     limits.max_stream_queued_bytes = ordinary_budget;
     fit_receive_windows(limits);
     TestSession session(true, false, limits);
@@ -3782,6 +3851,533 @@ void deliver_consumed(TestSession& session, std::uint64_t& sequence,
     CHECK(session.engine->state() == SessionState::Active);
 }
 
+// Keep the same 512-byte application budget as the queue-refusal fixtures.
+// CREDIT needs 4 bytes plus the fixed protected-record overhead; its one
+// reserved slot is separate from the two directional rekey controls.
+SessionLimits control_queue_limits() {
+    SessionLimits limits;
+    limits.max_security_overhead = 0U;
+    const auto rekey = 2U * (ytp1::kFrameHeaderSize + 4U) +
+                       kProtectedEnvelopeBytes + ytp1::kRekeyInitMessageBytes +
+                       ytp1::kRekeyAckMessageBytes;
+    limits.max_queued_bytes =
+        rekey + 512U + ytp1::kFrameHeaderSize + kProtectedEnvelopeBytes + 4U;
+    limits.max_stream_queued_bytes = 512U;
+    fit_receive_windows(limits);
+    return limits;
+}
+
+constexpr std::size_t kHeldControlTestPayload =
+    512U - ytp1::kFrameHeaderSize - kProtectedEnvelopeBytes;
+
+void hold_full_application_queue(TestSession& session,
+                                 const std::shared_ptr<StreamResponder>& stream,
+                                 std::uint64_t& sequence, int& completions) {
+    grant_competing_credit(session, sequence, 0U, kHeldControlTestPayload);
+    grant_competing_credit(session, sequence, 1U, kHeldControlTestPayload);
+    session.carrier->hold_sends = true;
+    stream->async_write(
+        require(
+            Buffer::allocate(kHeldControlTestPayload, kHeldControlTestPayload)),
+        {}, [&completions](Status status, std::size_t bytes) {
+            CHECK(status.ok() && bytes == kHeldControlTestPayload);
+            ++completions;
+        });
+    CHECK(session.engine->state() == SessionState::Active);
+}
+
+void test_engine_controls_wait_behind_full_data_queue() {
+    TestSession session(true, false, control_queue_limits());
+    session.start_to_active();
+    session.open_peer_stream();
+    const auto first = session.handler->responder;
+    std::uint64_t sequence = 2U;
+    int writes = 0;
+    hold_full_application_queue(session, first, sequence, writes);
+    const auto sealed = session.trace->sealed.size();
+    const auto third = open_competing_stream(session, 3U, sequence);
+    const auto fifth = open_competing_stream(session, 5U, sequence);
+    CHECK(session.trace->sealed.size() == sealed + 1U);
+    // Only the first acceptance fits. A FIN for it and the next acceptance
+    // stay as bounded obligations, without taking another record token.
+    CHECK(third->shutdown_write().ok());
+    CHECK(session.trace->sealed.size() == sealed + 1U);
+    CHECK(session.engine->state() == SessionState::Active && writes == 0);
+    session.carrier->hold_sends = false;
+    session.carrier->complete_send();
+    CHECK(writes == 1 && session.engine->state() == SessionState::Active);
+    std::array<int, 2U> grants{};
+    int fins = 0;
+    for (std::size_t i = 2U; i < session.carrier->sent.size(); ++i) {
+        const auto record = protected_record(session.carrier->sent[i]);
+        if (record.header.type == ytp1::RecordType::StreamCredit) {
+            if (record.header.stream_id.value() == 3U) ++grants[0];
+            if (record.header.stream_id.value() == 5U) ++grants[1];
+        } else if (record.header.type == ytp1::RecordType::Close &&
+                   record.header.stream_id.value() == 3U) {
+            CHECK(record.payload[0] == 0U && grants[0] == 1);
+            ++fins;
+        }
+    }
+    CHECK((grants == std::array<int, 2U>{1, 1}) && fins == 1);
+    CHECK(fifth->shutdown_write().ok());
+    session.engine->stop();
+    CHECK(writes == 1);
+}
+
+void test_pending_writes_leave_room_for_engine_controls() {
+    TestSession session(true, false, control_queue_limits());
+    session.start_to_active();
+    session.open_peer_stream();
+    const auto first = session.handler->responder;
+    int pending = 0;
+    first->async_write(
+        require(Buffer::allocate(512U, 512U)), {},
+        [&pending](Status status, std::size_t bytes) {
+            CHECK(status.code() == StatusCode::Cancelled && bytes == 0U);
+            ++pending;
+        });
+    CHECK(pending == 0);
+    std::uint64_t sequence = 2U;
+    const auto third = open_competing_stream(session, 3U, sequence);
+    int refused = 0;
+    third->async_write(
+        require(Buffer::allocate(1U, 1U)), {},
+        [&refused](Status status, std::size_t bytes) {
+            CHECK(status.code() == StatusCode::ResourceExhausted &&
+                  bytes == 0U);
+            ++refused;
+        });
+    CHECK(refused == 1 && pending == 0);
+    open_competing_stream(session, 5U, sequence);
+    CHECK(session.engine->state() == SessionState::Active);
+    CHECK(third->shutdown_write().ok());
+    session.engine->stop();
+    CHECK(pending == 1);
+}
+
+void test_credit_debt_is_returned_once_after_full_queue() {
+    const auto limits = control_queue_limits();
+    TestSession session(true, false, limits);
+    session.start_to_active();
+    session.open_peer_stream();
+    std::uint64_t sequence = 2U;
+    int writes = 0;
+    hold_full_application_queue(session, session.handler->responder, sequence,
+                                writes);
+    const auto sealed = session.trace->sealed.size();
+    deliver_consumed(session, sequence, 64U);
+    deliver_consumed(session, sequence, 64U);
+    CHECK(session.trace->sealed.size() == sealed + 1U);
+    CHECK(writes == 0);
+    session.carrier->hold_sends = false;
+    session.carrier->complete_send();
+    CHECK(writes == 1 && session.engine->state() == SessionState::Active);
+    GrantedCredit grants;
+    scan_granted_credit(session, grants);
+    CHECK(grants.connection == limits.initial_connection_credit + 128U);
+    CHECK(grants.stream == limits.initial_stream_credit + 128U);
+
+    std::optional<ReceivedRecord> held;
+    session.handler->responder->async_read({}, [&](auto result) {
+        CHECK(result.ok());
+        held.emplace(std::move(result).take_value());
+    });
+    const std::array<std::byte, 64U> payload{};
+    session.carrier->deliver(protected_wire(
+        0U, sequence++, frame(ytp1::RecordType::Data, 1U, payload)));
+    CHECK(held.has_value());
+    session.handler->responder->close(
+        Status::diagnostic(StatusCode::Cancelled));
+    held.reset();
+    scan_granted_credit(session, grants);
+    CHECK(grants.connection == limits.initial_connection_credit + 192U);
+    CHECK(grants.stream == limits.initial_stream_credit + 128U);
+    CHECK(session.engine->state() == SessionState::Active);
+}
+
+void test_queued_settlement_keeps_stream_capacity_charged() {
+    TestSession session(true, false, control_queue_limits());
+    session.start_to_active();
+    session.open_peer_stream();
+    const auto first = session.handler->responder;
+    std::uint64_t sequence = 2U;
+    std::uint32_t next_peer = 3U;
+    int writes = 0;
+    for (int round = 0; round < 4; ++round) {
+        hold_full_application_queue(session, first, sequence, writes);
+        const auto sealed = session.trace->sealed.size();
+        const std::array<std::byte, 1U> aborted{std::byte{4}};
+        for (int stream = 0; stream < 3; ++stream) {
+            const auto id = next_peer;
+            next_peer += 2U;
+            open_competing_stream(session, id, sequence);
+            session.carrier->deliver(protected_wire(
+                0U, sequence++, frame(ytp1::RecordType::Close, id, aborted)));
+            CHECK(session.engine->state() == SessionState::Active);
+        }
+        CHECK(session.trace->sealed.size() == sealed + 1U);
+        int refused = 0;
+        session.engine->async_open(
+            "echo", ServiceKind::ByteStream, [&](auto result) {
+                CHECK(result.status().code() == StatusCode::ResourceExhausted);
+                ++refused;
+            });
+        CHECK(refused == 1 && session.engine->state() == SessionState::Active);
+        session.carrier->hold_sends = false;
+        session.carrier->complete_send();
+        CHECK(writes == round + 1);
+        CHECK(session.engine->state() == SessionState::Active);
+    }
+    // The same bounded slots were usable again after each carrier drain.
+    int settlements = 0;
+    for (std::size_t i = 2U; i < session.carrier->sent.size(); ++i) {
+        const auto record = protected_record(session.carrier->sent[i]);
+        if (record.header.type == ytp1::RecordType::Close &&
+            record.payload[0] == 5U)
+            ++settlements;
+    }
+    CHECK(settlements == 12);
+}
+
+void test_local_open_queue_refusal_preserves_session() {
+    TestSession session(true, false, control_queue_limits());
+    session.start_to_active();
+    session.open_peer_stream();
+    std::uint64_t sequence = 2U;
+    int writes = 0;
+    hold_full_application_queue(session, session.handler->responder, sequence,
+                                writes);
+    const auto sealed = session.trace->sealed.size();
+    int opens = 0;
+    session.engine->async_open(
+        "echo", ServiceKind::ByteStream, [&](auto result) {
+            CHECK(result.status().code() == StatusCode::ResourceExhausted);
+            ++opens;
+        });
+    CHECK(opens == 1 && session.engine->state() == SessionState::Active);
+    CHECK(session.trace->sealed.size() == sealed);
+    session.carrier->hold_sends = false;
+    session.carrier->complete_send();
+    CHECK(writes == 1);
+    session.engine->stop();
+    CHECK(opens == 1);
+}
+
+void test_connection_credit_does_not_share_pong_slots() {
+    auto limits = control_queue_limits();
+    limits.max_control_messages = 3U;
+    TestSession session(true, false, limits);
+    session.start_to_active();
+    session.open_peer_stream();
+    session.carrier->hold_sends = true;
+    std::uint64_t sequence = 2U;
+    const std::array<std::byte, 8U> ping{};
+    session.carrier->deliver(protected_wire(
+        0U, sequence++, frame(ytp1::RecordType::Ping, 0U, ping)));
+    deliver_consumed(session, sequence, 64U);
+    CHECK(session.engine->state() == SessionState::Active);
+    session.carrier->hold_sends = false;
+    session.carrier->complete_send();
+    GrantedCredit grants;
+    scan_granted_credit(session, grants);
+    CHECK(grants.connection == limits.initial_connection_credit + 64U);
+    CHECK(grants.stream == limits.initial_stream_credit + 64U);
+}
+
+void test_deferred_credit_survives_stream_abort_only_for_connection() {
+    const auto limits = control_queue_limits();
+    TestSession session(true, false, limits);
+    session.start_to_active();
+    session.open_peer_stream();
+    expire_outbound_epoch();
+    CHECK(session.engine->initiate_rekey().ok());
+    std::uint64_t sequence = 2U;
+    deliver_consumed(session, sequence, 64U);
+    session.handler->responder->close(
+        Status::diagnostic(StatusCode::Cancelled));
+    const auto ack = rekey_payload(1U, std::byte{2});
+    session.carrier->deliver(
+        frame(ytp1::RecordType::RekeyAck, 0U, ack.bytes()));
+    CHECK(session.engine->state() == SessionState::Active);
+    std::uint64_t connection = 0U;
+    std::uint64_t stream = 0U;
+    int terminals = 0;
+    for (std::size_t i = 2U; i < session.carrier->sent.size(); ++i) {
+        const auto record = protected_record(session.carrier->sent[i]);
+        if (record.header.type == ytp1::RecordType::ConnectionCredit ||
+            record.header.type == ytp1::RecordType::StreamCredit) {
+            const auto credit = ytp1::DecodeCreditUpdate(record.payload);
+            CHECK(credit.ok());
+            if (record.header.type == ytp1::RecordType::ConnectionCredit)
+                connection += *credit.value;
+            else
+                stream += *credit.value;
+        } else if (record.header.type == ytp1::RecordType::Close) {
+            CHECK(record.payload[0] == 4U);
+            ++terminals;
+        }
+    }
+    CHECK(connection == limits.initial_connection_credit + 64U);
+    CHECK(stream == limits.initial_stream_credit && terminals == 1);
+}
+
+// While the carrier holds a send, a window queues one grant per return up to
+// credit_returns_per_window, as an uncongested receiver would, and coalesces
+// later returns into the next grant once one leaves.
+void test_grants_queue_up_to_the_return_count_then_coalesce() {
+    SessionLimits limits = small_window_limits();
+    limits.max_stream_credit = limits.initial_stream_credit;
+    limits.max_connection_credit = limits.initial_connection_credit;
+    TestSession session(true, false, limits);
+    session.start_to_active();
+    session.open_peer_stream();
+    GrantedCredit granted;
+    scan_granted_credit(session, granted);
+    session.carrier->hold_sends = true;
+    const auto sealed = session.trace->sealed.size();
+    std::uint64_t sequence = 2U;
+    constexpr std::size_t kRecord = 4U * 1024U;
+    for (int record = 0; record < 8; ++record) {
+        deliver_consumed(session, sequence, kRecord);
+    }
+    // Two 8 KiB stream returns and two 16 KiB connection returns are queued.
+    // The third and fourth stream returns wait for a free grant slot.
+    CHECK(session.trace->sealed.size() == sealed + 4U);
+    session.carrier->hold_sends = false;
+    session.carrier->complete_send();
+    CHECK(session.engine->state() == SessionState::Active);
+    scan_granted_credit(session, granted);
+    CHECK((granted.stream_increments ==
+           std::vector<std::uint32_t>{16U * 1024U, 8U * 1024U, 8U * 1024U,
+                                      16U * 1024U}));
+    CHECK((granted.connection_increments ==
+           std::vector<std::uint32_t>{32U * 1024U, 16U * 1024U, 16U * 1024U}));
+}
+
+void test_engine_control_backpressure() {
+    test_engine_controls_wait_behind_full_data_queue();
+    test_grants_queue_up_to_the_return_count_then_coalesce();
+    test_pending_writes_leave_room_for_engine_controls();
+    test_credit_debt_is_returned_once_after_full_queue();
+    test_queued_settlement_keeps_stream_capacity_charged();
+    test_local_open_queue_refusal_preserves_session();
+    test_connection_credit_does_not_share_pong_slots();
+    test_deferred_credit_survives_stream_abort_only_for_connection();
+}
+
+// Exercise the receiver from grants actually published on the wire. One stream
+// retains its full window while three other streams consume checked payloads.
+// Neither a test-side credit injection nor a sleep can make useful progress.
+void test_shared_credit_progress_with_held_stream() {
+    constexpr std::uint32_t kFrame = 4U * 1024U;
+    constexpr std::uint32_t kStream = 64U * 1024U;
+    constexpr std::uint32_t kConnection = 96U * 1024U;
+    for (const auto role : {EndpointRole::Server, EndpointRole::Client}) {
+        for (const bool application_held : {false, true}) {
+            for (const bool close_held : {false, true}) {
+                for (const bool held_last : {false, true}) {
+                    // Cover an exhausted grant and a remainder too short for
+                    // the next frame, including the arrival-after-consumption
+                    // case.
+                    const std::uint32_t capacity =
+                        kConnection + (held_last ? kFrame / 2U : 0U);
+                    SessionLimits limits = small_window_limits();
+                    limits.max_queued_bytes = capacity;
+                    limits.max_stream_queued_bytes = kStream;
+                    limits.initial_stream_credit = kStream;
+                    limits.max_stream_credit = kStream;
+                    limits.initial_connection_credit = capacity;
+                    limits.max_connection_credit = capacity;
+                    TestSession session(true, false, limits, 0U,
+                                        ServiceKind::ByteStream, role);
+                    session.start_to_active();
+                    std::uint64_t sequence = 1U;
+                    const std::uint32_t first_id =
+                        role == EndpointRole::Server ? 1U : 2U;
+                    std::array<std::shared_ptr<StreamResponder>, 4U> streams;
+                    for (std::size_t i = 0; i < streams.size(); ++i) {
+                        streams[i] = open_competing_stream(
+                            session,
+                            first_id + static_cast<std::uint32_t>(2U * i),
+                            sequence);
+                    }
+                    std::size_t scanned =
+                        role == EndpointRole::Server ? 2U : 1U;
+                    std::uint64_t connection_granted = 0U;
+                    std::uint64_t connection_sent = 0U;
+                    std::array<std::uint64_t, 4U> stream_granted{};
+                    std::array<std::uint64_t, 4U> stream_sent{};
+                    std::array<std::uint64_t, 4U> held_bytes{};
+                    auto scan = [&] {
+                        while (scanned < session.carrier->sent.size()) {
+                            const auto record = protected_record(
+                                session.carrier->sent[scanned++]);
+                            if (record.header.type ==
+                                ytp1::RecordType::ConnectionCredit) {
+                                const auto increment =
+                                    ytp1::DecodeCreditUpdate(record.payload);
+                                CHECK(increment.ok());
+                                connection_granted += *increment.value;
+                            } else if (record.header.type ==
+                                       ytp1::RecordType::StreamCredit) {
+                                const auto id = record.header.stream_id.value();
+                                CHECK(id >= first_id &&
+                                      (id - first_id) % 2U == 0U);
+                                const auto index = (id - first_id) / 2U;
+                                CHECK(index < stream_granted.size());
+                                const auto increment =
+                                    ytp1::DecodeCreditUpdate(record.payload);
+                                CHECK(increment.ok());
+                                stream_granted[index] += *increment.value;
+                            }
+                        }
+                        CHECK(connection_granted >= connection_sent);
+                        std::uint64_t total_held = 0U;
+                        for (std::size_t i = 0; i < streams.size(); ++i) {
+                            CHECK(stream_granted[i] >= stream_sent[i]);
+                            CHECK(stream_granted[i] - stream_sent[i] +
+                                      held_bytes[i] <=
+                                  kStream);
+                            total_held += held_bytes[i];
+                        }
+                        CHECK(connection_granted - connection_sent +
+                                  total_held <=
+                              capacity);
+                        CHECK(session.engine->state() == SessionState::Active);
+                    };
+                    auto read_checked = [&](std::size_t index) {
+                        std::optional<ReceivedRecord> received;
+                        streams[index]->async_read(
+                            {}, [&](Result<ReceivedRecord> result) {
+                                CHECK(result.ok());
+                                received.emplace(
+                                    std::move(result).take_value());
+                            });
+                        CHECK(received.has_value());
+                        CHECK(received->payload().size() == kFrame);
+                        for (const auto byte : received->payload().bytes()) {
+                            CHECK(byte ==
+                                  static_cast<std::byte>(0x40U + index));
+                        }
+                        return std::move(*received);
+                    };
+                    auto send = [&](std::size_t index) {
+                        scan();
+                        CHECK(stream_granted[index] - stream_sent[index] >=
+                              kFrame);
+                        // This is the useful-progress assertion: the peer obeys
+                        // both grants, and cannot send another frame when this
+                        // fails.
+                        if (connection_granted - connection_sent < kFrame) {
+                            std::cerr
+                                << "shared-credit blocked: role="
+                                << (role == EndpointRole::Server ? "server"
+                                                                 : "client")
+                                << " application_held=" << application_held
+                                << " close_held=" << close_held
+                                << " held_last=" << held_last
+                                << " connection_granted=" << connection_granted
+                                << " connection_sent=" << connection_sent
+                                << " held=" << held_bytes[0] << " useful_sent="
+                                << connection_sent - stream_sent[0]
+                                << " useful_stream_credit="
+                                << stream_granted[index] - stream_sent[index]
+                                << '\n';
+                        }
+                        CHECK(connection_granted - connection_sent >= kFrame);
+                        const std::vector<std::byte> payload(
+                            kFrame, static_cast<std::byte>(0x40U + index));
+                        stream_sent[index] += kFrame;
+                        connection_sent += kFrame;
+                        held_bytes[index] += kFrame;
+                        session.carrier->deliver(protected_wire(
+                            0U, sequence++,
+                            frame(ytp1::RecordType::Data,
+                                  first_id +
+                                      static_cast<std::uint32_t>(2U * index),
+                                  payload)));
+                        CHECK(session.engine->state() == SessionState::Active);
+                    };
+                    // Park consumed connection credit before the unread stream
+                    // spends the final grants. There is no later application
+                    // release to rescue a return policy checked only on
+                    // release.
+                    const std::uint32_t prior_consumed =
+                        held_last ? kConnection - kStream : 0U;
+                    for (std::uint32_t bytes = 0; bytes < prior_consumed;
+                         bytes += kFrame) {
+                        send(1U);
+                        auto received = read_checked(1U);
+                        held_bytes[1] -= kFrame;
+                    }
+                    std::vector<ReceivedRecord> retained;
+                    for (std::uint32_t bytes = 0; bytes < kStream;
+                         bytes += kFrame) {
+                        send(0U);
+                        if (application_held)
+                            retained.push_back(read_checked(0U));
+                    }
+                    scan();
+                    CHECK(held_bytes[0] == kStream);
+                    CHECK(stream_granted[0] == kStream);
+                    for (std::size_t round = 0;
+                         round < 3U * kConnection / kFrame; ++round) {
+                        const std::size_t useful = 1U + round % 3U;
+                        send(useful);
+                        {
+                            auto received = read_checked(useful);
+                            held_bytes[useful] -= kFrame;
+                        }
+                        scan();
+                        CHECK(held_bytes[0] == kStream);
+                        CHECK(stream_granted[0] == kStream);
+                    }
+                    for (std::size_t i = 1U; i < streams.size(); ++i) {
+                        CHECK(stream_sent[i] ==
+                              kConnection + (i == 1U ? prior_consumed : 0U));
+                    }
+                    if (close_held) {
+                        // Closed-stream leases restore only connection credit,
+                        // whether queued in the engine or held by an
+                        // application.
+                        if (!application_held) held_bytes[0] = 0U;
+                        streams[0]->close(Status(StatusCode::Cancelled));
+                    }
+                    if (application_held) {
+                        held_bytes[0] = 0U;
+                        retained.clear();
+                    } else if (!close_held) {
+                        while (held_bytes[0] != 0U) {
+                            auto received = read_checked(0U);
+                            held_bytes[0] -= kFrame;
+                        }
+                    }
+                    scan();
+                    CHECK(held_bytes[0] == 0U);
+                    if (close_held) CHECK(stream_granted[0] == kStream);
+                    // Recovery must carry another checked connection window in
+                    // the same session after the blocked owner releases its
+                    // bytes.
+                    for (std::size_t round = 0; round < kConnection / kFrame;
+                         ++round) {
+                        const std::size_t useful = 1U + round % 3U;
+                        send(useful);
+                        {
+                            auto received = read_checked(useful);
+                            held_bytes[useful] -= kFrame;
+                        }
+                    }
+                    scan();
+                    session.engine->stop(Status(StatusCode::Cancelled));
+                    CHECK(session.engine->state() == SessionState::Closed);
+                    CHECK(session.carrier->closed);
+                }
+            }
+        }
+    }
+}
+
 void test_receive_credit_returns_after_half_a_window() {
     const SessionLimits limits = small_window_limits();
     TestSession session(true, false, limits);
@@ -4255,6 +4851,8 @@ void run_test() {
     test_graceful_settlement_keeps_crossed_credit_ordered();
     test_unacknowledged_streams_remain_bounded();
     test_cancel_unpublished_open_behind_rekey();
+    test_engine_control_backpressure();
+    test_shared_credit_progress_with_held_stream();
     test_receive_credit_returns_after_half_a_window();
     test_receive_credit_returns_per_window_at_the_maximum();
     test_receive_credit_returns_before_a_blocked_peer_could_stall();
@@ -4272,11 +4870,20 @@ void run_test() {
 }  // namespace
 }  // namespace yume::engine
 
-int main() {
+int main(int argc, char** argv) {
     yume::test::before_allocate_on_any_thread.store(check_test_allocation);
 
     try {
-        yume::engine::run_test();
+        if (argc == 2 &&
+            std::string_view(argv[1]) == "--shared-credit-progress") {
+            yume::engine::test_shared_credit_progress_with_held_stream();
+        } else if (argc == 2 &&
+                   std::string_view(argv[1]) == "--control-backpressure") {
+            yume::engine::test_engine_control_backpressure();
+        } else {
+            if (argc != 1) throw std::invalid_argument("unknown test selector");
+            yume::engine::run_test();
+        }
         std::cout << "session_engine_test: PASS\n";
         return 0;
     } catch (const std::exception& error) {

@@ -14,6 +14,10 @@ cmake_path(ABSOLUTE_PATH YUME_BUILD_DIR NORMALIZE OUTPUT_VARIABLE _build_dir)
 if(NOT IS_DIRECTORY "${_build_dir}" OR NOT EXISTS "${_build_dir}/CMakeCache.txt")
     message(FATAL_ERROR "YUME_BUILD_DIR must identify a configured build")
 endif()
+load_cache("${_build_dir}" READ_WITH_PREFIX _parent_ YUME_BUILD_NATIVE_APPLICATION)
+if(NOT DEFINED _parent_YUME_BUILD_NATIVE_APPLICATION)
+    message(FATAL_ERROR "build cache omits YUME_BUILD_NATIVE_APPLICATION")
+endif()
 cmake_path(ABSOLUTE_PATH YUME_TEST_PREFIX NORMALIZE
            OUTPUT_VARIABLE _test_prefix)
 string(FIND "${_test_prefix}" "${_build_dir}/" _prefix_position)
@@ -48,7 +52,29 @@ foreach(_fixture IN ITEMS CMakeLists.txt consumer.c consumer.cpp loader_probe.cp
     endif()
 endforeach()
 
+function(yume_json_string _value _output)
+    string(REPLACE "\\" "\\\\" _value "${_value}")
+    string(REPLACE "\"" "\\\"" _value "${_value}")
+    string(REPLACE "\n" "\\n" _value "${_value}")
+    string(REPLACE "\r" "\\r" _value "${_value}")
+    string(REPLACE "\t" "\\t" _value "${_value}")
+    set(${_output} "\"${_value}\"" PARENT_SCOPE)
+endfunction()
+
 function(yume_execute_bounded _description _timeout)
+    string(REGEX REPLACE "[^A-Za-z0-9_-]" "-" _record_name "${_description}")
+    set(_record "${_stage_dir}/${_record_name}")
+    if(EXISTS "${_record}.json")
+        message(FATAL_ERROR "duplicate installed SDK stage: ${_description}")
+    endif()
+    set(_argv "[]")
+    set(_index 0)
+    foreach(_argument IN LISTS ARGN)
+        yume_json_string("${_argument}" _json_argument)
+        string(JSON _argv SET "${_argv}" ${_index} "${_json_argument}")
+        math(EXPR _index "${_index} + 1")
+    endforeach()
+    string(TIMESTAMP _started "%s" UTC)
     execute_process(
         TIMEOUT ${_timeout}
         COMMAND ${ARGN}
@@ -56,10 +82,26 @@ function(yume_execute_bounded _description _timeout)
         OUTPUT_VARIABLE _output
         ERROR_VARIABLE _error
     )
+    string(TIMESTAMP _finished "%s" UTC)
+    file(WRITE "${_record}.stdout" "${_output}")
+    file(WRITE "${_record}.stderr" "${_error}")
+    yume_json_string("${_description}" _json_name)
+    if(_result MATCHES "^-?[0-9]+$")
+        set(_json_result "${_result}")
+    else()
+        yume_json_string("${_result}" _json_result)
+    endif()
+    file(WRITE "${_record}.json"
+        "{\"name\":${_json_name},\"argv\":${_argv},"
+        "\"returncode\":${_json_result},\"timeout_seconds\":${_timeout},"
+        "\"started\":${_started},\"finished\":${_finished},"
+        "\"stdout_file\":\"${_record_name}.stdout\","
+        "\"stderr_file\":\"${_record_name}.stderr\"}\n")
     if(NOT _result STREQUAL "0")
         message(FATAL_ERROR
             "${_description} failed (${_result}):\n${_output}${_error}")
     endif()
+    set(YUME_LAST_STAGE_OUTPUT "${_output}" PARENT_SCOPE)
 endfunction()
 
 function(yume_execute _description)
@@ -67,6 +109,9 @@ function(yume_execute _description)
 endfunction()
 
 if(YUME_TEST_NATIVE_TRAFFIC)
+    if(NOT _parent_YUME_BUILD_NATIVE_APPLICATION)
+        message(FATAL_ERROR "native installed traffic requires native applications")
+    endif()
     foreach(_required IN ITEMS YUME_SOURCE_DIR YUME_PYTHON_EXECUTABLE YUME_OPENSSL_PROGRAM)
         if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "" OR
            NOT EXISTS "${${_required}}")
@@ -85,10 +130,13 @@ set(_test_prefix "${_test_prefix}-${_suffix}")
 if(EXISTS "${_test_prefix}" OR IS_SYMLINK "${_test_prefix}")
     message(FATAL_ERROR "SDK qualification prefix already exists")
 endif()
-foreach(_component IN ITEMS
-        libyume_runtime
-        libyume_development
-        yume_cli)
+set(_stage_dir "${_test_prefix}/sdk-stage-records")
+file(MAKE_DIRECTORY "${_stage_dir}")
+set(_install_components libyume_runtime libyume_development)
+if(_parent_YUME_BUILD_NATIVE_APPLICATION)
+    list(APPEND _install_components yume_cli)
+endif()
+foreach(_component IN LISTS _install_components)
     set(_install_command
         "${CMAKE_COMMAND}" -E env --unset=DESTDIR
         "${CMAKE_COMMAND}" --install "${_build_dir}"
@@ -172,14 +220,16 @@ if(DEFINED ENV{YUME_TEST_CHILD_ASAN_OPTIONS})
     list(APPEND _native_runtime_environment "ASAN_OPTIONS=$ENV{YUME_TEST_CHILD_ASAN_OPTIONS}")
 endif()
 
-foreach(_tool IN ITEMS yume-setup yume-doctor)
-    set(_tool_path "${_test_prefix}/bin/${_tool}")
-    if(NOT EXISTS "${_tool_path}")
-        message(FATAL_ERROR "staged install omitted ${_tool}")
-    endif()
-    yume_execute("installed ${_tool} --help"
-        ${_runtime_environment} "${_tool_path}" --help)
-endforeach()
+if(_parent_YUME_BUILD_NATIVE_APPLICATION)
+    foreach(_tool IN ITEMS yume-setup yume-doctor)
+        set(_tool_path "${_test_prefix}/bin/${_tool}")
+        if(NOT EXISTS "${_tool_path}")
+            message(FATAL_ERROR "staged install omitted ${_tool}")
+        endif()
+        yume_execute("installed ${_tool} --help"
+            ${_runtime_environment} "${_tool_path}" --help)
+    endforeach()
+endif()
 
 find_program(_pkg_config_program NAMES pkg-config pkgconf)
 if(NOT _pkg_config_program)
@@ -338,6 +388,18 @@ if(DEFINED YUME_CONSUMER_SANITIZER_FLAGS AND
     string(JOIN " " _consumer_sanitizer_flags_text ${_consumer_sanitizer_flags})
 endif()
 
+# Compiler paths alone do not select a C++ standard library. Keep the
+# parent's language options separate, including its C++ executable link flags.
+foreach(_language IN ITEMS C CXX CXX_LINK)
+    set(_consumer_${_language}_flags)
+    separate_arguments(_consumer_${_language}_flags NATIVE_COMMAND
+        "${YUME_CONSUMER_${_language}_FLAGS}")
+endforeach()
+string(JOIN " " _consumer_c_flags_text
+    "${YUME_CONSUMER_C_FLAGS}" "${_consumer_sanitizer_flags_text}")
+string(JOIN " " _consumer_cxx_flags_text
+    "${YUME_CONSUMER_CXX_FLAGS}" "${_consumer_sanitizer_flags_text}")
+
 set(_pkg_consumer_dir "${_test_prefix}/consumer-pkg-config")
 file(MAKE_DIRECTORY "${_pkg_consumer_dir}")
 set(_pkg_c_consumer "${_pkg_consumer_dir}/consumer-c")
@@ -345,6 +407,7 @@ set(_pkg_cpp_consumer "${_pkg_consumer_dir}/consumer-cpp")
 
 yume_execute("pkg-config C consumer compile"
     "${_c_compiler}"
+    ${_consumer_C_flags}
     ${_consumer_sanitizer_flags}
     ${_pkg_cflags}
     -std=c11 -Wall -Wextra -Wpedantic -Werror
@@ -353,10 +416,12 @@ yume_execute("pkg-config C consumer compile"
     -o "${_pkg_c_consumer}")
 yume_execute("pkg-config C++ consumer compile"
     "${_cxx_compiler}"
+    ${_consumer_CXX_flags}
     ${_consumer_sanitizer_flags}
     ${_pkg_cflags}
     -std=c++20 -Wall -Wextra -Wpedantic -Werror
     "${_consumer_source_dir}/consumer.cpp"
+    ${_consumer_CXX_LINK_flags}
     ${_pkg_libs}
     -o "${_pkg_cpp_consumer}")
 yume_execute("pkg-config C consumer run"
@@ -370,12 +435,57 @@ if(UNIX)
         list(APPEND _loader_libraries -ldl)
     endif()
     yume_execute("pkg-config loader consumer compile"
-        "${_cxx_compiler}" ${_consumer_sanitizer_flags} ${_pkg_cflags}
+        "${_cxx_compiler}" ${_consumer_CXX_flags} ${_consumer_sanitizer_flags} ${_pkg_cflags}
         -std=c++20 -Wall -Wextra -Wpedantic -Werror
-        "${_consumer_source_dir}/loader_probe.cpp" ${_pkg_libs} ${_loader_libraries}
+        "${_consumer_source_dir}/loader_probe.cpp" ${_consumer_CXX_LINK_flags}
+        ${_pkg_libs} ${_loader_libraries}
         -o "${_pkg_loader_consumer}")
     yume_execute("pkg-config loader consumer run"
         ${_native_runtime_environment} "${_pkg_loader_consumer}" "${_runtime_library}")
+endif()
+
+if(YUME_TEST_NATIVE_TRAFFIC)
+    if(NOT EXISTS "${_test_prefix}/bin/yumed")
+        message(FATAL_ERROR "native installed traffic requires staged bin/yumed")
+    endif()
+    # Reuse the original probes, with YUME include/link flags exclusively
+    # from staged pkg-config metadata. C++ options never enter a C command.
+    foreach(_kind IN ITEMS stream route packet)
+        if(_kind STREQUAL "stream")
+            set(_compiler "${_c_compiler}")
+            set(_language_flags ${_consumer_C_flags} -std=c11)
+            set(_link_flags)
+            set(_extension c)
+        else()
+            set(_compiler "${_cxx_compiler}")
+            set(_language_flags ${_consumer_CXX_flags} -std=c++20)
+            set(_link_flags ${_consumer_CXX_LINK_flags})
+            set(_extension cpp)
+        endif()
+        yume_execute("pkg-config-${_kind}-compile"
+            "${_compiler}" ${_language_flags} ${_consumer_sanitizer_flags}
+            ${_pkg_cflags} -Wall -Wextra -Wpedantic -Werror -pthread
+            "${YUME_SOURCE_DIR}/src/abi/${_kind}_probe.${_extension}"
+            ${_link_flags} ${_pkg_libs}
+            -o "${_pkg_consumer_dir}/${_kind}-probe")
+    endforeach()
+    # These per-child ceilings share the enclosing 600-second parent budget.
+    yume_execute_bounded("pkg-config-stream-traffic" 180
+        ${_runtime_environment} "${YUME_PYTHON_EXECUTABLE}"
+        "${YUME_SOURCE_DIR}/tests/test_yume_abi_stream.py"
+        --probe "${_pkg_consumer_dir}/stream-probe"
+        --setup "${_test_prefix}/bin/yume-setup"
+        --openssl "${YUME_OPENSSL_PROGRAM}" --resolver "${_normalized_pkg_resolver}")
+    yume_execute_bounded("pkg-config-route-traffic" 150
+        ${_runtime_environment} "${YUME_PYTHON_EXECUTABLE}"
+        "${YUME_SOURCE_DIR}/tests/test_yume_abi_route.py"
+        --probe "${_pkg_consumer_dir}/route-probe"
+        --yumed "${_test_prefix}/bin/yumed" --openssl "${YUME_OPENSSL_PROGRAM}")
+    yume_execute_bounded("pkg-config-packet-traffic" 300
+        ${_runtime_environment} "${YUME_PYTHON_EXECUTABLE}"
+        "${YUME_SOURCE_DIR}/tests/test_yume_abi_packet.py"
+        --probe "${_pkg_consumer_dir}/packet-probe"
+        --yumed "${_test_prefix}/bin/yumed" --openssl "${YUME_OPENSSL_PROGRAM}")
 endif()
 
 set(_cmake_consumer_build "${_test_prefix}/consumer-cmake")
@@ -390,9 +500,10 @@ set(_configure_command
     "-DCMAKE_BUILD_TYPE=${_consumer_build_type}"
     "-DCMAKE_C_COMPILER=${_c_compiler}"
     "-DCMAKE_CXX_COMPILER=${_cxx_compiler}"
-    "-DCMAKE_C_FLAGS=${_consumer_sanitizer_flags_text}"
-    "-DCMAKE_CXX_FLAGS=${_consumer_sanitizer_flags_text}"
+    "-DCMAKE_C_FLAGS=${_consumer_c_flags_text}"
+    "-DCMAKE_CXX_FLAGS=${_consumer_cxx_flags_text}"
     "-DCMAKE_EXE_LINKER_FLAGS=${_consumer_sanitizer_flags_text}"
+    "-DYUME_CONSUMER_CXX_LINK_FLAGS=${YUME_CONSUMER_CXX_LINK_FLAGS}"
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     "-DCMAKE_PREFIX_PATH=${_test_prefix}"
     "-Dyume_DIR=${_cmake_config_dir}"
@@ -421,15 +532,20 @@ endif()
 yume_execute("installed find_package consumer configure"
     ${_configure_command})
 
-set(_build_command "${CMAKE_COMMAND}" --build "${_cmake_consumer_build}" --parallel 2)
+set(_build_command "${CMAKE_COMMAND}" --build "${_cmake_consumer_build}" --parallel 2 --verbose)
 if(DEFINED YUME_BUILD_CONFIG AND NOT YUME_BUILD_CONFIG STREQUAL "")
     list(APPEND _build_command --config "${YUME_BUILD_CONFIG}")
 endif()
 yume_execute("installed find_package consumer build" ${_build_command})
 
+yume_execute_bounded("installed find_package test inventory" 15
+    "${CMAKE_CTEST_COMMAND}" --test-dir "${_cmake_consumer_build}" --show-only=json-v1)
+file(WRITE "${_cmake_consumer_build}/configured-tests.json" "${YUME_LAST_STAGE_OUTPUT}")
+
 set(_ctest_command
     "${CMAKE_CTEST_COMMAND}" --test-dir "${_cmake_consumer_build}"
-    --output-on-failure --parallel 1 --stop-on-failure)
+    --output-on-failure --parallel 1 --stop-on-failure --no-tests=error
+    --output-junit "${_cmake_consumer_build}/installed-tests.xml")
 if(DEFINED YUME_BUILD_CONFIG AND NOT YUME_BUILD_CONFIG STREQUAL "")
     list(APPEND _ctest_command -C "${YUME_BUILD_CONFIG}")
 endif()
@@ -437,7 +553,7 @@ yume_execute_bounded("installed find_package consumer and traffic runs" 480
     ${_runtime_environment} ${_ctest_command})
 
 if(YUME_TEST_NATIVE_TRAFFIC)
-    message(STATUS "staged SDK C/C++ consumers, named streams/packets, TCP/UDP routes, "
+    message(STATUS "staged SDK CMake/pkg-config C/C++ consumers, named streams/packets, TCP/UDP routes, "
                    "and setup/doctor help passed")
 else()
     message(STATUS "staged SDK C/C++ consumers and setup/doctor help passed; "

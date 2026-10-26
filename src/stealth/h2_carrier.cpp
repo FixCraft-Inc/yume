@@ -1815,6 +1815,15 @@ private:
             request.method = HeaderValue(headers, ":method");
             request.path = HeaderValue(headers, ":path");
             request.authority = HeaderValue(headers, ":authority");
+            // HTTP/2 permits Host when :authority is absent (RFC 9113 8.3.1).
+            // Admission still checks this effective authority against SNI.
+            if (request.authority.empty() &&
+                std::none_of(headers.begin(), headers.end(),
+                             [](const auto& field) {
+                                 return field.first == ":authority";
+                             })) {
+                request.authority = HeaderValue(headers, "host");
+            }
             request.protocol = HeaderValue(headers, ":protocol");
             request.headers = std::move(headers);
             if (request.method.empty() || request.authority.empty()) {

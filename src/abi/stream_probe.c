@@ -129,6 +129,23 @@ static int read_status(const yume_endpoint* endpoint,
     return 1;
 }
 
+static int expect_session_totals(const yume_endpoint* endpoint,
+                                 uint64_t sessions, uint32_t failed_attempts,
+                                 const char* what) {
+    yume_endpoint_status status;
+    if (!read_status(endpoint, &status)) return 0;
+    if (status.sessions != sessions ||
+        status.failed_attempts != failed_attempts) {
+        fprintf(stderr,
+                "%s: sessions=%llu failed_attempts=%u, expected %llu/%u\n",
+                what, (unsigned long long)status.sessions,
+                (unsigned)status.failed_attempts, (unsigned long long)sessions,
+                (unsigned)failed_attempts);
+        return 0;
+    }
+    return 1;
+}
+
 static int expect_status_fields(const yume_endpoint* endpoint, uint32_t state,
                                 uint32_t session, yume_status last_failure,
                                 const char* what) {
@@ -470,6 +487,96 @@ static void* start_worker(void* opaque) {
     return NULL;
 }
 
+struct paused_protector {
+    _Atomic int entered;
+    _Atomic int release;
+};
+
+static int pause_then_reject_socket(uintptr_t socket_handle, void* user_data) {
+    struct paused_protector* const paused = user_data;
+    const struct timespec begun = monotonic_now();
+    atomic_store_explicit(&paused->entered, 1, memory_order_release);
+    while (atomic_load_explicit(&paused->release, memory_order_acquire) == 0 &&
+           elapsed_milliseconds(begun, monotonic_now()) < 10000L) {
+        pause_milliseconds(1L);
+    }
+    return reject_socket(socket_handle, NULL);
+}
+
+/* A stopped handle keeps its last run through backend reconstruction. A new
+ * accepted start resets the generation before its protector can complete. */
+static int test_rejected_new_generation(yume_endpoint* endpoint) {
+    struct paused_protector paused;
+    struct start_context start;
+    pthread_t thread;
+    yume_endpoint_status before;
+    yume_endpoint_status starting;
+    yume_endpoint_status failed;
+    struct timespec begun;
+    int ok;
+    atomic_init(&paused.entered, 0);
+    atomic_init(&paused.release, 0);
+    if (!read_status(endpoint, &before) ||
+        !expect_session_totals(endpoint, 1u, 0u,
+                               "stopped total before a new generation") ||
+        !expect_status(yume_endpoint_set_socket_protector(
+                           endpoint, pause_then_reject_socket, &paused),
+                       YUME_STATUS_OK, "replace stopped protector", endpoint) ||
+        !expect_session_totals(endpoint, 1u, 0u,
+                               "total after stopped backend reconstruction")) {
+        return 0;
+    }
+    start.endpoint = endpoint;
+    start.timeout_ms = 30000u;
+    start.status = YUME_STATUS_OK;
+    if (pthread_create(&thread, NULL, start_worker, &start) != 0) {
+        fprintf(stderr, "cannot start the rejected-generation worker\n");
+        return 0;
+    }
+    begun = monotonic_now();
+    while (atomic_load_explicit(&paused.entered, memory_order_acquire) == 0 &&
+           elapsed_milliseconds(begun, monotonic_now()) < 5000L) {
+        pause_milliseconds(1L);
+    }
+    begun = monotonic_now();
+    ok = atomic_load_explicit(&paused.entered, memory_order_acquire) != 0 &&
+         read_status(endpoint, &starting) &&
+         elapsed_milliseconds(begun, monotonic_now()) <= 1000L &&
+         starting.state == YUME_ENDPOINT_STARTING &&
+         starting.session == YUME_SESSION_NONE && starting.sessions == 0u &&
+         starting.failed_attempts == 0u && starting.connected_ms == 0u &&
+         starting.epoch_bytes == 0u &&
+         starting.last_failure == before.last_failure &&
+         starting.record_bytes_sent >= before.record_bytes_sent;
+    atomic_store_explicit(&paused.release, 1, memory_order_release);
+    if (pthread_join(thread, NULL) != 0) {
+        fprintf(stderr, "cannot join the rejected-generation worker\n");
+        return 0;
+    }
+    if (!ok) {
+        fprintf(stderr,
+                "STARTING did not reset its session counter generation\n");
+        return 0;
+    }
+    if (!expect_status(start.status, YUME_STATUS_IO_ERROR,
+                       "rejected new generation", endpoint) ||
+        !expect_status_fields(endpoint, YUME_ENDPOINT_FAILED, YUME_SESSION_NONE,
+                              YUME_STATUS_IO_ERROR, "failed new generation") ||
+        !expect_session_totals(endpoint, 0u, 0u,
+                               "total after a failed new generation") ||
+        !read_status(endpoint, &failed) ||
+        failed.record_bytes_sent < before.record_bytes_sent ||
+        !expect_status(yume_endpoint_stop(endpoint, 0u), YUME_STATUS_OK,
+                       "stop failed new generation", endpoint) ||
+        !expect_session_totals(endpoint, 0u, 0u,
+                               "stopped failed new generation")) {
+        return 0;
+    }
+    return expect_status(
+        yume_endpoint_set_socket_protector(endpoint, protect_socket, NULL),
+        YUME_STATUS_OK, "release paused protector", endpoint);
+}
+
 /* A start that waits on a server which accepts the connection and then says
  * nothing ends when another thread stops the endpoint, long before its
  * deadline, and is not recorded as a failure. The same start left alone
@@ -501,7 +608,8 @@ static int test_cancelled_start(yume_runtime* runtime, const char* path) {
     begun = monotonic_now();
     if (!read_status(endpoint, &status) ||
         status.state != YUME_ENDPOINT_STARTING ||
-        status.session != YUME_SESSION_NONE ||
+        status.session != YUME_SESSION_NONE || status.sessions != 0u ||
+        status.failed_attempts != 0u ||
         elapsed_milliseconds(begun, monotonic_now()) > 1000L) {
         fprintf(stderr, "status during a start was wrong or slow\n");
         (void)yume_endpoint_stop(endpoint, 0u);
@@ -529,6 +637,8 @@ static int test_cancelled_start(yume_runtime* runtime, const char* path) {
     } else if (expect_status_fields(endpoint, YUME_ENDPOINT_STOPPED,
                                     YUME_SESSION_NONE, YUME_STATUS_OK,
                                     "status after a cancelled start") &&
+               expect_session_totals(endpoint, 0u, 0u,
+                                     "total after a cancelled start") &&
                feed_has(endpoint, "start cancelled", NULL) &&
                expect_status(yume_endpoint_start(endpoint, 1500u),
                              YUME_STATUS_TIMEOUT, "start left to its deadline",
@@ -536,6 +646,8 @@ static int test_cancelled_start(yume_runtime* runtime, const char* path) {
                expect_status_fields(endpoint, YUME_ENDPOINT_FAILED,
                                     YUME_SESSION_NONE, YUME_STATUS_TIMEOUT,
                                     "status after an expired start") &&
+               expect_session_totals(endpoint, 0u, 0u,
+                                     "total after an expired start") &&
                feed_has(endpoint, "start failed", NULL)) {
         ok = 1;
     }
@@ -703,7 +815,8 @@ int main(int argc, char** argv) {
             before.max_epoch_bytes == 0u ||
             before.credit_returns_per_window == 0u ||
             before.payload_bytes_sent != 0u || before.record_bytes_sent != 0u ||
-            before.sessions != 0u || before.connected_ms != 0u) {
+            before.sessions != 0u || before.failed_attempts != 0u ||
+            before.connected_ms != 0u) {
             fprintf(stderr, "a new client's status is not empty\n");
             goto cleanup;
         }
@@ -812,6 +925,7 @@ int main(int argc, char** argv) {
     if (!expect_status_fields(client, YUME_ENDPOINT_FAILED, YUME_SESSION_NONE,
                               YUME_STATUS_IO_ERROR,
                               "status after a failed start") ||
+        !expect_session_totals(client, 0u, 0u, "total after a failed start") ||
         !feed_has(client, "start failed", NULL)) {
         goto cleanup;
     }
@@ -845,7 +959,8 @@ int main(int argc, char** argv) {
                                  server_fingerprint) ||
             running.epoch_bytes == 0u ||
             running.epoch_bytes > running.max_epoch_bytes ||
-            running.sessions != 1u || running.record_bytes_sent == 0u ||
+            running.sessions != 1u || running.failed_attempts != 0u ||
+            running.record_bytes_sent == 0u ||
             running.record_bytes_received == 0u ||
             running.device_tcp_connections != 0u) {
             fprintf(stderr, "a running client's status is wrong\n");
@@ -853,8 +968,8 @@ int main(int argc, char** argv) {
         }
         if (serving.role != YUME_ROLE_SERVER ||
             serving.state != YUME_ENDPOINT_RUNNING ||
-            serving.session != YUME_SESSION_NONE ||
-            serving.record_bytes_sent != 0u ||
+            serving.session != YUME_SESSION_NONE || serving.sessions != 0u ||
+            serving.failed_attempts != 0u || serving.record_bytes_sent != 0u ||
             serving.last_failure != YUME_STATUS_OK) {
             fprintf(stderr, "a running server's status is wrong\n");
             goto cleanup;
@@ -863,7 +978,15 @@ int main(int argc, char** argv) {
             !feed_has(server, "accepting sessions", NULL) ||
             !expect_status(yume_endpoint_retry_now(client),
                            YUME_STATUS_INVALID_STATE,
-                           "retry of an endpoint without a device", client)) {
+                           "retry of an endpoint without a device", client) ||
+            !expect_status(yume_endpoint_start(client, 30000u),
+                           YUME_STATUS_INVALID_STATE,
+                           "start of a running client", client) ||
+            !expect_status_fields(client, YUME_ENDPOINT_RUNNING,
+                                  YUME_SESSION_ACTIVE, YUME_STATUS_IO_ERROR,
+                                  "status after a rejected start call") ||
+            !expect_session_totals(client, 1u, 0u,
+                                   "total after a rejected start call")) {
             goto cleanup;
         }
     }
@@ -1115,17 +1238,27 @@ int main(int argc, char** argv) {
             pause_milliseconds(20L);
         }
         if (ended.state != YUME_ENDPOINT_RUNNING ||
-            ended.session != YUME_SESSION_ENDED ||
+            ended.session != YUME_SESSION_ENDED || ended.sessions != 1u ||
+            ended.failed_attempts != 0u ||
             ended.last_failure == YUME_STATUS_OK ||
             ended.last_failure == YUME_STATUS_IO_ERROR ||
             ended.last_failure_message[0] == '\0' || ended.connected_ms != 0u ||
             ended.epoch_bytes != 0u) {
             fprintf(stderr,
                     "status after a lost session: state=%u session=%u "
+                    "sessions=%llu failed_attempts=%u "
                     "last_failure=%d '%s'\n",
                     (unsigned)ended.state, (unsigned)ended.session,
-                    (int)ended.last_failure, ended.last_failure_message);
+                    (unsigned long long)ended.sessions,
+                    (unsigned)ended.failed_attempts, (int)ended.last_failure,
+                    ended.last_failure_message);
             goto cleanup;
+        }
+        for (unsigned int repeat = 0u; repeat != 3u; ++repeat) {
+            if (!expect_session_totals(client, 1u, 0u,
+                                       "repeated ended session total")) {
+                goto cleanup;
+            }
         }
         if (!feed_has(client, "session ended", NULL) ||
             !expect_status_fields(server, YUME_ENDPOINT_STOPPED,
@@ -1147,6 +1280,12 @@ int main(int argc, char** argv) {
                        "unregistered service after restart", server) ||
         !expect_status(yume_endpoint_stop(client, 0u), YUME_STATUS_OK,
                        "client stop", client) ||
+        !expect_session_totals(client, 1u, 0u, "total after client stop") ||
+        !expect_status(
+            yume_endpoint_set_socket_protector(client, protect_socket, NULL),
+            YUME_STATUS_OK, "rebuild stopped client", client) ||
+        !expect_session_totals(client, 1u, 0u,
+                               "total after stopped client reconstruction") ||
         !expect_status(yume_endpoint_start(client, 30000u), YUME_STATUS_OK,
                        "client restart", client)) {
         goto cleanup;
@@ -1186,6 +1325,7 @@ int main(int argc, char** argv) {
         yume_endpoint_status restarted;
         if (!read_status(client, &restarted)) goto cleanup;
         if (restarted.session != YUME_SESSION_ACTIVE ||
+            restarted.sessions != 1u || restarted.failed_attempts != 0u ||
             restarted.last_failure == YUME_STATUS_OK ||
             restarted.record_bytes_sent <= traffic_before_restart) {
             fprintf(stderr, "status after a restart lost the earlier run\n");
@@ -1209,13 +1349,16 @@ int main(int argc, char** argv) {
         yume_endpoint_status stopped;
         if (!read_status(client, &stopped)) goto cleanup;
         if (stopped.state != YUME_ENDPOINT_STOPPED ||
-            stopped.session != YUME_SESSION_NONE ||
+            stopped.session != YUME_SESSION_NONE || stopped.sessions != 1u ||
+            stopped.failed_attempts != 0u || stopped.connected_ms != 0u ||
+            stopped.epoch_bytes != 0u ||
             stopped.record_bytes_sent < traffic_before_restart ||
             !feed_has(client, "stopped", NULL)) {
             fprintf(stderr, "a stopped client's status is wrong\n");
             goto cleanup;
         }
     }
+    if (!test_rejected_new_generation(client)) goto cleanup;
     yume_endpoint_destroy(client);
     client = NULL;
 

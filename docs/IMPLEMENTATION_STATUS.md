@@ -105,8 +105,12 @@ Implemented and covered by focused tests:
   frozen ABI package. `YUME_INSTALL_EXPERIMENTAL_SDK=ON` enables development
   installation of the unversioned library, C header, CMake package and pkg-config
   metadata. The clean-prefix consumer gate runs when installation and tests are enabled.
+  With the native daemon built, both CMake and pkg-config consumers exchange
+  authenticated named streams/packets and routed TCP/UDP using the original
+  probes and staged programs. Selected consumer language, C++ runtime and
+  sanitizer options are preserved across both discovery paths.
   `tests/abi/install_consumer/consumer.c` is not idle: the shared-ABI build
-  compiles it as `yume_c_abi_consumer_c`, which is the only check that the
+  compiles it as `yume_c_abi_consumer_c`, which checks that the
   public header still parses as strict C11 rather than C++;
 - one compatibility manifest reporting product, YTP, config, ABI, logical
   suite components, concrete providers, cryptographic backend, and
@@ -342,13 +346,22 @@ the native endpoint's rekey timer also starts the rotation of a used epoch
 once it is 250 ms old, so a request after an idle moment does not wait for
 REKEY_ACK. It is off by default, because that exchange after every burst of
 traffic is visible in the stealth captures.
-It reserves outbound space for rekey controls. Focused engine tests cover byte,
+It reserves outbound space for rekey controls and for one of its own credit or
+CLOSE records. Credit, FIN, terminal CLOSE and settlement records that do not
+fit wait as bounded obligations, and engine tests cover them behind held data,
+pending writes, stream churn and PONG traffic. Focused engine tests cover byte,
 record and send-age thresholds, idle rotation, crossed rotation, synchronous ACK delivery,
 reserved queue capacity, peer overshoot refusal, deferred publication and ACK
 deadline expiry. The native endpoint also tests its unanswered-ACK watchdog.
 Competing-stream tests cover credit changes, stalled readers, callback reentry
-and release after rekey. Receive windows return credit in half-window updates
-and grow while the application drains them within two round trips. Engine tests
+and release after rekey. Receive windows batch consumed credit and grow while
+the application drains them within two round trips. Connection credit also
+returns below the batch threshold when the peer has less than one maximum
+frame left. Receiver tests in both roles keep one stream unread while three
+others consume checked data, then drain or close the held stream and verify
+continued progress within the original windows. They cover queued and
+application-held records, including useful consumption before the unread
+stream spends the final connection grants. Engine tests
 cover the return point, growth to the bound, a slow reader whose window stays,
 a peer that cannot buffer past its credit and grants above the local maxima. An
 endpoint test covers a client whose byte budget is smaller than the server's.
@@ -450,10 +463,22 @@ said, cancels a client start from another thread, and opens a
 of a real session and cancels a start against a server that never answers,
 and `yume_abi_kit_integration` opens a kit that the `yume` program sealed
 and checks what the library refuses instead.
+The status snapshot retains successful authentications through session end,
+intentional stop and stopped backend replacement. An accepted `STARTING`
+transition begins a new counter generation at zero; a call rejected before
+that transition preserves the previous one. Failed, cancelled and expired
+starts report zero counters in their new generation.
+Device reconnections accumulate within that generation, with `failed_attempts`
+reset at each authentication; both counts survive stop. Sticky `last_failure`
+and handle-wide traffic totals keep their separate lifetimes.
 `yume_native_backend_open_integration` pauses notification delivery for
 both stream and packet sessions to check that `ENDED` is published with
 its typed reason and lifecycle line, and that intentional stop records
-no failure.
+no failure. Its counter assertions retain authenticated sessions through
+pending and delivered end notifications and stop. The public stream fixture
+also checks counter generations across failed, cancelled and expired starts,
+stop, stopped backend replacement and restart; the device fixture checks
+counts across reconnects, stop and restart.
 
 ### Native programs
 
@@ -556,6 +581,9 @@ serialization can retain ordinary-memory copies outside those guards.
 a source pinned to one opened file that hashes and sends the same bytes, and a
 receiver that writes into a private staging file and publishes it without
 replacing anything, only after the declared size and SHA-256 match.
+It rejects unrepresentable receive deadlines before creating state, and
+cleans up failures before allocating diagnostics. The relay channel reference
+owns the history layout and trust-commit durability rules.
 `yume_module_codecs` holds the application codec core without BaseFWX: the
 HTTP request and response envelope, backend dialing rules and the Monero RPC
 descriptor with its request allow-list. No module uses these libraries yet.
@@ -570,7 +598,8 @@ shared UDP policy of 64 datagrams and 1 MiB per budget, dropping the newest
 datagram when full. Destinations close after an idle timeout, refused ones wait
 a retry delay, and the association ends with its TCP connection. The route
 bridge drops an empty datagram from a destination instead of closing the flow,
-because a YTP packet cannot be empty. The native endpoint test runs UDP
+because a YTP packet cannot be empty, and drops one larger than the session's
+packet bound the same way. The native endpoint test runs UDP
 ASSOCIATE over the production daemon composition with real UDP sockets. It
 checks traffic both ways, an empty datagram from the destination, refusal by
 configured destinations and by a missing identity grant, source locking, the

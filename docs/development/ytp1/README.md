@@ -489,7 +489,8 @@ in-session credit are bounded before allocation; and every packet OPEN is
 independently authorized. Direct UDP uses an explicit `RouteProvider`.
 NativeEndpoint composes the Asio provider and configured `direct_udp` handlers
 into an authenticated connected-UDP path with destination policy and preserved
-packet boundaries. The native ABI supports named packet handles and routed UDP
+packet boundaries. A datagram from the destination that is empty or larger
+than the session's packet bound is dropped, and the flow continues. The native ABI supports named packet handles and routed UDP
 I/O; the standalone Linux runtimes compose managed TUN adapters with directional
 IP policy. See [ABI](../../ABI.md) and the managed Linux TUN section above for
 their bounds and ownership. Production qualification remains open.

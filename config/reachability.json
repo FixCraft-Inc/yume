@@ -212,6 +212,11 @@
       "reason": "Test observer of how many routes pass the route rules."
     },
     {
+      "path": "src/runtime/circuit_client.cpp",
+      "functions": ["yume::runtime::circuit::ClientCircuit::ready() const"],
+      "reason": "Handshake-state observer used by the circuit probe and runtime test; production pool admission uses has_stream_capacity."
+    },
+    {
       "path": "src/providers/circuit_crypto.cpp",
       "functions": ["yume::providers::circuit::layer_aad(*"],
       "reason": "Exposes the production layer AAD construction to the circuit 1 vector test."

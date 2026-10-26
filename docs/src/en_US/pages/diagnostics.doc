@@ -75,7 +75,9 @@ compile time. A probe build records only when
 `YUME_BENCH_PROBE_FILE` names a file prefix at start. It then appends one
 JSON line of totals each second, and a last one at exit, to `PREFIX.PID`:
 counts, sums, maxima and power-of-two histograms of nanoseconds or bytes,
-never keys, payload or addresses.
+never keys, payload or addresses. If the recorder cannot open that file,
+build its name or start its writer thread, the probes stay off and the
+program runs as usual.
 
 @code bash
 cmake -S . -B build-probe -DCMAKE_BUILD_TYPE=Release -DYUME_DEV_DIAGNOSTICS=ON \

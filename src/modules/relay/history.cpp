@@ -53,15 +53,9 @@ bool is_valid_history_direction(std::string_view direction) noexcept {
     return direction == "in" || direction == "out";
 }
 
-std::string safe_component(std::string value) {
-    const bool safe = !value.empty() && value.size() <= 128 &&
-        value != "." && value != ".." &&
-        std::all_of(value.begin(), value.end(), [](unsigned char ch) {
-            return std::isalnum(ch) != 0 || ch == '-' || ch == '_';
-        });
-    if (safe) return value;
-    // The v2 instance key: the first 12 bytes of SHA-256, in hex.
-    return identity::sha256_hex(value).substr(0, 24);
+std::string safe_component(std::string_view value) {
+    // One naming scheme prevents a literal ID from aliasing a digest name.
+    return identity::sha256_hex(value);
 }
 
 class StringWiper {
@@ -644,8 +638,8 @@ HistoryListResult& HistoryListResult::operator=(
 
 HistoryStore::HistoryStore(std::filesystem::path root_dir,
                            std::string instance_key)
-    : root_dir_(std::move(root_dir))
-    , instance_key_(safe_component(std::move(instance_key))) {}
+    : root_dir_(std::move(root_dir)),
+      instance_key_(safe_component(instance_key)) {}
 
 bool HistoryStore::enabled() const {
     return !root_dir_.empty() && !instance_key_.empty();

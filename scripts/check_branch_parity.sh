@@ -30,12 +30,16 @@ DEV_REF="$(resolve_ref "${DEV_BRANCH}")" || {
   exit 2
 }
 
-mapfile -t ALL_CHANGED < <(git diff --name-only "${BASE_REF}" "${DEV_REF}" -- | sort -u)
+if ! CHANGED="$(git diff --name-only "${BASE_REF}" "${DEV_REF}" -- | sort -u)"; then
+  echo "Unable to compare branches: ${BASE_REF} and ${DEV_REF}." >&2
+  exit 2
+fi
 
-if [[ ${#ALL_CHANGED[@]} -eq 0 ]]; then
+if [[ -z "${CHANGED}" ]]; then
   echo "Branch parity OK: ${BASE_REF} and ${DEV_REF} are identical."
   exit 0
 fi
+mapfile -t ALL_CHANGED <<< "${CHANGED}"
 
 ALLOW_PATTERNS=()
 if [[ -f "${ALLOWLIST_FILE}" ]]; then

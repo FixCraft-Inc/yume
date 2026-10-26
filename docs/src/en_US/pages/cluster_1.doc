@@ -198,8 +198,11 @@ SIGHUP it reads the list and peer store again with its other credentials. A
 link keeps running when nothing it is built from changed: this server's
 identity and the peer's name, host, address, port, keys, TLS anchors,
 admission key and outbound PSK. A changed peer's link is replaced, a removed
-peer's link closes and a new peer gets one. A newer serial is saved before the
-new credentials take effect. A reload refuses a list naming another operator
+peer's link closes and a new peer gets one. Replacement links and the routes
+view are prepared before saving a newer serial or applying credentials. If
+preparation fails, the loaded membership, routes and running links stay in
+force. A newer serial is saved before the new credentials take effect.
+A reload refuses a list naming another operator
 or with a lower serial than the loaded one, and a state file it cannot write,
 and the previous credentials stay in force.
 
@@ -308,7 +311,10 @@ with its nodes, measured latency when it has one, and what it gives up:
 
 The proposal's id is a digest of its hop count, nodes and view serial.
 `yume --config PATH --accept-route ID` accepts it over the control socket,
-and only the same id accepts anything. The acceptance lasts until the
+and only the same id accepts anything. A pending proposal is discarded when
+its session or routes view changes, fails or expires. Acceptance requires the
+current session's verified, unexpired view. An already accepted hop policy
+survives these changes; it lasts until the
 configured length works again, which the client tries every five minutes, or
 until it exits. `circuits.min_hops` approves routes down to that length in
 advance, for machines nobody watches. A dishonest entry can refuse to extend
@@ -323,13 +329,22 @@ affected.
 
 **Streams.** The client grants each stream 256 KiB at first and doubles
 the window each time its reader drains half of it, up to 1 MiB, while the
-windows of one circuit's streams total at most 8 MiB, so a download is not
-held to 256 KiB per round trip through the circuit. What the client sends
+windows of one circuit's streams total at most 8 MiB. Initial grants and
+window growth share that bound; the pool selects another circuit when one
+cannot fit a new stream's initial grant. A download is not held to 256 KiB
+per round trip through the circuit. What the client sends
 stays within the exit's 256 KiB. A stream the client drops before both
 sides finished ends at the exit at once, even after the client sent done.
 Every hop is its own YTP/1 session, and a key carries records for at most
 half a second, so after a quiet spell each hop's first record waits one
 round trip for a new key unless `limits.idle_epoch_rotation` is set.
+
+The native circuit interface completes each accepted open, read and write
+once on its execution context, including after the circuit owner is released.
+Delivery storage is reserved before acceptance; a failed reservation reports
+`ResourceExhausted` inline on that context. The caller keeps the context running
+until completions drain. A terminal abort discards unread data and settles
+pending operations with a typed failure.
 
 `yume --status` shows each circuit's route by name, the length in use
 against the configured one, the plain HTTP setting, a stop and any proposal.
@@ -355,7 +370,8 @@ copies each side's admission key to the other, and gives the new server the
 operator's public key and a `cluster` section. With `--exit` the server's one
 `direct_tcp` adapter becomes its exit and the routes view marks it. `cluster-remove` takes a server
 out: the others drop its peer entry and files, and it loses its section,
-its cluster files and a state file inside its server directory. `cluster-sign` builds the list and the routes view from the servers' public
+its cluster files and a state file inside its server directory. State cleanup
+never follows a directory symlink or traverses `..`. `cluster-sign` builds the list and the routes view from the servers' public
 material, raises the serial, sets `not_after` from 1 to 366 days ahead (30 by
 default) and copies both documents and their signatures to every server. A
 server whose host does not resolve when the view is signed needs an

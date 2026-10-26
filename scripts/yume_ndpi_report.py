@@ -61,6 +61,12 @@ def capture_failures(name: str, capture: dict[str, object], port: int) -> list[s
     failures = []
     if not capture.get("csv_flows"):
         failures.append(f"{name}: no flow on port {port} was recorded")
-    if capture.get("discarded_bytes"):
-        failures.append(f"{name}: the reader discarded {capture['discarded_bytes']} bytes")
+    for field in ("ip_bytes", "discarded_bytes", "max_packet_bytes"):
+        value = capture.get(field)
+        if type(value) is not int or value < 0:
+            failures.append(f"{name}: missing or invalid {field} accounting")
+        elif field == "discarded_bytes" and value != 0:
+            failures.append(f"{name}: the reader discarded {value} bytes")
+        elif field != "discarded_bytes" and value == 0:
+            failures.append(f"{name}: {field} accounting is empty")
     return failures

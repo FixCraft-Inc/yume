@@ -321,9 +321,16 @@ typedef struct yume_endpoint_status {
     uint64_t connected_ms;
     /* While YUME_SESSION_WAITING: the delay before the next attempt. */
     uint64_t retry_ms;
-    /* Sessions authenticated since the endpoint last started, and failed
-     * attempts since the latest of them. */
+    /* Successful authentications in the current start generation. Retained
+     * through session end, stop and stopped backend replacement. An accepted
+     * STARTING transition resets this total to zero; a failed, cancelled or
+     * expired start leaves it zero. A call rejected before STARTING preserves
+     * the previous generation. */
     uint64_t sessions;
+    /* With a device: failed attempts since this generation's latest
+     * authentication. Retained through stop and stopped backend replacement;
+     * reset at STARTING and on authentication. Zero without a device or
+     * before a successful start. */
     uint32_t failed_attempts;
     uint32_t idle_epoch_rotation;
     /* Totals over every session of this endpoint handle. */
@@ -529,7 +536,10 @@ YUME_API yume_status yume_endpoint_retry_now(yume_endpoint* endpoint)
  * direct TCP adapter; it resolves hostnames and authorizes every result.
  * Application-accepted named services refuse destination-routed OPENs.
  * Destination and service bytes are copied during the call, including when
- * timeout or cancellation leaves an OPEN settling on the endpoint runner. */
+ * timeout or cancellation leaves an OPEN settling on the endpoint runner.
+ * Stream and packet open/accept calls may overlap endpoint stop. A successful
+ * backend completion that settles after stop is cancelled without publishing
+ * a handle, even if the same endpoint has already restarted. */
 YUME_API yume_status yume_endpoint_open_stream(
     yume_endpoint* endpoint,
     const yume_open_options* options,

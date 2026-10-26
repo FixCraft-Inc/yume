@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import re
@@ -26,7 +27,55 @@ def max_queued_bytes(root: Path) -> int:
     return maximum
 
 
-def run(binary: Path, setup_program: Path, openssl: Path) -> None:
+def prepare_cluster_reload(kit: Path, setup_program: Path,
+                           environment: dict[str, str]) -> None:
+    """Signed snapshots: B is replaced by C, whose first dial needs DNS."""
+    root = kit / "reload-cluster"
+    root.mkdir(mode=0o700, parents=True)
+    operator = root / "operator"
+
+    def setup(*arguments: str | Path) -> None:
+        result = subprocess.run(
+            [str(setup_program), *(str(argument) for argument in arguments)],
+            env=environment, capture_output=True, text=True, timeout=75,
+            check=False,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"cluster reload fixture {arguments[0]} failed: {result.stderr.strip()}")
+
+    for name, host in (("node-a", "127.0.0.1"), ("node-b", "127.0.0.1"),
+                       ("node-c", "localhost")):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            port = reservation.getsockname()[1]
+        setup("init", "--host", host, "--port", str(port), "--output", root / name)
+        path = root / name / "server/yumed.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["endpoint"]["listen_addresses"] = ["127.0.0.1"]
+        path.write_text(json.dumps(config), encoding="utf-8")
+    setup("cluster-init", "--output", operator)
+    for name in ("node-a", "node-b"):
+        setup("cluster-add", "--cluster", operator, "--server", root / name / "server",
+              "--name", name, "--host", "127.0.0.1")
+
+    def snapshot(name: str) -> None:
+        setup("cluster-sign", "--cluster", operator, "--days", "2")
+        shutil.copytree(root / "node-a/server/credentials/cluster", root / name)
+
+    snapshot("initial")
+    setup("cluster-remove", "--cluster", operator, "--name", "node-b")
+    setup("cluster-add", "--cluster", operator, "--server", root / "node-c/server",
+          "--name", "node-c", "--host", "localhost")
+    snapshot("unusable")
+    setup("cluster-remove", "--cluster", operator, "--name", "node-c")
+    setup("cluster-add", "--cluster", operator, "--server", root / "node-c/server",
+          "--name", "node-c", "--host", "localhost", "--address", "127.0.0.1")
+    snapshot("repaired")
+
+
+def run(binary: Path, setup_program: Path, openssl: Path,
+        cluster_reload_only: bool = False) -> None:
     binary = binary.resolve(strict=True)
     openssl = openssl.resolve(strict=True)
     if not binary.is_file() or not openssl.is_file():
@@ -38,6 +87,14 @@ def run(binary: Path, setup_program: Path, openssl: Path) -> None:
     loopback = {"public": False, "networks": ["127.0.0.1/32"]}
     with tempfile.TemporaryDirectory(prefix="yume-native-endpoint-") as temporary:
         kit = Path(temporary) / "kit"
+        if cluster_reload_only:
+            prepare_cluster_reload(kit, setup_program, environment)
+            result = subprocess.run([str(binary), str(kit), "--cluster-reload-only"],
+                                    env=environment, timeout=35, check=False)
+            if result.returncode:
+                raise RuntimeError(
+                    f"cluster reload test failed with exit {result.returncode}")
+            return
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
             reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]
@@ -147,6 +204,7 @@ def run(binary: Path, setup_program: Path, openssl: Path) -> None:
         for entry in store["keys"]:
             entry["capabilities"] = [{"service": "echo", "kind": "packet"}]
         authorization.with_name("authorized-packets.json").write_text(json.dumps(store), encoding="utf-8")
+        prepare_cluster_reload(kit, setup_program, environment)
         result = subprocess.run([str(binary), str(kit)], env=environment,
                                 timeout=35, check=False)
         if result.returncode:
@@ -159,9 +217,11 @@ def main() -> int:
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--setup", type=Path, required=True)
     parser.add_argument("--openssl", type=Path, required=True)
+    parser.add_argument("--cluster-reload-only", action="store_true",
+                        help="run only the signed cluster reload rollback regression")
     args = parser.parse_args()
     try:
-        run(args.binary, args.setup, args.openssl)
+        run(args.binary, args.setup, args.openssl, args.cluster_reload_only)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"native endpoint gate: {error}", file=sys.stderr)
         return 1

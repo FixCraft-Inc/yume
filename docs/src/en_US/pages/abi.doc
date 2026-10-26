@@ -63,9 +63,16 @@ and links `yume::yume`; a C or C++ compiler can use `pkg-config --cflags --libs 
 The package advertises `yume_EXPERIMENTAL=TRUE` and makes no version-compatibility
 promise. `yume_abi_installed_consumers` installs into a fresh build-owned prefix
 and compiles and runs separate C and C++ consumers through both discovery paths.
-With the native daemon built, it also carries named streams/packets and routed
-TCP/UDP through that installed library and staged daemon. A loader check verifies
-the library comes from the staged prefix.
+With `YUME_BUILD_NATIVE_APPLICATION=OFF`, the gate stages only the SDK and
+does not require CLI tools. Native application builds also stage and check
+`yume-setup` and `yume-doctor`.
+With the native daemon built, both discovery paths reuse the original probes
+to carry authenticated named streams/packets and routed TCP/UDP through that
+installed library and staged programs. Consumer compilation preserves the
+selected C/C++ language and sanitizer options, with C++ executable link options
+confined to C++. A loader check verifies the library comes from the staged
+prefix. The fixture retains command results, the nested CMake test inventory
+and JUnit results below each prefix.
 
 ## Configuration and the backend seam
 
@@ -252,8 +259,12 @@ and packets before their endpoint and destroy endpoints before the runtime.
 
 Version and manifest functions are thread-safe and have no mutable state.
 Config handles are immutable and may be inspected concurrently. Endpoint
-lifecycle, service registration, open, and accept calls are serialized inside
-the endpoint and may be called from different application threads. A stop
+lifecycle and service registration calls are serialized inside the endpoint
+and may be called from different application threads. Blocking open and accept
+calls release that serialization while waiting, so stop can cancel them.
+If an operation succeeds in the backend but stop precedes its handle
+publication, the call returns `YUME_STATUS_CANCELLED` with no handle, even if
+the endpoint has already restarted using the same backend. A stop
 does not wait behind a client start: it cancels it, as
 [Endpoint lifecycle](#endpoint-lifecycle) describes. `yume_endpoint_get_status`
 and `yume_endpoint_read_message` may be called from any thread at any time,
@@ -635,9 +646,10 @@ the peer address reach the device.
 `yume_endpoint_get_status` copies a point-in-time snapshot into a sized
 `yume_endpoint_status`. It is what [control protocol 1](protocol/CONTROL_1.md)
 reports for `yume`. An endpoint without a device makes one attempt per
-start, so the fields of a retry loop stay zero for it. The call changes
-nothing, waits for no lifecycle call and holds no key, credential or
-payload.
+start, so `retry_ms` and `failed_attempts` stay zero for it. The call changes
+nothing, does not acquire the lifecycle mutex and holds no key, credential
+or payload. Its state snapshot can wait for concurrent start cancellation to
+settle under the state mutex.
 
 @table
 | Field | Value |
@@ -646,7 +658,8 @@ payload.
 | `session` | `YUME_SESSION_NONE`, or `YUME_SESSION_ACTIVE` while a client's session is authenticated. Without a device, `YUME_SESSION_ENDED` once it has ended while the endpoint stays `RUNNING`. With one, `YUME_SESSION_CONNECTING` during an attempt and `YUME_SESSION_WAITING` before the next |
 | `connected_ms` | While the session is active: how long it has been up |
 | `retry_ms` | While waiting: the delay before the next attempt |
-| `sessions`, `failed_attempts` | Sessions authenticated since the endpoint last started, and failed attempts since the latest of them |
+| `sessions` | Successful authentications in the current start generation, retained after session end and stop |
+| `failed_attempts` | With a device: failed attempts since this generation's latest authentication; zero before a successful start and without a device |
 | `peer_fingerprint_sha256` | While the session is active: the server's verified composite fingerprint, otherwise zero bytes |
 | `epoch_bytes` | While the session is active: its key epoch, the smaller of the two sides' `max_epoch_bytes`, otherwise 0 |
 | `payload_bytes_sent`, `payload_bytes_received`, `record_bytes_sent`, `record_bytes_received` | Totals over every session of this endpoint handle |
@@ -654,6 +667,16 @@ payload.
 | `max_queued_bytes`, `max_epoch_bytes`, `credit_returns_per_window`, `idle_epoch_rotation` | The configuration's limits that a tuning preset sets, the last as 0 or 1 |
 | `device_tcp_connections`, `device_udp_destinations` | With a device bridge: the TCP connections and UDP destinations it carries now |
 @end
+
+Each accepted `yume_endpoint_start` resets `sessions` and `failed_attempts`
+to zero when it publishes `STARTING`. A failed, cancelled or expired start
+leaves both counters zero. A call rejected before `STARTING` preserves the
+previous generation. Session end, intentional stop and replacement of a
+stopped backend preserve that generation's counts. Changing services, the
+socket protector or the device while stopped does not start a new generation.
+With a device, replacement sessions increment
+`sessions` and each authentication resets `failed_attempts`. Neither counter
+reset changes the byte totals, which span the endpoint handle's lifetime.
 
 A later success does not clear `last_failure`, so a display can still say
 why the previous session ended. Stopping the endpoint is not a
@@ -839,8 +862,9 @@ destination streams against a separate daemon, a TUN device whose TCP and
 UDP traffic crosses a real session, the status snapshot and message feed of
 a real session, a start cancelled by a stop, a sealed kit opened and
 refused, and the intentional typed
-`UNSUPPORTED` boundary for declared adapters and the control socket. The clean-prefix CMake and pkg-config fixtures are future acceptance material, not
-a claim that the candidate is currently installed.
+`UNSUPPORTED` boundary for declared adapters and the control socket. The
+clean-prefix CMake and pkg-config fixtures exercise the opt-in development SDK;
+their selected build/toolchain results do not complete the freeze matrix.
 
 Before ABI v1 freezes, the clean-prefix matrix must link without private YUME
 dependencies, exchange an authenticated custom byte stream, exercise packet

@@ -156,7 +156,7 @@ public:
         if (directory_at(path)) return;
         directory(path.parent_path(), owner);
         make_private_directory(path);
-        record(path, owner);
+        record(path, owner, true);
     }
 
     void create(const fs::path& path, std::span<const std::uint8_t> contents,
@@ -178,7 +178,12 @@ public:
         directory(path.parent_path(), owner);
         auto temporary = replacement_path(path);
         write_new_file(temporary, as_bytes(contents));
-        replacements_.emplace_back(temporary, path);
+        try {
+            replacements_.emplace_back(temporary, path);
+        } catch (...) {
+            remove_file(temporary);
+            throw;
+        }
         owners_.emplace_back(std::move(temporary), owner);
     }
 
@@ -232,8 +237,19 @@ public:
     }
 
 private:
-    void record(const fs::path& path, const Owner& owner) {
-        created_.push_back(path);
+    void record(const fs::path& path, const Owner& owner,
+                bool directory = false) {
+        // Until the path is retained, rollback() cannot see the new object.
+        try {
+            created_.push_back(path);
+        } catch (...) {
+            if (directory) {
+                static_cast<void>(::rmdir(path.c_str()));
+            } else {
+                remove_file(path);
+            }
+            throw;
+        }
         owners_.emplace_back(path, owner);
     }
 
@@ -624,7 +640,9 @@ fs::path cluster_remove(const fs::path& cluster_path,
             stale.push_back(other.cluster / "peers" / (name + "-" + kind));
         }
     }
-    // Only a state file inside the server directory is this node's to remove.
+    // State cleanup is anchored beneath this server and never follows a
+    // symlinked directory, even if its configuration names an outside path.
+    std::vector<fs::path> stale_state;
     const Json* section = leaving.config.contains("cluster")
                               ? &leaving.config.at("cluster")
                               : nullptr;
@@ -635,10 +653,9 @@ fs::path cluster_remove(const fs::path& cluster_path,
         const fs::path state(
             section->at("state").at("file").get<std::string>());
         if (!state.is_absolute()) {
-            const auto saved = leaving.server / state;
-            stale.push_back(saved);
-            stale.push_back(saved.parent_path() /
-                            (saved.filename().string() + ".new"));
+            stale_state.push_back(state);
+            stale_state.push_back(state.parent_path() /
+                                  (state.filename().string() + ".new"));
         }
     }
     Json config = leaving.config;
@@ -650,6 +667,8 @@ fs::path cluster_remove(const fs::path& cluster_path,
                     owner_of(record.root / "cluster.json"));
     changes.commit();
     for (const auto& path : stale) remove_file(path);
+    for (const auto& path : stale_state)
+        remove_file_beneath(leaving.server, path);
     if (directory_at(leaving.cluster) && !fs::is_symlink(leaving.cluster)) {
         remove_tree(leaving.cluster);
     }

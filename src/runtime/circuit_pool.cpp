@@ -8,7 +8,7 @@
 
 #include <algorithm>
 #include <array>
-#include <deque>
+#include <list>
 #include <map>
 #include <new>
 #include <random>
@@ -165,7 +165,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
     std::map<std::string, Clock::time_point, std::less<>> excluded;
 
     std::vector<Entry> entries;
-    std::deque<Waiter> waiters;
+    std::list<Waiter> waiters;
     bool building{false};
     // The circuit being built, which close() and a new session end.
     std::shared_ptr<circuit::ClientCircuit> pending;
@@ -200,6 +200,23 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         }
     }
 
+    // Pending consent belongs to one session and one verified view. An
+    // already accepted hop policy has a separate lifetime and survives this.
+    void discard_proposal() noexcept {
+        proposal.reset();
+        if (current_hops == 0U) {
+            current_hops = options.hops;
+            attempts = 0U;
+            next_recheck.reset();
+        }
+    }
+
+    bool proposal_current() const noexcept {
+        return !closed && session && view == View::Ready && chooser &&
+               std::chrono::system_clock::now() < view_expires && proposal &&
+               proposal->serial == serial;
+    }
+
     // Ends the circuit being built. Its build completion then sees the new
     // generation or the closed pool and changes nothing.
     void end_pending() noexcept {
@@ -208,11 +225,14 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
     }
 
     void fail_waiters(const Status& status) noexcept {
-        auto failing = std::move(waiters);
-        waiters.clear();
+        // Detach before invoking callbacks: they may open again. Splicing
+        // also works under sustained allocation failure.
+        std::list<Waiter> failing;
+        failing.splice(failing.end(), waiters);
         for (auto& waiter : failing)
             settle(waiter.done,
-                   Result<std::shared_ptr<StreamResponder>>(status));
+                   Result<std::shared_ptr<StreamResponder>>(
+                       Status::diagnostic(status.code(), status.message())));
     }
 
     std::size_t allowed_min() const noexcept {
@@ -281,9 +301,11 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
                     entry.circuit->close();
             }
             if (view == View::Failed && session) {
+                discard_proposal();
                 view = View::Idle;
             } else if (view == View::Ready &&
                        std::chrono::system_clock::now() >= view_expires) {
+                discard_proposal();
                 view = View::Idle;
             }
             if (current_hops < options.hops && !building &&
@@ -302,6 +324,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         if (next == session) return;
         ++generation;
         session = std::move(next);
+        discard_proposal();
         for (auto& entry : entries) entry.circuit->close();
         entries.clear();
         end_pending();
@@ -313,6 +336,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
     }
 
     void fetch_view() {
+        discard_proposal();
         view = View::Fetching;
         const auto current = generation;
         session->async_open(
@@ -363,6 +387,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
     }
 
     void view_received(const std::vector<std::byte>& bytes) {
+        discard_proposal();
         auto accepted = accept_served_routes(circuits, bytes,
                                              std::chrono::system_clock::now());
         if (!accepted.ok()) return view_failed(accepted.status());
@@ -384,6 +409,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
     }
 
     void view_failed(const Status& status) {
+        discard_proposal();
         view = View::Failed;
         chooser.reset();
         stopped = status.message().empty()
@@ -395,9 +421,8 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
     }
 
     bool usable(const Entry& entry, Clock::time_point now) const {
-        return entry.route.size() == current_hops && entry.circuit->ready() &&
-               !entry.circuit->closed() &&
-               entry.circuit->streams() < kStreamsPerCircuit &&
+        return entry.route.size() == current_hops &&
+               entry.circuit->has_stream_capacity() &&
                !(entry.first_stream &&
                  now - *entry.first_stream >= options.rotation);
     }
@@ -419,14 +444,14 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         });
         // A cancelled open settles now, wherever it waits in the queue. Each
         // settles after the walk, since its completion may open again.
-        std::deque<Waiter> cancelled;
+        std::list<Waiter> cancelled;
         for (auto waiter = waiters.begin(); waiter != waiters.end();) {
             if (!waiter->cancellation.is_cancelled()) {
                 ++waiter;
                 continue;
             }
-            cancelled.push_back(std::move(*waiter));
-            waiter = waiters.erase(waiter);
+            const auto cancelling = waiter++;
+            cancelled.splice(cancelled.end(), waiters, cancelling);
         }
         for (auto& waiter : cancelled)
             settle(waiter.done, Result<std::shared_ptr<StreamResponder>>(
@@ -499,38 +524,78 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
             start_build(current_hops, false);
     }
 
-    void open_direct(Waiter waiter) {
-        session->async_open(
-            waiter.direct_service, engine::ServiceKind::ByteStream,
-            waiter.destination, waiter.cancellation,
-            [done = std::move(waiter.done)](
-                Result<std::shared_ptr<StreamResponder>> result) mutable {
-                settle(done, std::move(result));
-            });
+    // Keep one callback owner across wrapper allocation and provider
+    // initiation. A removed waiter is no longer reachable by fail_waiters.
+    static std::shared_ptr<Opened> retain_completion(Opened& completion) {
+        auto owner = std::make_shared<Opened>();
+        *owner = std::exchange(completion, nullptr);
+        return owner;
     }
 
-    void open_on(Entry& entry, Waiter waiter) {
-        auto destination = circuit_destination(waiter.destination);
-        if (!destination.ok()) {
-            return settle(waiter.done, Result<std::shared_ptr<StreamResponder>>(
-                                           destination.status()));
+    static void fail_handoff(Waiter& waiter,
+                             const std::shared_ptr<Opened>& done,
+                             StatusCode code) noexcept {
+        settle(done ? *done : waiter.done,
+               Result<std::shared_ptr<StreamResponder>>(Status(code)));
+    }
+
+    void open_direct(Waiter waiter) noexcept {
+        std::shared_ptr<Opened> done;
+        try {
+            done = retain_completion(waiter.done);
+            const auto current_session = session;
+            if (!current_session || closed) {
+                return fail_handoff(waiter, done,
+                                    closed ? StatusCode::Closed
+                                           : StatusCode::FailedPrecondition);
+            }
+            current_session->async_open(
+                waiter.direct_service, engine::ServiceKind::ByteStream,
+                waiter.destination, waiter.cancellation,
+                [done](Result<std::shared_ptr<StreamResponder>> result) {
+                    settle(*done, std::move(result));
+                });
+        } catch (const std::bad_alloc&) {
+            fail_handoff(waiter, done, StatusCode::ResourceExhausted);
+        } catch (...) {
+            fail_handoff(waiter, done, StatusCode::Internal);
         }
-        const bool guard = !options.plain_http_allowed;
-        entry.circuit->open_stream(
-            destination.value(),
-            [done = std::move(waiter.done),
-             guard](Result<std::shared_ptr<StreamResponder>> result) mutable {
-                if (result.ok() && guard) {
-                    try {
-                        result = Result<std::shared_ptr<StreamResponder>>(
-                            guard_plain_http(std::move(result).take_value()));
-                    } catch (...) {
-                        result = Result<std::shared_ptr<StreamResponder>>(
-                            Status(StatusCode::ResourceExhausted));
+    }
+
+    void open_on(Entry& entry, Waiter waiter) noexcept {
+        std::shared_ptr<Opened> done;
+        try {
+            done = retain_completion(waiter.done);
+            auto destination = circuit_destination(waiter.destination);
+            if (!destination.ok()) {
+                return settle(*done, Result<std::shared_ptr<StreamResponder>>(
+                                         Status::diagnostic(
+                                             destination.status().code(),
+                                             destination.status().message())));
+            }
+            const bool guard = !options.plain_http_allowed;
+            const auto circuit = entry.circuit;
+            circuit->open_stream(
+                destination.value(),
+                [done, guard](Result<std::shared_ptr<StreamResponder>> result) {
+                    if (result.ok() && guard) {
+                        const auto stream = result.value();
+                        try {
+                            result = Result<std::shared_ptr<StreamResponder>>(
+                                guard_plain_http(stream));
+                        } catch (...) {
+                            stream->close(Status(StatusCode::Cancelled));
+                            result = Result<std::shared_ptr<StreamResponder>>(
+                                Status(StatusCode::ResourceExhausted));
+                        }
                     }
-                }
-                settle(done, std::move(result));
-            });
+                    settle(*done, std::move(result));
+                });
+        } catch (const std::bad_alloc&) {
+            fail_handoff(waiter, done, StatusCode::ResourceExhausted);
+        } catch (...) {
+            fail_handoff(waiter, done, StatusCode::Internal);
+        }
     }
 
     // Builds one circuit of hops nodes. probe builds the configured length
@@ -698,7 +763,8 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
 
     void propose(std::size_t hops) {
         proposal.reset();
-        if (hops < 1U || !chooser) {
+        if (hops < 1U || !chooser || view != View::Ready || !session ||
+            closed || std::chrono::system_clock::now() >= view_expires) {
             say("no route can be built, and none is shorter");
             return;
         }
@@ -820,7 +886,8 @@ void CircuitPool::open(const RouteDestination& destination,
         }
         state_->waiters.push_back(State::Waiter{
             destination, std::move(direct_service), std::move(cancellation),
-            std::move(done), std::move(registered).take_value()});
+            nullptr, std::move(registered).take_value()});
+        state_->waiters.back().done = std::exchange(done, nullptr);
     } catch (...) {
         State::settle(done, Result<std::shared_ptr<StreamResponder>>(
                                 Status(StatusCode::ResourceExhausted)));
@@ -840,7 +907,7 @@ CircuitPoolStatus CircuitPool::status() const {
     result.plain_http_allowed = state.options.plain_http_allowed;
     result.serial = state.serial;
     result.stopped = state.stopped;
-    result.proposal = state.proposal;
+    if (state.proposal_current()) result.proposal = state.proposal;
     for (const auto& entry : state.entries) {
         if (entry.circuit->closed()) continue;
         CircuitRoute route;
@@ -854,6 +921,10 @@ CircuitPoolStatus CircuitPool::status() const {
 
 engine::Status CircuitPool::accept(std::string_view id) noexcept {
     auto& state = *state_;
+    if (!state.proposal_current()) {
+        state.discard_proposal();
+        return Status(StatusCode::NotFound);
+    }
     if (!state.proposal || state.proposal->id != id)
         return Status(StatusCode::NotFound);
     const std::size_t hops = state.proposal->hops;
@@ -862,9 +933,13 @@ engine::Status CircuitPool::accept(std::string_view id) noexcept {
     state.proposal.reset();
     state.attempts = 0U;
     state.next_recheck = Clock::now() + state.options.recheck;
-    state.say("accepted routes of " + std::to_string(hops) +
-              (hops == 1U ? " hop" : " hops") + " until " +
-              std::to_string(state.options.hops) + " hops work again");
+    try {
+        state.say("accepted routes of " + std::to_string(hops) +
+                  (hops == 1U ? " hop" : " hops") + " until " +
+                  std::to_string(state.options.hops) + " hops work again");
+    } catch (...) {
+        state.say("accepted the proposed route");
+    }
     state.pump();
     return Status::success();
 }
@@ -873,6 +948,7 @@ void CircuitPool::close() noexcept {
     auto& state = *state_;
     if (state.closed) return;
     state.closed = true;
+    state.discard_proposal();
     providers::cancel_timer(state.tick);
     for (auto& entry : state.entries) entry.circuit->close();
     state.entries.clear();

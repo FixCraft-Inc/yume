@@ -119,6 +119,11 @@ checked against its SHA-256 by `scripts/ensure-node.sh`, and their tests fail
 with the reason on any other Node.
 
 This prepares YUME's checksum-pinned, default-off patched OpenSSL build.
+Build and `--clean` share a lock keyed by the canonical build-directory path,
+so relative, absolute and symlink aliases cannot run them concurrently.
+The Linux helper requires `flock`, `realpath` and a writable shared lock
+directory (`YUME_LOCK_ROOT`, defaulting to the user's YUME cache). A build
+directory must not be the source checkout or one of its ancestors.
 The native application does not use BaseFWX. Only the module libraries build
 on its pinned checkout. A normal full CMake configuration rejects stock OpenSSL
 because the default `openssl-chrome151` backend requires the additive
@@ -156,6 +161,64 @@ ThreadSanitizer into its own static-only cache prefix, so TSan sees
 OpenSSL's own synchronization and checks YUME's use of it. CI's
 `thread-sanitize` job does this.
 
+## Writing code
+
+Write for the next reader. YUME is maintained by people and agents who often
+start cold, and its code is read far more often than it is written. A reader
+should see what a change does, which object owns each resource, and why,
+without knowing its history. Prefer plain control flow and names that state the
+domain and the unit. Comment where something surprising happens, such as an
+ownership transfer, a lifetime that outlives a callback, or a deliberate
+exception to a rule.
+
+Stay consistent with the surrounding code. Within a file or a closely related
+set of interfaces, reuse its names, types and patterns, and never add a second
+way to do what the code already does. Moving code to a newer pattern is a
+change of its own. Clever constructs, such as template metaprogramming,
+macros, implicit conversions and default lambda captures in code that outlives
+its scope, need a demonstrated benefit and a comment.
+
+Put each concern where it is owned. New code goes into the layer and module
+that owns its responsibility, as the [source map](docs/SOURCE_MAP.md) and
+`cmake/YumeLayering.cmake` define. Separate parsing, policy, state changes, I/O
+and presentation when they change for different reasons, and give modules
+narrow, typed interfaces. These rules apply to every change, however small.
+
+## Errors and exceptions
+
+YUME uses C++ exceptions. Google's style guide bans them because its existing
+code is not exception-safe. YUME's code must be, and these rules keep its
+control flow readable:
+
+- **Expected outcomes are values.** When the code that detects a failure, or
+  its caller, decides what happens next, as for malformed or hostile peer
+  input, invalid configuration, a refused peer, a timeout, a closed stream, a
+  missing file or an exhausted limit, return it as `engine::Status` or
+  `engine::Result`, a codec status or a `std::error_code`. The protocol codecs
+  (`src/ytp`, `src/circuit`) and the session engine (`src/engine`) handle all
+  peer input this way. Never ignore a returned status. New functions that
+  return one are `[[nodiscard]]`.
+- **Exceptions abandon an operation.** Throw only when no nearby caller can
+  continue: allocation failure, a broken invariant, an error from a throwing
+  library, or a failure that must unwind one command, request or message to the
+  boundary that owns it. The relay module keeps its established pattern of
+  throwing its own error type for a malformed record and converting it at its
+  API. Do not introduce that pattern in other modules.
+- **Every function is exception-safe.** RAII releases what it acquired. A
+  function that changes lasting state builds the new state first and publishes
+  it in a step that cannot fail. Adding a `throw` means checking every caller
+  between it and the boundary that catches it.
+- **Boundaries contain them.** The C ABI, destructors and C destroy functions,
+  `noexcept` functions, thread entry points, event-loop completion handlers and
+  callbacks into user or module code catch everything and convert it into
+  their typed status, refusal or exit code. Use error-code overloads on
+  cancellation and close paths that cannot report failure. Catch by reference,
+  and record or translate the failure in every `catch (...)`.
+- **No hidden recovery.** Never use an exception for ordinary control flow,
+  swallow one, or continue with state the failure may have half-changed. ABI,
+  transport and lifecycle failures reach their callers as typed statuses, and
+  nothing parses human error text to recover one.
+
 ## C++, API, and naming
 
 Use `.clang-format` for changed lines and `.clang-tidy` for focused analysis.
@@ -176,12 +239,7 @@ clang-tidy -p <build-dir> src/path/to/file.cpp
   boundaries; within an existing namespace, follow the established type name.
 - Use `std::size_t` for counts, fixed-width integers for wire fields, and
   `std::chrono` for durations and time points.
-- Destructors and C destroy functions must catch or otherwise contain cleanup
-  exceptions; none may escape. Use error-code overloads for cancellation/close
-  paths that cannot report failure.
 - Validate externally supplied JSON roots and field types before dispatch.
-- ABI, transport and lifecycle failures use typed statuses. Never parse
-  human error strings to recover a status.
 - The product version, YTP/1, config schema 1, the ABI, the evidence profile
   and the relay channel protocol are different identifiers. Preserve existing
   versioned cryptographic domains and wire labels, and add new domains for

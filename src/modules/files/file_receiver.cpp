@@ -48,11 +48,29 @@
 namespace yume::files {
 namespace {
 
-void SetError(std::string* error, std::string message) noexcept {
+void SetError(std::string* error, std::string_view message,
+              std::string_view detail = {}) noexcept {
     if (!error) return;
     try {
-        *error = std::move(message);
+        error->assign(message);
+        if (!detail.empty()) {
+            error->append(": ");
+            error->append(detail);
+        }
     } catch (...) {
+        error->clear();
+    }
+}
+
+void SetErrnoError(std::string* error, const char* action,
+                   int error_number) noexcept {
+    if (!error) return;
+    try {
+        SetError(
+            error, action,
+            std::error_code(error_number, std::generic_category()).message());
+    } catch (...) {
+        error->clear();
     }
 }
 
@@ -549,11 +567,25 @@ bool RelayFileReceiver::Begin(
                  "relay transfer SHA-256 must be 64 lowercase hex characters");
         return false;
     }
+    using Clock = std::chrono::steady_clock;
     if (limits.max_transfer_bytes == 0 || limits.max_chunk_bytes == 0 ||
-        limits.max_duration <= std::chrono::milliseconds::zero()) {
+        limits.max_duration <= std::chrono::milliseconds::zero() ||
+        limits.max_duration >
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                Clock::duration::max())) {
         SetError(error, "relay receive limits are invalid");
         return false;
     }
+    // Check conversion before performing it, then addition before publishing
+    // receive state. A positive millisecond count can overflow either one.
+    const auto duration =
+        std::chrono::duration_cast<Clock::duration>(limits.max_duration);
+    const auto now = Clock::now();
+    if (now > Clock::time_point::max() - duration) {
+        SetError(error, "relay receive limits are invalid");
+        return false;
+    }
+    const auto deadline = now + duration;
     if (declared_size > limits.max_transfer_bytes) {
         SetError(error, "relay transfer exceeds the receive size limit");
         return false;
@@ -563,6 +595,7 @@ bool RelayFileReceiver::Begin(
     (void)declared_size;
     (void)expected_sha256;
     (void)limits;
+    (void)deadline;
     SetError(error,
              "atomic confined relay file receive is unsupported on this platform");
     return false;
@@ -690,7 +723,7 @@ bool RelayFileReceiver::Begin(
     declared_size_ = declared_size;
     received_size_ = 0;
     limits_ = limits;
-    deadline_ = std::chrono::steady_clock::now() + limits.max_duration;
+    deadline_ = deadline;
     file_device_ = static_cast<std::uint64_t>(file_info.st_dev);
     file_inode_ = static_cast<std::uint64_t>(file_info.st_ino);
     committed_ = false;
@@ -726,8 +759,7 @@ bool RelayFileReceiver::Append(std::span<const std::uint8_t> chunk,
         if (count < 0 && errno == EINTR) continue;
         if (count <= 0) {
             const int saved_errno = count < 0 ? errno : EIO;
-            return Fail(ErrorMessage("write relay receive file", saved_errno),
-                        error);
+            return Fail("write relay receive file", saved_errno, error);
         }
         offset += static_cast<std::size_t>(count);
     }
@@ -737,8 +769,7 @@ bool RelayFileReceiver::Append(std::span<const std::uint8_t> chunk,
     try {
         sha256_->Update(chunk);
     } catch (const std::exception& ex) {
-        return Fail(std::string("hash relay receive data: ") + ex.what(),
-                    error);
+        return Fail("hash relay receive data", ex.what(), error);
     }
     received_size_ += static_cast<std::uint64_t>(chunk.size());
     if (error) error->clear();
@@ -767,8 +798,7 @@ bool RelayFileReceiver::Finish(std::string* error) {
     try {
         actual_sha256 = sha256_->FinishHex();
     } catch (const std::exception& ex) {
-        return Fail(std::string("finalize relay receive digest: ") + ex.what(),
-                    error);
+        return Fail("finalize relay receive digest", ex.what(), error);
     }
     const bool digest_matches = actual_sha256 == expected_sha256_;
     basefwx::crypto::SecureClear(actual_sha256);
@@ -779,7 +809,7 @@ bool RelayFileReceiver::Finish(std::string* error) {
     basefwx::crypto::SecureClear(expected_sha256_);
 
     if (::fsync(file_fd_) != 0) {
-        return Fail(ErrorMessage("sync relay receive file", errno), error);
+        return Fail("sync relay receive file", errno, error);
     }
     struct stat descriptor_info {};
     struct stat staging_info {};
@@ -802,9 +832,8 @@ bool RelayFileReceiver::Finish(std::string* error) {
                 "kernel/filesystem",
                 error);
         }
-        return Fail(ErrorMessage("publish relay receive file without replacing",
-                                 publish_error),
-                    error);
+        return Fail("publish relay receive file without replacing",
+                    publish_error, error);
     }
 
     const auto rollback_publication = [&]() noexcept {
@@ -816,7 +845,8 @@ bool RelayFileReceiver::Finish(std::string* error) {
         return RenameNoReplace(directory_fd_, basename_, staging_basename_,
                                &rollback_error);
     };
-    const auto preserve_published_failure = [&](std::string message) {
+    const auto preserve_published_failure = [&](const char* message,
+                                                int error_number = 0) noexcept {
         if (file_fd_ >= 0) {
             (void)::close(file_fd_);
             file_fd_ = -1;
@@ -827,7 +857,11 @@ bool RelayFileReceiver::Finish(std::string* error) {
         }
         staging_basename_.clear();
         committed_ = true;
-        SetError(error, std::move(message));
+        if (error_number != 0) {
+            SetErrnoError(error, message, error_number);
+        } else {
+            SetError(error, message);
+        }
         return false;
     };
 
@@ -848,16 +882,13 @@ bool RelayFileReceiver::Finish(std::string* error) {
         const int sync_error = errno;
         if (rollback_publication()) {
             (void)::fsync(directory_fd_);
-            return Fail(ErrorMessage(
-                            "sync atomically published relay receive file",
-                            sync_error),
-                        error);
+            return Fail("sync atomically published relay receive file",
+                        sync_error, error);
         }
         return preserve_published_failure(
-            ErrorMessage(
-                "relay file was published but directory durability could not "
-                "be confirmed; destination retained",
-                sync_error));
+            "relay file was published but directory durability could not "
+            "be confirmed; destination retained",
+            sync_error);
     }
 
     const int completed_fd = file_fd_;
@@ -865,10 +896,9 @@ bool RelayFileReceiver::Finish(std::string* error) {
     if (::close(completed_fd) != 0) {
         const int close_error = errno;
         return preserve_published_failure(
-            ErrorMessage(
-                "relay file was durably published but closing its descriptor "
-                "failed; destination retained",
-                close_error));
+            "relay file was durably published but closing its descriptor "
+            "failed; destination retained",
+            close_error);
     }
     (void)::close(directory_fd_);
     directory_fd_ = -1;
@@ -883,10 +913,23 @@ bool RelayFileReceiver::expired() const noexcept {
     return active() && std::chrono::steady_clock::now() > deadline_;
 }
 
-bool RelayFileReceiver::Fail(std::string message,
+bool RelayFileReceiver::Fail(std::string_view message,
                              std::string* error) noexcept {
-    SetError(error, std::move(message));
+    return Fail(message, {}, error);
+}
+
+bool RelayFileReceiver::Fail(std::string_view action, std::string_view detail,
+                             std::string* error) noexcept {
+    // Cleanup must precede every potentially allocating diagnostic.
     Abort();
+    SetError(error, action, detail);
+    return false;
+}
+
+bool RelayFileReceiver::Fail(const char* action, int error_number,
+                             std::string* error) noexcept {
+    Abort();
+    SetErrnoError(error, action, error_number);
     return false;
 }
 

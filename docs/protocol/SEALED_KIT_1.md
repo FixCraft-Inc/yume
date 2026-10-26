@@ -105,6 +105,14 @@ below, refuses links, special files and deeper directories, and refuses a
 kit whose `yume.json` is not a valid client configuration, so a server's
 private keys are not sealed by mistake.
 
+The reader pins the kit's root directory and opens each component without
+following links. The root path also refuses symlinks and parent (`..`)
+components. Renaming an ancestor cannot redirect a read outside that root.
+File bytes and executable permission come from the same opened file. The
+32-file limit is enforced while enumerating children, before retaining more
+paths, and the content limit bounds reads as they are collected. These checks
+do not make an immutable snapshot of files being modified concurrently.
+
 ## Opening
 
 An importer checks the file's length before any key derivation: at least one

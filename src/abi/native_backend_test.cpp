@@ -604,6 +604,7 @@ void test_session_end_status_publication(const std::filesystem::path& kit,
     run->fill_status(active);
     CHECK(active.session == BackendSession::Active);
     CHECK(active.failure == BackendIo::Ok);
+    CHECK(active.sessions == 1U && active.failed_attempts == 0U);
     const auto after = run->record->messages.after(0U);
     const auto last_seq = after.entries.empty() ? 0U : after.entries.back().seq;
 
@@ -620,10 +621,12 @@ void test_session_end_status_publication(const std::filesystem::path& kit,
           (stopping ? BackendSession::None : BackendSession::Active));
     CHECK(pending.failure == BackendIo::Ok);
     CHECK(pending.failure_message.empty());
+    CHECK(pending.sessions == 1U && pending.failed_attempts == 0U);
 
     run->context->poll();
     BackendStatus ended;
     run->fill_status(ended);
+    CHECK(ended.sessions == 1U && ended.failed_attempts == 0U);
     const auto messages = run->record->messages.after(last_seq);
     CHECK(messages.missed == 0U);
     if (stopping) {
@@ -647,8 +650,43 @@ void test_session_end_status_publication(const std::filesystem::path& kit,
         CHECK(repeated.session == ended.session);
         CHECK(repeated.failure == ended.failure);
         CHECK(repeated.failure_message == ended.failure_message);
+        CHECK(repeated.sessions == 1U && repeated.failed_attempts == 0U);
         CHECK(run->record->messages.after(last_seq).entries.size() == 1U);
     }
+}
+
+void test_session_count_retirement(const std::filesystem::path& kit) {
+    const auto server_base = kit / "server";
+    const auto client_base = kit / "client";
+    NativeBackend server(read_kit_config(server_base / "yumed.json"),
+                         server_base, {}, {}, {}, std::nullopt);
+    NativeBackend client(read_kit_config(client_base / "yume.json"),
+                         client_base,
+                         std::filesystem::path(YUME_TEST_RESOLVER_PROGRAM), {},
+                         {}, std::nullopt);
+    std::string error;
+    CHECK(client.status().sessions == 0U);
+    CHECK(server.start(0U, nullptr, error) == BackendIo::Ok);
+    CHECK(server.status().sessions == 0U);
+    CHECK(client.start(10'000U, nullptr, error) == BackendIo::Ok);
+    CHECK(client.status().sessions == 1U);
+    CHECK(client.start(10'000U, nullptr, error) == BackendIo::AlreadyRunning);
+    CHECK(client.status().sessions == 1U);
+    client.stop();
+    const auto stopped = client.status();
+    CHECK(stopped.session == BackendSession::None);
+    CHECK(stopped.sessions == 1U && stopped.failed_attempts == 0U);
+    CHECK(stopped.connected_ms == 0U && stopped.epoch_bytes == 0U);
+    CHECK(stopped.peer_fingerprint_sha256.empty());
+    client.stop();
+    CHECK(client.status().sessions == 1U);
+    // This start is accepted by the backend but rejected before dialing.
+    CHECK(client.start(300'001U, nullptr, error) == BackendIo::Invalid);
+    CHECK(client.status().sessions == 0U);
+    CHECK(client.start(10'000U, nullptr, error) == BackendIo::Ok);
+    CHECK(client.status().sessions == 1U);
+    client.stop();
+    CHECK(client.status().sessions == 1U);
 }
 
 void test_open_deadline_admission(const std::filesystem::path& kit,
@@ -736,6 +774,7 @@ int main(int argc, char** argv) {
             argv[1], yume::engine::ServiceKind::ByteStream);
         yume::embed::test_open_deadline_admission(
             argv[1], yume::engine::ServiceKind::PacketChannel);
+        yume::embed::test_session_count_retirement(argv[1]);
         std::cout
             << "YTP embedding session status and OPEN deadline checks passed\n";
         return 0;

@@ -15,6 +15,8 @@ required where the cpu, memory and pids controllers are delegated to the user
 slice. Accounting is read from the scope's own cgroup rather than sampled from
 outside: `memory.peak` and `pids.peak` are exact high-water marks, where a
 sampler only sees whatever it happened to catch between polls.
+The peaks include the Python worker that runs each iteration and records its
+metrics, as well as the workload and its descendants.
 
 Swap is pinned to zero. A tier that silently swaps is not the tier it claims.
 """
@@ -27,6 +29,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -291,9 +294,122 @@ def _poll_usage(unit: str, stop: threading.Event, out: list[Usage]) -> None:
         stop.wait(0.05)
 
 
+def _metric_files(pattern: str) -> dict[Path, tuple[int, int, int, int]]:
+    """Snapshot file identities so an unchanged result cannot count twice."""
+    files = {}
+    for path in Path("/").glob(pattern.lstrip("/")):
+        try:
+            if path.is_file():
+                info = path.stat()
+                files[path] = (info.st_mtime_ns, info.st_ctime_ns,
+                               info.st_ino, info.st_size)
+        except OSError:
+            continue
+    return files
+
+
+def _run_workload(configuration: Path) -> int:
+    """Internal scope worker; the supervising process owns its deadline.
+
+    Read each result before another iteration can overwrite it. Per-iteration
+    snapshots let the supervisor require every sample even after an early exit.
+    """
+    settings = json.loads(configuration.read_text(encoding="utf-8"))
+    usage_dir = Path(settings["usage_dir"])
+    collectors = settings["collectors"]
+    try:
+        for iteration in range(1, settings["repeat"] + 1):
+            before = {name: _metric_files(pattern)
+                      for name, pattern, _ in collectors}
+            environment = dict(os.environ, YUME_TIER_ITERATION=str(iteration))
+            # The outer scope deadline covers every iteration and its children.
+            result = subprocess.run(settings["command"], env=environment, check=False)
+            values = {}
+            for name, pattern, dotted in collectors:
+                candidates = _metric_files(pattern)
+                changed = [path for path, identity in candidates.items()
+                           if before[name].get(path) != identity]
+                if not changed:
+                    continue
+                newest = max(changed, key=lambda path: (candidates[path][0], str(path)))
+                try:
+                    if newest.stat().st_size > MAX_EVIDENCE_BYTES:
+                        continue
+                    value = extract_metric(json.loads(newest.read_text(encoding="utf-8")), dotted)
+                except (OSError, ValueError, OverflowError):
+                    continue
+                if value is not None and math.isfinite(value):
+                    values[name] = value
+            (usage_dir / f"iteration-{iteration}.json").write_text(
+                json.dumps(values), encoding="utf-8")
+            if result.returncode:
+                return result.returncode
+        return 0
+    finally:
+        # Exact normal-exit accounting; the external poller covers OOM/timeout.
+        try:
+            relative = Path("/proc/self/cgroup").read_text().strip().split(":", 2)[2]
+            cgroup = Path("/sys/fs/cgroup") / relative.lstrip("/")
+            for name in ("memory.peak", "memory.events", "pids.peak", "cpu.stat"):
+                try:
+                    shutil.copyfile(cgroup / name, usage_dir / name)
+                except OSError:
+                    pass  # evaluate refuses absent accounting unless sampled
+        except (OSError, IndexError):
+            pass
+
+
+def _collected_metrics(usage_dir: Path, collectors: Sequence[tuple[str, str, str]],
+                       repeat: int) -> tuple[dict[str, dict], list[str]]:
+    samples: dict[str, list[float]] = {name: [] for name, _, _ in collectors}
+    for iteration in range(1, repeat + 1):
+        try:
+            values = json.loads((usage_dir / f"iteration-{iteration}.json").read_text(
+                encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for name in samples:
+            value = values.get(name) if isinstance(values, dict) else None
+            if (not isinstance(value, bool) and isinstance(value, (int, float))
+                    and math.isfinite(value)):
+                samples[name].append(value)
+    problems = [f"--collect {name}: expected {repeat} iteration samples, got {len(values)}"
+                for name, values in samples.items() if len(values) != repeat]
+    return {name: percentiles(values) for name, values in samples.items()}, problems
+
+
+def _stop_scope(unit: str, process: subprocess.Popen) -> None:
+    """Stop all scope members and reap the launcher, with bounded cleanup."""
+    problems = []
+    try:
+        subprocess.run(["systemctl", "--user", "stop", unit], check=True,
+                       capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        problems.append(f"scope stop failed ({type(error).__name__})")
+    # Covers a launcher that failed before creating its scope. Its process group
+    # is ours because Popen used start_new_session, never the caller's group.
+    if process.returncode is None:
+        # An unreaped child still owns its PID. Never signal a reused group ID
+        # after communicate already reaped the launcher during interruption.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            problems.append(f"launcher group kill failed ({type(error).__name__})")
+    try:
+        process.wait(timeout=5)
+    except (OSError, subprocess.SubprocessError) as error:
+        problems.append(f"launcher reap failed ({type(error).__name__})")
+    if problems:
+        raise TierError(f"cannot clean up {unit}: " + "; ".join(problems))
+
+
 def run_in_tier(tier: Tier, command: Sequence[str], timeout_sec: int,
-                repeat: int = 1
-                ) -> tuple[subprocess.CompletedProcess, Usage, list[float]]:
+                repeat: int = 1,
+                collectors: Sequence[tuple[str, str, str]] = ()
+                ) -> tuple[subprocess.CompletedProcess, Usage, list[int],
+                           dict[str, dict], list[str]]:
     """Runs `command` inside a transient scope and returns its cgroup usage.
 
     With `repeat` above one the iterations share a single scope, so the limits
@@ -301,29 +417,26 @@ def run_in_tier(tier: Tier, command: Sequence[str], timeout_sec: int,
     That is the point: a descriptor or task leak only shows up once the same
     session work has run many times under one budget.
     """
-    unit = f"yume-tier-{os.getpid()}-{int(time.time())}.scope"
     with tempfile.TemporaryDirectory(prefix="yume-tier-") as tmp:
+        unit = f"{Path(tmp).name}.scope"
         usage_dir = Path(tmp) / "usage"
         usage_dir.mkdir()
-        # Exact snapshot when the workload exits normally; the poller below
-        # covers the case where the scope is torn down instead.
-        inner = (
-            'rc=0; '
-            f'for i in $(seq 1 {int(repeat)}); do '
-            '  YUME_TIER_ITERATION=$i "$@" || { rc=$?; break; }; '
-            'done; '
-            'cg=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup); '
-            f'for f in memory.peak memory.events pids.peak cpu.stat; do '
-            f'  cp "$cg/$f" "{usage_dir}/$f" 2>/dev/null || true; '
-            'done; exit $rc'
-        )
+        configuration = Path(tmp) / "workload.json"
+        configuration.write_text(json.dumps({
+            "command": list(command), "repeat": repeat,
+            "collectors": list(collectors), "usage_dir": str(usage_dir),
+        }), encoding="utf-8")
         scope = [
             "systemd-run", "--user", "--scope", "--quiet", f"--unit={unit}",
             "--property", f"CPUQuota={tier.cpu_quota_percent}%",
             "--property", f"MemoryMax={tier.memory_bytes}",
             "--property", "MemorySwapMax=0",
             "--property", f"TasksMax={tier.tasks_max}",
-            "--", "bash", "-c", inner, "yume-tier", *command,
+            "--property", "TimeoutStopSec=5s",
+            "--property", "KillMode=control-group",
+            "--property", "SendSIGKILL=yes",
+            "--", sys.executable, str(Path(__file__).resolve()),
+            "--_workload", str(configuration),
         ]
         sampled: list[Usage] = []
         stop = threading.Event()
@@ -332,23 +445,38 @@ def run_in_tier(tier: Tier, command: Sequence[str], timeout_sec: int,
         poller.start()
         started = time.monotonic()
         try:
-            completed = subprocess.run(
-                scope, capture_output=True, text=True, timeout=timeout_sec,
-                check=False)
+            process = subprocess.Popen(scope, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True,
+                                       start_new_session=True)
+            try:
+                stdout, stderr = process.communicate(timeout=timeout_sec)
+                completed = subprocess.CompletedProcess(
+                    scope, process.returncode, stdout, stderr)
+            except BaseException:
+                # The scope also owns descendants that started new sessions.
+                # Killing only systemd-run can leave them alive with our pipes.
+                _stop_scope(unit, process)
+                raise
+            finally:
+                process.stdout.close()
+                process.stderr.close()
+        except subprocess.TimeoutExpired:
+            raise TierError(f"workload exceeded its {timeout_sec}-second deadline") from None
         finally:
             stop.set()
             poller.join(timeout=2.0)
         completed.elapsed_sec = round(time.monotonic() - started, 3)  # type: ignore[attr-defined]
+        metrics, problems = _collected_metrics(usage_dir, collectors, repeat)
 
         fd_samples = [u.fd_peak for u in sampled if u.fd_peak is not None]
         exact = collect_usage(usage_dir)
         if exact.memory_peak_bytes is not None:
             exact.fd_peak = max(fd_samples, default=None)
-            return completed, exact, fd_samples
+            return completed, exact, fd_samples, metrics, problems
         if sampled:
             sampled[-1].fd_peak = max(fd_samples, default=None)
-            return completed, sampled[-1], fd_samples
-        return completed, exact, fd_samples
+            return completed, sampled[-1], fd_samples, metrics, problems
+        return completed, exact, fd_samples, metrics, problems
 
 
 def evaluate(tier: Tier, completed: subprocess.CompletedProcess, usage: Usage,
@@ -389,7 +517,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--collect", action="append", default=[], metavar="NAME=GLOB:PATH",
         help="after each iteration read the newest file matching GLOB and "
              "extract the numeric JSON value at dotted PATH, reporting "
-             "p50/p95/p99 across iterations (repeatable)")
+             "p50/p95/p99 across iterations; each iteration must change a "
+             "matching file and supply one finite sample (repeatable)")
     parser.add_argument(
         "--evidence", action="append", default=[], metavar="GLOB",
         help="file or directory glob holding proof the crypto stack stayed on; "
@@ -412,38 +541,28 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.repeat < 1:
         parser.error("--repeat must be at least 1")
+    if args.timeout_sec < 1:
+        parser.error("--timeout-sec must be at least 1")
     collectors = []
     for spec in args.collect:
         name, _, rest = spec.partition("=")
         glob_part, _, dotted = rest.partition(":")
         if not name or not glob_part or not dotted:
             parser.error(f"--collect expects NAME=GLOB:PATH, got {spec!r}")
+        if any(existing[0] == name for existing in collectors):
+            parser.error(f"--collect name {name!r} is repeated")
         collectors.append((name, glob_part, dotted))
 
     tier = TIERS[args.tier]
     run_started = time.time()
-    completed, usage, fd_samples = run_in_tier(
-        tier, command, args.timeout_sec, args.repeat)
+    completed, usage, fd_samples, metrics, collection_problems = run_in_tier(
+        tier, command, args.timeout_sec, args.repeat, collectors)
     evidence_text, evidence_files = collect_evidence(args.evidence, run_started)
     verdict, reasons = evaluate(tier, completed, usage, evidence_text)
 
-    metrics: dict[str, dict] = {}
-    for name, glob_part, dotted in collectors:
-        values: list[float] = []
-        for path in sorted(Path("/").glob(glob_part.lstrip("/"))):
-            try:
-                if path.stat().st_mtime < run_started or not path.is_file():
-                    continue
-                value = extract_metric(json.loads(path.read_text()), dotted)
-            except (OSError, ValueError):
-                continue
-            if value is not None:
-                values.append(value)
-        if values:
-            metrics[name] = percentiles(values)
-        else:
-            reasons.append(f"--collect {name}: no samples matched {glob_part}:{dotted}")
-            verdict = "FAIL" if verdict == "PASS" else verdict
+    reasons.extend(collection_problems)
+    if collection_problems:
+        verdict = "FAIL"
 
     report = {
         "schema": "yume.constrained-host/1",
@@ -488,6 +607,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     try:
+        if len(sys.argv) == 3 and sys.argv[1] == "--_workload":
+            sys.exit(_run_workload(Path(sys.argv[2])))
         sys.exit(main())
     except TierError as error:
         print(f"constrained-host error: {error}", file=sys.stderr)

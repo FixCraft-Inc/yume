@@ -24,6 +24,29 @@
 #include <utility>
 #include <vector>
 
+#if defined(YUME_TEST_CREDENTIAL_STATUS_ALLOCATION)
+#include <typeinfo>
+#include "test_support/allocation_failure.hpp"
+
+namespace {
+thread_local bool fail_status_translation = false;
+}
+
+extern "C" [[noreturn]] void __real___cxa_throw(void*, std::type_info*,
+                                                void (*)(void*));
+extern "C" [[noreturn]] void __wrap___cxa_throw(void* exception,
+                                                std::type_info* type,
+                                                void (*destroy)(void*)) {
+    if (fail_status_translation && *type == typeid(yume::engine::Status)) {
+        fail_status_translation = false;
+        // The exception already owns its diagnostic. Fail the allocation
+        // that copies it into the noexcept loader's returned Result.
+        yume::test::arm_allocation_failure(1U);
+    }
+    __real___cxa_throw(exception, type, destroy);
+}
+#endif
+
 #include <nlohmann/json.hpp>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
@@ -1221,7 +1244,18 @@ void test_client_circuits(Fixture& fixture) {
     check(take(load()).circuits->floor == 0U,
           "an expired kit copy raised the floor");
     publish_kit(view(4, "2099-01-01T00:00:00Z", true), other_node);
-    check(!load().ok(), "a kit copy signed by another key was accepted");
+    const auto refused = load();
+    check(!refused.ok(), "a kit copy signed by another key was accepted");
+#if defined(YUME_TEST_CREDENTIAL_STATUS_ALLOCATION)
+    fail_status_translation = true;
+    const auto exhausted_diagnostic = load();
+    const bool fired = yume::test::disarm_allocation_failure();
+    check(!fail_status_translation && fired,
+          "credential Status translation did not exercise allocation failure");
+    check(exhausted_diagnostic.status().code() == refused.status().code() &&
+              exhausted_diagnostic.status().message().empty(),
+          "credential Status translation lost its typed refusal");
+#endif
     publish_kit(view(4, "2099-01-01T00:00:00Z", false), operator_key);
     check(load().status().code() == StatusCode::FailedPrecondition,
           "a kit copy without the kit's server was accepted");

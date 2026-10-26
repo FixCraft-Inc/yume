@@ -208,14 +208,15 @@ build_openssl() {
         "${YUME_OPENSSL_SOURCE_VERSION}" "${OPENSSL_SERIES}" "${abi}"
     # Brotli is required: Chrome offers only that certificate compression,
     # so a build without it would show in the ClientHello.
+    # Testing the subshell's status disables errexit, including in its helper
+    # calls. Chain every step so a failure cannot publish a successful prefix.
     if ! (
-        set -e
-        tar -xzf "${archive}" -C "${work_dir}" --strip-components=1
-        yume_openssl_apply_patches "${work_dir}" "${OPENSSL_PATCH_DIR}"
-        rm -rf -- "${prefix}"
-        cd "${work_dir}"
-        export ANDROID_NDK_ROOT="${NDK_DIR}"
-        export PATH="${NDK_HOST_BIN}:${PATH}"
+        tar -xzf "${archive}" -C "${work_dir}" --strip-components=1 &&
+        yume_openssl_apply_patches "${work_dir}" "${OPENSSL_PATCH_DIR}" &&
+        rm -rf -- "${prefix}" &&
+        cd "${work_dir}" &&
+        export ANDROID_NDK_ROOT="${NDK_DIR}" &&
+        export PATH="${NDK_HOST_BIN}:${PATH}" &&
         ./Configure "${target}" "-D__ANDROID_API__=${API_LEVEL}" -fPIC \
             --prefix="${prefix}" --openssldir="${prefix}/ssl" --libdir=lib \
             no-shared no-tests no-apps no-docs \
@@ -225,8 +226,8 @@ build_openssl() {
             --with-zstd-include="${installed}/include" \
             --with-zstd-lib="${installed}/lib" \
             --with-brotli-include="${installed}/include" \
-            --with-brotli-lib="${installed}/lib"
-        make -j"${JOBS}" build_libs
+            --with-brotli-lib="${installed}/lib" &&
+        make -j"${JOBS}" build_libs &&
         make install_dev
     ) >"${log}" 2>&1; then
         rm -rf -- "${work_dir}" "${prefix}"

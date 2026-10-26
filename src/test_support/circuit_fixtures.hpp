@@ -11,6 +11,8 @@
 // echoing destination, node identities and open contexts.
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -59,12 +61,16 @@ public:
         : context_(take(providers::AsioExecutionContext::create(
               engine::ExecutorAffinity(207U)))),
           worker_([this] {
-              for (;;) {
-                  try {
-                      context_->run();
-                      return;
-                  } catch (...) {
-                  }
+              try {
+                  context_->run();
+              } catch (...) {
+                  // sync() transports expected exceptions through its future.
+                  // An uncaught handler failure must never yield a passing
+                  // test.
+                  std::fputs(
+                      "FAILED: unexpected circuit fixture handler exception\n",
+                      stderr);
+                  std::abort();
               }
           }) {}
     ~IoRuntime() {

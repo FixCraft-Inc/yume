@@ -60,18 +60,27 @@ bool read_header(int socket, std::string& identity) {
     return !identity.empty();
 }
 
-void serve(int socket) {
+void echo(int socket) {
     std::string identity;
-    if (read_header(socket, identity)) {
-        const std::string greeting = "hello " + identity + "\n";
-        char buffer[16384];
-        bool open = send_all(socket, greeting.data(), greeting.size());
-        while (open) {
-            const ssize_t read = ::recv(socket, buffer, sizeof(buffer), 0);
-            if (read < 0 && errno == EINTR) continue;
-            open = read > 0 && send_all(socket, buffer, static_cast<std::size_t>(read));
-        }
-        (void)::shutdown(socket, SHUT_WR);
+    if (!read_header(socket, identity)) return;
+    const std::string greeting = "hello " + identity + "\n";
+    char buffer[16384];
+    bool open = send_all(socket, greeting.data(), greeting.size());
+    while (open) {
+        const ssize_t read = ::recv(socket, buffer, sizeof(buffer), 0);
+        if (read < 0 && errno == EINTR) continue;
+        open = read > 0 &&
+               send_all(socket, buffer, static_cast<std::size_t>(read));
+    }
+    (void)::shutdown(socket, SHUT_WR);
+}
+
+// A thread entry must not throw, or the whole module ends. A failed
+// allocation ends only this connection.
+void serve(int socket) noexcept {
+    try {
+        echo(socket);
+    } catch (...) {
     }
     ::close(socket);
     connections.fetch_sub(1);
@@ -91,8 +100,18 @@ int main() {
             ::close(socket);
             continue;
         }
+        // A process or pids limit can refuse a new thread. That refuses only
+        // this connection, before the thread owns its socket.
+        std::thread worker;
+        try {
+            worker = std::thread(serve, socket);
+        } catch (...) {
+            ::close(socket);
+            connections.fetch_sub(1);
+            continue;
+        }
         // The process ends only when the daemon stops it, so connection
         // threads are never joined.
-        std::thread(serve, socket).detach();
+        worker.detach();
     }
 }

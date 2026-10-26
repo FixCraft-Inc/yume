@@ -500,6 +500,8 @@ def isolated(probe: Path, yumed: Path, openssl: Path) -> None:
             first = status(phone)
             if (first["state"], first["session"], first["sessions"], first["tcp"]) != (3, ACTIVE, 1, 0):
                 raise RuntimeError(f"unexpected status after start: {first}")
+            if first["failed"] != 0:
+                raise RuntimeError(f"a successful first session retained failed attempts: {first}")
 
             # TCP and UDP of each family, small and across many packets.
             step("traffic of both kinds")
@@ -546,6 +548,8 @@ def isolated(probe: Path, yumed: Path, openssl: Path) -> None:
                                "the endpoint did not notice the lost session")
             if lost["state"] != 3 or lost["failure"] == 0:
                 raise RuntimeError(f"unexpected status without a session: {lost}")
+            if lost["sessions"] != 1:
+                raise RuntimeError(f"session loss discarded its authentication total: {lost}")
             # While the session is away, a new connection fails at once.
             step("connection without a session")
             in_phone(["closed", TARGET4, str(ECHO_PORT), "3"])
@@ -554,8 +558,10 @@ def isolated(probe: Path, yumed: Path, openssl: Path) -> None:
             # attempts has grown to eight seconds. It then returns, and a
             # retry must reconnect well inside that wait.
             step("reconnect")
-            wait_status(phone, lambda now: now["session"] == WAITING and now["retry"] >= 8000,
-                        "the wait between attempts did not grow", 30)
+            waiting = wait_status(phone, lambda now: now["session"] == WAITING and now["retry"] >= 8000,
+                                  "the wait between attempts did not grow", 30)
+            if waiting["sessions"] != 1 or waiting["failed"] == 0:
+                raise RuntimeError(f"failed attempts lost their session generation: {waiting}")
             if ask(server, "start") != "started":
                 raise RuntimeError("the server did not return")
             deadline = time.monotonic() + 4
@@ -589,8 +595,10 @@ def isolated(probe: Path, yumed: Path, openssl: Path) -> None:
             silent_since = time.monotonic()
             # A new connection sends an OPEN, which is what goes unanswered.
             in_phone(["closed", TARGET4, str(ECHO_PORT), "45"], 75)
-            wait_status(phone, lambda now: now["session"] in (CONNECTING, WAITING),
-                        "a silent path did not end the session", 30)
+            silent = wait_status(phone, lambda now: now["session"] in (CONNECTING, WAITING),
+                                 "a silent path did not end the session", 30)
+            if silent["sessions"] != 2:
+                raise RuntimeError(f"a silent path discarded earlier authentications: {silent}")
             if time.monotonic() - silent_since > 60:
                 raise RuntimeError("a silent path held the session too long")
             if not receive(quiet, 15).startswith("ended"):
@@ -603,8 +611,15 @@ def isolated(probe: Path, yumed: Path, openssl: Path) -> None:
                 if time.monotonic() >= deadline:
                     raise RuntimeError("the session did not return after a silent path")
                 time.sleep(0.5)
-            if status(phone)["sessions"] != 3:
+            recovered = status(phone)
+            if recovered["sessions"] != 3:
                 raise RuntimeError("the session after a silent path was not counted")
+            if recovered["failed"] != 0:
+                raise RuntimeError(f"authentication did not reset failed attempts: {recovered}")
+            for _ in range(3):
+                observed = status(phone)
+                if observed["sessions"] != 3 or observed["failed"] != 0:
+                    raise RuntimeError(f"status changed the authentication totals: {observed}")
             in_phone(["echo", TARGET4, str(ECHO_PORT), str(256 * 1024)])
 
             step("restart with a connection open")
@@ -617,12 +632,32 @@ def isolated(probe: Path, yumed: Path, openssl: Path) -> None:
                 raise RuntimeError("a connection from before the restart was left waiting")
             in_phone(["echo", TARGET4, str(ECHO_PORT), str(256 * 1024)])
             final = status(phone)
+            if (final["state"], final["session"], final["sessions"], final["failed"]) != (3, ACTIVE, 1, 0):
+                raise RuntimeError(f"restart did not start a fresh counter generation: {final}")
             if final["received"] <= again["received"]:
                 raise RuntimeError("the handle's totals did not continue across the restart")
 
             step("stop")
+            # Leave a nonzero failed-attempt count in this generation, then
+            # stop and detach the device without losing either counter.
+            if ask(server, "stop") != "stopped":
+                raise RuntimeError("the server did not stop before the final retry")
+            retrying = wait_status(phone, lambda now: now["session"] == WAITING and now["failed"] > 0,
+                                   "the restarted endpoint did not record a failed attempt")
+            if retrying["sessions"] != 1:
+                raise RuntimeError(f"the restarted retry used an older generation: {retrying}")
             if ask(phone, "stop") != "stopped":
                 raise RuntimeError("the endpoint did not stop")
+            stopped = status(phone)
+            if (stopped["state"], stopped["session"], stopped["sessions"]) != (5, 0, 1):
+                raise RuntimeError(f"stop or device detachment discarded its generation: {stopped}")
+            if (stopped["failed"] < retrying["failed"] or stopped["failure"] == 0 or
+                    stopped["sent"] < final["sent"] or stopped["received"] < final["received"]):
+                raise RuntimeError(f"the stopped endpoint lost failure or traffic totals: {stopped}")
+            for _ in range(3):
+                repeated = status(phone)
+                if (repeated["sessions"], repeated["failed"]) != (stopped["sessions"], stopped["failed"]):
+                    raise RuntimeError(f"stopped status changed its counters: {repeated}")
             for process in (phone, server):
                 send(process, "exit")
                 if process.wait(timeout=30) != 0:

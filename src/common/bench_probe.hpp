@@ -121,15 +121,23 @@ struct Series {
 
 class Recorder {
 public:
-    Recorder() {
+    // Runs before main, where an exception would end the process. A recorder
+    // that cannot build its path or start its writer leaves the probes off,
+    // as one that cannot open its file does.
+    Recorder() noexcept {
         const char* prefix = std::getenv("YUME_BENCH_PROBE_FILE");
         if (prefix == nullptr || *prefix == '\0') return;
-        const std::string path =
-            std::string(prefix) + "." + std::to_string(::getpid());
-        file_ = std::fopen(path.c_str(), "a");
-        if (file_ == nullptr) return;
-        started_ns_ = now_ns();
-        writer_ = std::thread([this] { run(); });
+        try {
+            const std::string path =
+                std::string(prefix) + "." + std::to_string(::getpid());
+            file_ = std::fopen(path.c_str(), "a");
+            if (file_ == nullptr) return;
+            started_ns_ = now_ns();
+            writer_ = std::thread([this] { run(); });
+        } catch (...) {
+            if (file_ != nullptr) std::fclose(file_);
+            file_ = nullptr;
+        }
     }
 
     ~Recorder() {

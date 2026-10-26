@@ -114,11 +114,12 @@ private:
     int descriptor_{-1};
 };
 
-bool read_descriptor_bounded(int descriptor,
-                             const std::filesystem::path& path,
+bool read_descriptor_bounded(int descriptor, const std::filesystem::path& path,
                              std::size_t maximum_bytes,
                              std::vector<std::uint8_t>* contents,
-                             std::string* error) {
+                             std::string* error,
+                             bool* user_executable = nullptr,
+                             std::time_t* modification_time = nullptr) {
 #if !defined(O_CLOEXEC)
     if (::fcntl(descriptor, F_SETFD, FD_CLOEXEC) != 0) {
         set_error(error, path, "cannot mark file close-on-exec",
@@ -187,6 +188,9 @@ bool read_descriptor_bounded(int descriptor,
         }
         break;
     }
+    if (user_executable) *user_executable = (status.st_mode & S_IXUSR) != 0;
+    // HTTP validators use whole Unix seconds from this same descriptor.
+    if (modification_time) *modification_time = status.st_mtime;
     return true;
 }
 
@@ -482,8 +486,29 @@ bool FileRoot::read_text(const std::filesystem::path& relative_path,
         return false;
     }
     wipe_text(contents);
+    std::vector<std::uint8_t> bytes;
+    ByteVectorWiper bytes_wiper(bytes);
+    if (!read_file(relative_path, maximum_bytes, &bytes, error, nullptr,
+                   modification_time)) {
+        return false;
+    }
+    return assign_text(relative_path, bytes, contents, error);
+}
+
+bool FileRoot::read_file(const std::filesystem::path& relative_path,
+                         std::size_t maximum_bytes,
+                         std::vector<std::uint8_t>* contents,
+                         std::string* error, bool* user_executable,
+                         std::time_t* modification_time) const {
+    if (error) error->clear();
+    if (!contents) {
+        if (error) *error = "bounded file destination is null";
+        return false;
+    }
+    wipe_bytes(contents);
 #if defined(_WIN32) || !defined(O_NOFOLLOW) || !defined(O_DIRECTORY) || !defined(O_CLOEXEC)
     (void)maximum_bytes;
+    (void)user_executable;
     (void)modification_time;
     set_error(error, relative_path, "cannot read confined file",
               "platform lacks descriptor-confined directory access");
@@ -523,22 +548,9 @@ bool FileRoot::read_text(const std::filesystem::path& relative_path,
                   std::error_code(errno, std::generic_category()).message());
         return false;
     }
-    std::vector<std::uint8_t> bytes;
-    if (!read_descriptor_bounded(file.get(), relative_path, maximum_bytes, &bytes, error)) {
-        return false;
-    }
-    if (modification_time) {
-        struct stat status {};
-        if (::fstat(file.get(), &status) != 0) {
-            set_error(error, relative_path, "cannot inspect confined file",
-                      std::error_code(errno, std::generic_category()).message());
-            return false;
-        }
-        // HTTP validators need whole Unix seconds. Keeping that representation
-        // avoids clock-offset rounding and nanosecond overflow on distant dates.
-        *modification_time = status.st_mtime;
-    }
-    return assign_text(relative_path, bytes, contents, error);
+    return read_descriptor_bounded(file.get(), relative_path, maximum_bytes,
+                                   contents, error, user_executable,
+                                   modification_time);
 #endif
 }
 

@@ -289,6 +289,10 @@ The kit is the directory's regular files and those one level below it,
 at most 32 files of up to 256 KiB each, and its
 .I yume.json
 must be a client configuration.
+The root path refuses symlinks and parent
+.RB ( .. )
+components, and child files are opened beneath a pinned root without
+following links.
 The file is Argon2id and AES-256-GCM output with no plaintext header, so
 it reads as random bytes.
 Pass the code to the user by another channel than the file.

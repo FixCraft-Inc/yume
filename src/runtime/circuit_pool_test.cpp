@@ -11,19 +11,28 @@
 // and closing circuits from inside the pool's own loops.
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <cstdlib>
+#include <ctime>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <future>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <new>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <boost/asio/post.hpp>
 #include <openssl/bio.h>
@@ -35,6 +44,7 @@
 #include "runtime/circuit_node.hpp"
 #include "runtime/circuit_pool.hpp"
 #include "runtime/cluster_list.hpp"
+#include "test_support/allocation_failure.hpp"
 #include "test_support/circuit_fixtures.hpp"
 
 namespace {
@@ -99,6 +109,14 @@ std::string composite_pem(const keys::CompositePrivate& key) {
 // session engine's do.
 class TestSession final : public runtime::CircuitSession {
 public:
+    enum class Direct {
+        Normal,
+        ThrowAllocation,
+        ThrowInternal,
+        CompleteThenThrow,
+        RetainThenThrow
+    };
+
     struct Hooks final {
         std::shared_ptr<providers::AsioExecutionContext> context;
         std::shared_ptr<runtime::circuit::RoutesService> routes;
@@ -110,8 +128,25 @@ public:
     explicit TestSession(Hooks hooks) : hooks_(std::move(hooks)) {}
 
     void async_open(std::string_view service_name, engine::ServiceKind,
-                    std::optional<engine::RouteDestination>, CancellationToken,
-                    Opened done) override {
+                    std::optional<engine::RouteDestination> destination,
+                    CancellationToken, Opened done) override {
+        if (service_name == "internet" && destination) {
+            ++direct_opens;
+            switch (direct) {
+                case Direct::Normal:
+                    break;
+                case Direct::ThrowAllocation:
+                    throw std::bad_alloc();
+                case Direct::ThrowInternal:
+                    throw std::runtime_error("direct initiation failed");
+                case Direct::CompleteThenThrow:
+                    done(OpenResult(Status(StatusCode::NotFound)));
+                    throw std::bad_alloc();
+                case Direct::RetainThenThrow:
+                    late_direct = std::move(done);
+                    throw std::bad_alloc();
+            }
+        }
         auto [mine, theirs] = PipeEnd::pair(hooks_.context);
         auto result =
             std::make_shared<OpenResult>(Status(StatusCode::NotFound));
@@ -134,15 +169,19 @@ public:
     }
 
     std::size_t circuit_opens{0U};
+    std::size_t direct_opens{0U};
+    Direct direct{Direct::Normal};
+    Opened late_direct;
 
 private:
     Hooks hooks_;
 };
 
 struct Harness {
-    Harness(IoRuntime& io, CircuitPoolOptions options)
+    Harness(IoRuntime& io, CircuitPoolOptions options,
+            std::filesystem::path state = {})
         : runtime(io), crypto(std::make_shared<cc::CircuitCrypto>()) {
-        runtime.sync([&] { start(std::move(options)); });
+        runtime.sync([&] { start(std::move(options), std::move(state)); });
     }
 
     ~Harness() {
@@ -165,11 +204,10 @@ struct Harness {
         });
     }
 
-    void start(CircuitPoolOptions options) {
+    void start(CircuitPoolOptions options, std::filesystem::path state) {
         operator_key = test::make_identity(*crypto);
         for (const auto* name : kNodes)
             identities[name] = test::make_identity(*crypto);
-        std::string nodes;
         for (std::size_t index = 0U; index < kNodes.size(); ++index) {
             const auto& key = *identities[kNodes[index]];
             std::string pem;
@@ -188,12 +226,34 @@ struct Harness {
                      ",\"network\":\"" + std::string(15U, '0') +
                      static_cast<char>('1' + index) + "\"}";
         }
-        const std::string view =
-            "{\"schema\":1,\"cluster\":\"" +
-            operator_key->identity.fingerprint +
-            "\",\"serial\":7,\"not_after\":\"2099-01-01T00:00:00Z\","
-            "\"nodes\":[" +
-            nodes + "]}";
+        publish_view(7U);
+        routes = take(
+            runtime::circuit::RoutesService::create([this] { return served; }));
+
+        for (const auto* name : kNodes) start_node(name);
+
+        runtime::NativeCircuitCredentials credentials;
+        credentials.operator_key_pem = composite_pem(*operator_key);
+        credentials.cluster = operator_key->identity.fingerprint;
+        credentials.entry = identities["north"]->identity.fingerprint;
+        credentials.state = std::move(state);
+        // The initial view's serial is saved already. Tests that serve a
+        // newer serial supply a private directory for its state file.
+        credentials.saved = 7U;
+        pool = take(CircuitPool::create(
+            runtime.context(), std::move(credentials), std::move(options),
+            [this](std::string_view text) { said.emplace_back(text); }));
+        new_session();
+    }
+
+    // On the context: publish a newly signed view for the next fetch.
+    void publish_view(std::uint64_t serial,
+                      std::string_view not_after = "2099-01-01T00:00:00Z") {
+        const std::string view = "{\"schema\":1,\"cluster\":\"" +
+                                 operator_key->identity.fingerprint +
+                                 "\",\"serial\":" + std::to_string(serial) +
+                                 ",\"not_after\":\"" + std::string(not_after) +
+                                 "\",\"nodes\":[" + nodes + "]}";
         const auto* bytes = reinterpret_cast<const std::byte*>(view.data());
         std::vector<std::byte> message(
             reinterpret_cast<const std::byte*>(
@@ -203,25 +263,11 @@ struct Harness {
                 runtime::cluster::kRoutesDomain.size()));
         message.push_back(std::byte{0});
         message.insert(message.end(), bytes, bytes + view.size());
-        auto served = std::make_shared<runtime::circuit::RoutesView>();
-        served->view.assign(bytes, bytes + view.size());
-        served->signature =
+        auto next = std::make_shared<runtime::circuit::RoutesView>();
+        next->view.assign(bytes, bytes + view.size());
+        next->signature =
             keys::sign_composite(crypto->key_context(), *operator_key, message);
-        routes = take(runtime::circuit::RoutesService::create(
-            [served] { return served; }));
-
-        for (const auto* name : kNodes) start_node(name);
-
-        runtime::NativeCircuitCredentials credentials;
-        credentials.operator_key_pem = composite_pem(*operator_key);
-        credentials.cluster = operator_key->identity.fingerprint;
-        credentials.entry = identities["north"]->identity.fingerprint;
-        // The view's serial is saved already, so no state file is written.
-        credentials.saved = 7U;
-        pool = take(CircuitPool::create(
-            runtime.context(), std::move(credentials), std::move(options),
-            [this](std::string_view text) { said.emplace_back(text); }));
-        new_session();
+        served = std::move(next);
     }
 
     void start_node(const std::string& name) {
@@ -363,6 +409,8 @@ struct Harness {
         identities;
     std::map<std::string, std::shared_ptr<CircuitService>> services;
     std::shared_ptr<runtime::circuit::RoutesService> routes;
+    std::shared_ptr<const runtime::circuit::RoutesView> served;
+    std::string nodes;
     std::vector<std::shared_ptr<PipeEnd>> links;
     std::shared_ptr<CircuitPool> pool;
     std::shared_ptr<TestSession> session;
@@ -421,6 +469,23 @@ void test_build_at_session_start(IoRuntime& io) {
     CHECK(harness.runtime.sync(
               [&] { return harness.session->circuit_opens; }) == opens + 1U);
     if (stream.ok()) harness.close(stream.value());
+}
+
+void test_window_capacity_selection(IoRuntime& io) {
+    auto options = fast(1h, 1h, 1h);
+    options.limits.circuit_window = options.limits.stream_window;
+    Harness harness(io, options);
+    auto first = harness.open();
+    CHECK(first.ok());
+    CHECK(harness.wait_until([](const auto& status) {
+        return status.circuits.size() == 2U && with_streams(status) == 1U;
+    }));
+    auto second = harness.open();
+    CHECK(second.ok());
+    CHECK(harness.wait_until(
+        [](const auto& status) { return with_streams(status) == 2U; }));
+    if (first.ok()) harness.close(first.value());
+    if (second.ok()) harness.close(second.value());
 }
 
 // New streams leave a circuit once it is older than the rotation time since
@@ -590,6 +655,326 @@ void test_close_while_building(IoRuntime& io) {
     CHECK(harness.open().status().code() == StatusCode::Closed);
 }
 
+void test_open_allocation_failures(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    io.sync([&] { harness.pool->set_session(nullptr); });
+    const auto destination = take(engine::RouteDestination::ipv4(
+        engine::NetworkProtocol::Tcp, {192, 0, 2, 9}, 443U));
+    bool covered_all = false;
+    for (std::size_t nth = 1U; nth <= 16U; ++nth) {
+        std::size_t calls = 0U;
+        bool fired = false;
+        io.sync([&] {
+            CircuitPool::Opened done = [&](OpenResult result) {
+                ++calls;
+                CHECK(!result.ok());
+                CHECK(result.status().code() == StatusCode::ResourceExhausted ||
+                      result.status().code() == StatusCode::FailedPrecondition);
+            };
+            test::arm_allocation_failure(nth);
+            harness.pool->open(destination, "internet", {}, std::move(done));
+            fired = test::disarm_allocation_failure();
+            CHECK(calls == 1U);
+        });
+        if (!fired) {
+            covered_all = true;
+            break;
+        }
+    }
+    CHECK(covered_all);
+}
+
+// With a circuit ready, the pool removes its waiter before converting a
+// DNS destination and wrapping ClientCircuit's callback. Faults anywhere in
+// that handoff must still settle the removed waiter's completion.
+void test_circuit_handoff_allocation_failures(IoRuntime& io) {
+    const auto destination = take(engine::RouteDestination::dns_name(
+        engine::NetworkProtocol::Tcp, "a-long-destination.example", 443U));
+    bool covered_all = false;
+    for (std::size_t nth = 0U; nth <= 256U; ++nth) {
+        // Each fault may change circuit health or retry state. Start the
+        // next injection with an independent ready pool.
+        Harness harness(io, fast(1h, 1h, 1h));
+        CHECK(harness.wait_until([](const auto& status) {
+            return status.current_hops == 3U && status.circuits.size() == 1U;
+        }));
+        struct Outcome final {
+            std::promise<OpenResult> result;
+            std::size_t calls{0U};
+        };
+        auto outcome = std::make_shared<Outcome>();
+        auto future = outcome->result.get_future();
+        bool fired = false;
+        io.sync([&] {
+            CircuitPool::Opened done = [outcome](OpenResult result) {
+                ++outcome->calls;
+                if (outcome->calls == 1U)
+                    outcome->result.set_value(std::move(result));
+            };
+            // First establish that the same operation succeeds without
+            // injection. The sweep must then reach another successful
+            // operation beyond its final allocation.
+            if (nth != 0U) test::arm_allocation_failure(nth);
+            harness.pool->open(destination, "internet", {}, std::move(done));
+            if (nth != 0U) fired = test::disarm_allocation_failure();
+        });
+        const bool ready = future.wait_for(2s) == std::future_status::ready;
+        CHECK(ready);
+        if (ready) {
+            auto result = future.get();
+            if (!fired) CHECK(result.ok());
+            if (result.ok()) harness.close(result.value());
+        }
+        io.sync([&] { CHECK(outcome->calls == 1U); });
+        if (nth != 0U && !fired) {
+            std::cout << "pool handoff allocation sweep: " << nth - 1U
+                      << " injected positions and successful control\n";
+            covered_all = true;
+            break;
+        }
+    }
+    CHECK(covered_all);
+}
+
+void test_direct_handoff_exceptions(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    io.sync([&] {
+        harness.stopped = {"west", "south"};
+        harness.new_session();
+    });
+    CHECK(eventually([&] { return harness.status().proposal.has_value(); }));
+    const auto proposed = harness.status().proposal;
+    CHECK(proposed && proposed->hops == 1U);
+    if (!proposed || proposed->hops != 1U) return;
+    const auto destination = take(engine::RouteDestination::ipv4(
+        engine::NetworkProtocol::Tcp, {192, 0, 2, 9}, 443U));
+    io.sync([&] {
+        CHECK(harness.pool->accept(proposed->id).ok());
+        for (const auto behavior : {TestSession::Direct::ThrowAllocation,
+                                    TestSession::Direct::ThrowInternal,
+                                    TestSession::Direct::CompleteThenThrow,
+                                    TestSession::Direct::RetainThenThrow}) {
+            harness.session->direct = behavior;
+            std::size_t calls = 0U;
+            StatusCode status = StatusCode::Ok;
+            const auto before = harness.session->direct_opens;
+            harness.pool->open(destination, "internet", {}, [&](OpenResult r) {
+                ++calls;
+                status = r.status().code();
+            });
+            CHECK(harness.session->direct_opens == before + 1U);
+            if (auto late =
+                    std::exchange(harness.session->late_direct, nullptr))
+                late(OpenResult(Status(StatusCode::NotFound)));
+            CHECK(calls == 1U);
+            const auto expected =
+                behavior == TestSession::Direct::CompleteThenThrow
+                    ? StatusCode::NotFound
+                : behavior == TestSession::Direct::ThrowInternal
+                    ? StatusCode::Internal
+                    : StatusCode::ResourceExhausted;
+            CHECK(status == expected);
+        }
+    });
+}
+
+// Holds the view open so the pool has waiters but no circuit teardown that
+// depends on the in-memory transport fixture's allocating close handlers.
+class WaitingSession final : public runtime::CircuitSession {
+public:
+    void async_open(std::string_view, engine::ServiceKind,
+                    std::optional<engine::RouteDestination>, CancellationToken,
+                    Opened done) override {
+        waiting = std::move(done);
+    }
+
+    Opened waiting;
+};
+
+void test_pending_consent_session_lifetime(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    io.sync([&] {
+        harness.stopped = {"west", "south"};
+        harness.new_session();
+    });
+    CHECK(eventually([&] { return harness.status().proposal.has_value(); }));
+    const auto proposal = harness.status().proposal;
+    if (!proposal) return;
+    io.sync([&] {
+        auto waiting = std::make_shared<WaitingSession>();
+        harness.pool->set_session(waiting);
+        CHECK(!harness.pool->status().proposal);
+        CHECK(harness.pool->accept(proposal->id).code() ==
+              StatusCode::NotFound);
+        auto done = std::exchange(waiting->waiting, nullptr);
+        CHECK(!!done);
+        if (done) done(OpenResult(Status(StatusCode::FailedPrecondition)));
+        CHECK(!harness.pool->status().proposal);
+        CHECK(harness.pool->accept(proposal->id).code() ==
+              StatusCode::NotFound);
+        harness.new_session();
+    });
+    // The replacement view must be able to make a fresh proposal rather
+    // than remain stuck waiting for consent that was discarded.
+    CHECK(eventually([&] { return harness.status().proposal.has_value(); }));
+    const auto replacement = harness.status().proposal;
+    if (!replacement) return;
+    io.sync([&] {
+        CHECK(harness.pool->accept(replacement->id).ok());
+        harness.pool->set_session(std::make_shared<WaitingSession>());
+        CHECK(harness.pool->status().accepted_hops == replacement->hops);
+        CHECK(harness.pool->status().current_hops == replacement->hops);
+    });
+}
+
+std::string utc_timestamp(std::chrono::system_clock::time_point when) {
+    const auto seconds = std::chrono::system_clock::to_time_t(when);
+    std::tm utc{};
+    char text[32]{};
+    if (!::gmtime_r(&seconds, &utc) ||
+        std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", &utc) == 0U)
+        throw std::runtime_error("cannot format view expiry");
+    return text;
+}
+
+void test_pending_consent_expiry(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    const auto expires = std::chrono::floor<std::chrono::seconds>(
+                             std::chrono::system_clock::now()) +
+                         3s;
+    io.sync([&] {
+        harness.stopped = {"west", "south"};
+        harness.publish_view(7U, utc_timestamp(expires));
+        harness.new_session();
+    });
+    CHECK(eventually([&] { return harness.status().proposal.has_value(); }));
+    const auto proposal = harness.status().proposal;
+    if (!proposal) return;
+    // The maintenance tick is an hour away. Acceptance and status must
+    // notice expiry themselves without waiting for that timer.
+    std::this_thread::sleep_until(expires + 1ms);
+    io.sync([&] {
+        CHECK(!harness.pool->status().proposal);
+        CHECK(harness.pool->accept(proposal->id).code() ==
+              StatusCode::NotFound);
+        CHECK(harness.pool->status().accepted_hops == 0U);
+    });
+}
+
+// This fixture writes only state and state.new. Cleanup uses the acquired
+// directory descriptor and does not allocate, including on test failure.
+class StateDirectory final {
+public:
+    StateDirectory() {
+        if (!::mkdtemp(path_)) throw std::runtime_error("mkdtemp failed");
+        directory_ = ::open(path_, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (directory_ < 0) {
+            (void)::rmdir(path_);
+            throw std::runtime_error("cannot open state directory");
+        }
+    }
+    StateDirectory(const StateDirectory&) = delete;
+    StateDirectory& operator=(const StateDirectory&) = delete;
+    ~StateDirectory() {
+        for (const char* name : {"state", "state.new"})
+            CHECK(::unlinkat(directory_, name, 0) == 0 || errno == ENOENT);
+        CHECK(::close(directory_) == 0);
+        CHECK(::rmdir(path_) == 0);
+    }
+    std::filesystem::path state() const {
+        return std::filesystem::path(path_) / "state";
+    }
+
+private:
+    char path_[48]{"/tmp/yume-pool-state-XXXXXX"};
+    int directory_{-1};
+};
+
+void test_pending_consent_view_refresh(IoRuntime& io) {
+    StateDirectory directory;
+    Harness harness(io, fast(1h, 1h, 20ms), directory.state());
+    const auto expires = std::chrono::floor<std::chrono::seconds>(
+                             std::chrono::system_clock::now()) +
+                         3s;
+    io.sync([&] {
+        harness.stopped = {"west", "south"};
+        harness.publish_view(7U, utc_timestamp(expires));
+        harness.new_session();
+    });
+    CHECK(eventually([&] { return harness.status().proposal.has_value(); }));
+    const auto old = harness.status().proposal;
+    if (!old) return;
+    // The same session fetches serial 8 when serial 7 expires.
+    io.sync([&] { harness.publish_view(8U); });
+    CHECK(harness.wait_until([](const auto& status) {
+        return status.serial == 8U && status.proposal &&
+               status.proposal->serial == 8U;
+    }));
+    const auto replacement = harness.status().proposal;
+    if (!replacement) return;
+    CHECK(replacement->id != old->id);
+    io.sync([&] {
+        CHECK(harness.pool->accept(old->id).code() == StatusCode::NotFound);
+        CHECK(harness.pool->accept(replacement->id).ok());
+        CHECK(harness.pool->status().accepted_hops == replacement->hops);
+    });
+}
+
+void test_pending_consent_close(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    io.sync([&] {
+        harness.stopped = {"west", "south"};
+        harness.new_session();
+    });
+    CHECK(eventually([&] { return harness.status().proposal.has_value(); }));
+    const auto proposal = harness.status().proposal;
+    if (!proposal) return;
+    io.sync([&] {
+        harness.pool->close();
+        CHECK(!harness.pool->status().proposal);
+        CHECK(harness.pool->accept(proposal->id).code() ==
+              StatusCode::NotFound);
+        CHECK(harness.pool->status().accepted_hops == 0U);
+    });
+}
+
+void test_waiter_close_without_allocations(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    io.sync(
+        [&] { harness.pool->set_session(std::make_shared<WaitingSession>()); });
+    auto first = harness.open_async();
+    auto second = harness.open_async();
+    CHECK(first.wait_for(0s) == std::future_status::timeout);
+    CHECK(second.wait_for(0s) == std::future_status::timeout);
+    io.sync([&] {
+        test::before_allocate = [](std::size_t) { throw std::bad_alloc(); };
+        harness.pool->close();
+        test::before_allocate = nullptr;
+    });
+    CHECK(first.wait_for(1s) == std::future_status::ready &&
+          first.get().status().code() == StatusCode::Closed);
+    CHECK(second.wait_for(1s) == std::future_status::ready &&
+          second.get().status().code() == StatusCode::Closed);
+}
+
+void test_accept_without_allocations(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    io.sync([&] {
+        harness.stopped = {"west", "south"};
+        harness.new_session();
+    });
+    CHECK(eventually([&] { return harness.status().proposal.has_value(); }));
+    const auto proposed = harness.status().proposal;
+    if (!proposed) return;
+    io.sync([&] {
+        test::before_allocate = [](std::size_t) { throw std::bad_alloc(); };
+        const auto accepted = harness.pool->accept(proposed->id);
+        test::before_allocate = nullptr;
+        CHECK(accepted.ok());
+        CHECK(harness.pool->status().accepted_hops == proposed->hops);
+    });
+}
+
 // A new session ends the earlier session's build at once and builds again
 // on the new one.
 void test_new_session_while_building(IoRuntime& io) {
@@ -724,12 +1109,22 @@ int main() {
     try {
         IoRuntime io;
         test_build_at_session_start(io);
+        test_window_capacity_selection(io);
         test_rotation(io);
         test_idle_close(io);
         test_spare_failure(io);
         test_exclusion(io);
         test_cancel_while_building(io);
         test_close_while_building(io);
+        test_open_allocation_failures(io);
+        test_circuit_handoff_allocation_failures(io);
+        test_direct_handoff_exceptions(io);
+        test_pending_consent_session_lifetime(io);
+        test_pending_consent_expiry(io);
+        test_pending_consent_view_refresh(io);
+        test_pending_consent_close(io);
+        test_waiter_close_without_allocations(io);
+        test_accept_without_allocations(io);
         test_new_session_while_building(io);
         test_node_return(io);
         test_route_returns_without_consent(io);

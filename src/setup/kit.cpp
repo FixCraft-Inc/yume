@@ -313,7 +313,10 @@ fs::path add_client(const AddClientOptions& options) {
     Staging staging(parent);
     const Material material;
 
-    std::vector<fs::path> created;
+    // Both paths exist before the writes. Recording exclusive creation must
+    // not allocate, and a failed O_EXCL open must never arm cleanup.
+    bool public_created = false;
+    bool psk_created = false;
     bool new_directory = false;
     std::optional<fs::path> replacement;
     bool published = false;
@@ -349,9 +352,9 @@ fs::path add_client(const AddClientOptions& options) {
             new_directory = true;
         }
         write_text(authorized_public, bundle.public_pem);
-        created.push_back(authorized_public);
+        public_created = true;
         write_new_file(authorized_psk, bundle.access_psk.bytes());
-        created.push_back(authorized_psk);
+        psk_created = true;
         Json updated = store;
         updated["keys"].push_back(authorized_entry(
             client_name, bundle.fingerprint, options.max_sessions,
@@ -359,7 +362,8 @@ fs::path add_client(const AddClientOptions& options) {
         replacement = replacement_path(store_path);
         write_json(*replacement, updated);
         if (running_as_root()) {
-            for (const auto& path : created) give_to(path, owner);
+            give_to(authorized_public, owner);
+            give_to(authorized_psk, owner);
             give_to(*replacement, owner);
             if (new_directory) give_to(authorized, owner);
         }
@@ -384,7 +388,8 @@ fs::path add_client(const AddClientOptions& options) {
     } catch (...) {
         if (store_committed) throw;
         if (replacement) remove_file(*replacement);
-        for (const auto& path : created) remove_file(path);
+        if (psk_created) remove_file(authorized_psk);
+        if (public_created) remove_file(authorized_public);
         if (new_directory) static_cast<void>(::rmdir(authorized.c_str()));
         if (published) remove_tree(output);
         throw;

@@ -111,7 +111,8 @@ SNI and HTTP/2 `:authority` must agree.
 
 A missing, malformed, wrong-key, replayed or cache-saturated proof, or a
 request beyond promotion capacity, stays in cover handling and never reaches
-AUTH. GET and HEAD select static routes. Other methods get the fixed 405.
+AUTH. GET and HEAD select static routes, including requests that use `host`
+when `:authority` is absent. Other methods get the fixed 405.
 Malformed requests and resource limits can end the connection.
 
 A later PSK or transcript failure closes the admitted carrier without a
@@ -233,6 +234,14 @@ range:
 Links between nodes carry the same cell pattern at the same sizes. One
 client's traffic cannot say what links look like with many clients.
 
+Circuit capture gives each packet reader ten seconds after SIGINT, then
+kills and reaps it within five seconds. A missed deadline fails the capture.
+Cleanup still attempts every child, log and namespace holder when another
+cleanup fails. Relay startup rolls back its listeners and socket paths if a
+later bind or thread start fails.
+An idle UNIX descriptor handoff expires after five seconds, and a refused
+connection worker closes that connection while the listener stays available.
+
 ## Native TLS evidence
 
 YUME keeps two separate native TLS contracts:
@@ -281,6 +290,19 @@ It observes one loopback session and is not a classifier result. Packet
 capture outside such a namespace should run only on an approved evidence host
 with deliberately granted capture access. Do not give the YUME binaries root
 or capture privileges to make a check pass.
+
+The TLS first-flight relay applies its idle timeout to forwarding writes as
+well as reads. The nDPI smoke runner reaps children after partial startup,
+refuses failed or timed-out readers, and requires complete nonnegative packet
+accounting with traffic present before reporting capture success.
+
+The Chrome capture driver allows 15 seconds for DevTools readiness, with
+one second per HTTP request, and 180 seconds for navigation and the requested
+idle hold. Chrome and the TLS relay each have 15 seconds to exit normally.
+An unsuccessful Chrome exit reports its status separately from a timeout.
+On failure, cleanup gives each direct child five seconds after SIGTERM and
+two seconds after SIGKILL. A missed deadline fails the capture and preserves
+its evidence directory for inspection.
 
 The classifier-evidence validator accepts bounded, checksummed, sanitized
 artifacts and requires matched normal-browser and YUME arms. Raw NetLogs,

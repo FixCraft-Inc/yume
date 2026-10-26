@@ -57,6 +57,19 @@ public:
     FileRoot(const FileRoot&) = delete;
     FileRoot& operator=(const FileRoot&) = delete;
 
+    // Borrowed POSIX descriptor for descriptor-relative directory enumeration.
+    // The caller must not close it and this root must outlive its use.
+    int native_descriptor() const noexcept { return descriptor_; }
+
+    // Binary counterpart of read_text. Metadata comes from the same opened
+    // regular file as the bytes, never from a second pathname lookup.
+    bool read_file(const std::filesystem::path& relative_path,
+                   std::size_t maximum_bytes,
+                   std::vector<std::uint8_t>* contents,
+                   std::string* error = nullptr,
+                   bool* user_executable = nullptr,
+                   std::time_t* modification_time = nullptr) const;
+
     bool read_text(const std::filesystem::path& relative_path,
                    std::size_t maximum_bytes,
                    std::string* contents,

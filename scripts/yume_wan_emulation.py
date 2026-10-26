@@ -266,8 +266,18 @@ class Link:
         self.tc = shutil.which("tc") or "/sbin/tc"
         self.nsenter = shutil.which("nsenter") or "/usr/bin/nsenter"
         unshare = shutil.which("unshare") or "/usr/bin/unshare"
-        self.holders = {side: subprocess.Popen([unshare, "-n", "sleep", "infinity"])
-                        for side in ("router", "server")}
+        self.holders: dict[str, subprocess.Popen] = {}
+        try:
+            for side in ("router", "server"):
+                self.holders[side] = subprocess.Popen([unshare, "-n", "sleep", "infinity"])
+            self._configure()
+        except BaseException:
+            # Construction has no caller-owned Link yet. Release each holder
+            # acquired so far, including when the next spawn or an ip call fails.
+            self.close()
+            raise
+
+    def _configure(self) -> None:
         deadline = time.monotonic() + 10
         own = os.readlink("/proc/self/ns/net")
         for side, holder in self.holders.items():
@@ -313,10 +323,21 @@ class Link:
         return qdisc
 
     def close(self) -> None:
-        for holder in self.holders.values():
-            if holder.poll() is None:
-                holder.kill()
+        failures = []
+        for side, holder in list(self.holders.items()):
+            try:
+                if holder.poll() is None:
+                    try:
+                        holder.kill()
+                    except ProcessLookupError:
+                        pass  # it exited between poll and kill; still reap it
                 holder.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError) as error:
+                failures.append(f"{side}: {type(error).__name__}")
+            else:
+                del self.holders[side]
+        if failures:
+            raise session.SessionFailure("namespace holder cleanup failed: " + ", ".join(failures))
 
 
 def set_limit(kit: Path, key: str, value: int | bool) -> None:

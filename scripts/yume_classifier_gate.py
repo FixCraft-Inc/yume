@@ -147,17 +147,25 @@ def roc_auc(scores: Sequence[float], labels: Sequence[int]) -> float:
 
 
 def average_precision(scores: Sequence[float], labels: Sequence[int]) -> float:
-    """Area under the precision-recall curve, the interpolation-free variant."""
+    """Interpolation-free precision-recall area at distinct score thresholds.
+
+    Equal scores move together: a threshold cannot select only part of a tie.
+    """
     positives = sum(labels)
     if positives == 0:
         raise GateError("average precision needs at least one positive")
     order = sorted(range(len(scores)), key=lambda i: -scores[i])
     true_positives = 0
     total = 0.0
-    for seen, index in enumerate(order, start=1):
-        if labels[index] == 1:
-            true_positives += 1
-            total += true_positives / seen
+    index = 0
+    while index < len(order):
+        stop = index + 1
+        while stop < len(order) and scores[order[stop]] == scores[order[index]]:
+            stop += 1
+        added = sum(labels[order[position]] for position in range(index, stop))
+        true_positives += added
+        total += added * true_positives / stop
+        index = stop
     return total / positives
 
 

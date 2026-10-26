@@ -110,7 +110,10 @@ engine::Result<Kit> open(std::span<const std::uint8_t> sealed,
                          std::string_view code);
 
 // Reads a kit directory: regular files at its top level and one level below,
-// no links or special files, within the kit bounds.
+// no links or special files, within the kit bounds. Pins the root and refuses
+// symlinks and parent components in its path. File bytes and execute permission
+// come from the same opened file; concurrent content changes are not a
+// snapshot.
 engine::Result<Kit> read_directory(const std::filesystem::path& directory);
 // Writes a kit to a new directory. The files are written under a private
 // temporary name in the same parent, synced, and renamed into place without

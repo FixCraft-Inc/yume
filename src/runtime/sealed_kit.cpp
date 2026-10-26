@@ -6,6 +6,7 @@
 
 #include "runtime/sealed_kit.hpp"
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -195,6 +196,7 @@ Result<Kit> parse_content(std::span<const std::uint8_t> content) {
     const auto remaining = [&] { return content.size() - offset; };
     if (remaining() < 2U || content[0] != kContentVersion) return malformed();
     const std::size_t count = content[1];
+    if (count == 0U || count > kMaxFiles) return malformed();
     offset = 2U;
     Kit kit;
     kit.files.reserve(count);
@@ -203,6 +205,7 @@ Result<Kit> parse_content(std::span<const std::uint8_t> content) {
         const std::size_t path_bytes = content[offset++];
         if (remaining() < path_bytes + 5U) return malformed();
         KitFile file;
+        const security::ScopedErase file_guard(file.bytes);
         file.path.assign(reinterpret_cast<const char*>(content.data() + offset),
                          path_bytes);
         offset += path_bytes;
@@ -268,10 +271,68 @@ public:
         if (fd_ >= 0) ::close(fd_);
     }
     int get() const noexcept { return fd_; }
+    int release() noexcept { return std::exchange(fd_, -1); }
 
 private:
     int fd_;
 };
+
+struct DirectoryCloser final {
+    void operator()(DIR* directory) const noexcept { ::closedir(directory); }
+};
+
+// Enumerate through pinned directories. A renamed ancestor cannot redirect
+// this walk, and each child open rejects a link even if its type just changed.
+Status find_files(int parent, std::string_view prefix,
+                  std::vector<std::string>& found) {
+    constexpr int flags =
+        O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+    Descriptor descriptor(::openat(parent, ".", flags));
+    std::unique_ptr<DIR, DirectoryCloser> directory(
+        descriptor.get() < 0 ? nullptr : ::fdopendir(descriptor.get()));
+    if (!directory) return invalid("cannot enumerate the kit directory");
+    static_cast<void>(descriptor.release());
+    for (;;) {
+        errno = 0;
+        const auto* entry = ::readdir(directory.get());
+        if (!entry) {
+            return errno == 0 ? Status::success()
+                              : invalid("cannot enumerate the kit directory");
+        }
+        const std::string_view name(entry->d_name);
+        if (name == "." || name == "..") continue;
+        struct stat info{};
+        if (::fstatat(parent, entry->d_name, &info, AT_SYMLINK_NOFOLLOW) != 0)
+            return invalid("cannot inspect a kit entry");
+        if (S_ISDIR(info.st_mode) && prefix.empty()) {
+            Descriptor child(::openat(parent, entry->d_name, flags));
+            if (child.get() < 0)
+                return invalid("cannot open a kit child directory");
+            const auto status = find_files(child.get(), name, found);
+            if (!status.ok()) return status;
+            continue;
+        }
+        if (!S_ISREG(info.st_mode))
+            return invalid(
+                "the kit holds a link, special file or nested directory");
+        // Check before retaining every child, including within one directory.
+        if (found.size() == kMaxFiles)
+            return invalid("a kit holds 1 to 32 files");
+        const auto path_size =
+            name.size() + (prefix.empty() ? 0U : prefix.size() + 1U);
+        if (path_size > kMaxPathBytes || !valid_component(name) ||
+            (!prefix.empty() && !valid_component(prefix)))
+            return invalid("a kit path is not a plain file name");
+        std::string path;
+        path.reserve(path_size);
+        if (!prefix.empty()) {
+            path.append(prefix);
+            path.push_back('/');
+        }
+        path.append(name);
+        found.push_back(std::move(path));
+    }
+}
 
 std::string random_suffix(const Crypto& crypto) {
     std::array<std::uint8_t, 8> random{};
@@ -296,13 +357,18 @@ Kit::~Kit() noexcept {
 Result<std::string> generate_code() {
     try {
         const Crypto crypto;
-        std::array<std::uint8_t, 16> random{};
+        struct Entropy final {
+            std::array<std::uint8_t, 16> bytes{};
+            ~Entropy() noexcept { OPENSSL_cleanse(bytes.data(), bytes.size()); }
+        } entropy;
+        auto& random = entropy.bytes;
         if (RAND_bytes_ex(crypto.context(), random.data(), random.size(), 0) !=
             1) {
             return Result<std::string>(Status::diagnostic(
                 StatusCode::Internal, "random bytes are unavailable"));
         }
         std::string code;
+        const security::ScopedErase code_guard(code);
         code.reserve(kCodeCharacters);
         // 125 of the 128 bits, five at a time.
         for (std::size_t index = 0; index < kCodeCharacters; ++index) {
@@ -312,7 +378,6 @@ Result<std::string> generate_code() {
                 (bit / 8U + 1U < random.size() ? random[bit / 8U + 1U] : 0U);
             code.push_back(kCodeAlphabet[(pair >> (11U - bit % 8U)) & 0x1fU]);
         }
-        OPENSSL_cleanse(random.data(), random.size());
         return Result<std::string>(std::move(code));
     } catch (const std::bad_alloc&) {
         return Result<std::string>(Status(StatusCode::ResourceExhausted));
@@ -324,11 +389,19 @@ Result<std::string> generate_code() {
 
 std::string display_code(std::string_view code) {
     std::string text;
+    const security::ScopedErase text_guard(text);
+    const auto separators = code.empty() ? 0U : (code.size() - 1U) / 5U;
+    if (separators > text.max_size() ||
+        code.size() > text.max_size() - separators)
+        throw std::length_error("kit code display is too long");
+    // Allocate before copying any code characters so growth leaves no old copy.
+    text.reserve(code.size() + separators);
     for (std::size_t index = 0; index < code.size(); ++index) {
         if (index != 0U && index % 5U == 0U) text.push_back('-');
         text.push_back(code[index]);
     }
-    return text;
+    // Move explicitly: NRVO would let text_guard wipe the returned string.
+    return std::string(std::move(text));
 }
 
 std::optional<std::string> normalize_code(std::string_view typed) {
@@ -542,56 +615,38 @@ Result<Kit> open(std::span<const std::uint8_t> sealed, std::string_view code) {
 }
 
 Result<Kit> read_directory(const std::filesystem::path& directory) {
-    namespace fs = std::filesystem;
     try {
-        std::error_code error;
-        if (!fs::is_directory(fs::symlink_status(directory, error))) {
-            return Result<Kit>(invalid("the kit is not a directory"));
+        std::string root_error;
+        const auto root = FileRoot::open(directory, &root_error);
+        if (!root) {
+            return Result<Kit>(
+                invalid("cannot open the kit directory: " + root_error));
         }
         Kit kit;
-        std::vector<std::pair<fs::path, std::string>> found;
-        for (const auto& entry : fs::directory_iterator(directory)) {
-            const auto name = entry.path().filename().string();
-            const auto status = entry.symlink_status();
-            if (fs::is_directory(status)) {
-                for (const auto& child : fs::directory_iterator(entry.path())) {
-                    if (!fs::is_regular_file(child.symlink_status())) {
-                        return Result<Kit>(
-                            invalid("the kit holds a link, special file or "
-                                    "nested directory"));
-                    }
-                    found.emplace_back(
-                        child.path(),
-                        name + "/" + child.path().filename().string());
-                }
-            } else if (fs::is_regular_file(status)) {
-                found.emplace_back(entry.path(), name);
-            } else {
-                return Result<Kit>(
-                    invalid("the kit holds a link or special file"));
-            }
-            if (found.size() > kMaxFiles)
-                return Result<Kit>(invalid("a kit holds 1 to 32 files"));
-        }
-        std::sort(found.begin(), found.end(),
-                  [](const auto& left, const auto& right) {
-                      return left.second < right.second;
-                  });
-        for (const auto& [path, name] : found) {
+        std::vector<std::string> found;
+        if (const auto status =
+                find_files(root->native_descriptor(), {}, found);
+            !status.ok())
+            return Result<Kit>(status);
+        std::sort(found.begin(), found.end());
+        kit.files.reserve(found.size());
+        std::size_t content = 2U;
+        for (const auto& name : found) {
             KitFile file;
+            const security::ScopedErase file_guard(file.bytes);
             file.path = name;
-            if (!valid_path(name))
-                return Result<Kit>(
-                    invalid("a kit path is not a plain file name"));
+            const auto overhead = 6U + name.size();
+            if (overhead > kMaxContentBytes - content)
+                return Result<Kit>(invalid("a kit exceeds 1 MiB"));
+            content += overhead;
             std::string read_error;
-            if (!read_file_bounded(path, kMaxFileBytes, &file.bytes,
-                                   &read_error)) {
+            if (!root->read_file(
+                    name, std::min(kMaxFileBytes, kMaxContentBytes - content),
+                    &file.bytes, &read_error, &file.executable)) {
                 return Result<Kit>(invalid("cannot read the kit file " + name +
                                            ": " + read_error));
             }
-            struct stat info{};
-            file.executable = ::stat(path.c_str(), &info) == 0 &&
-                              (info.st_mode & S_IXUSR) != 0;
+            content += file.bytes.size();
             kit.files.push_back(std::move(file));
         }
         if (const auto checked = check_kit(kit); !checked.ok())

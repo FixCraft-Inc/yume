@@ -30,20 +30,38 @@ namespace yume::test {
 class SocketActivatedModule final {
 public:
     SocketActivatedModule() {
-        std::string pattern = "/tmp/yume-module-test-XXXXXX";
-        if (::mkdtemp(pattern.data()) == nullptr) throw std::runtime_error("mkdtemp failed");
-        directory = pattern;
-        socket = directory / "module.sock";
+        char pattern[] = "/tmp/yume-module-test-XXXXXX";
+        if (::mkdtemp(pattern) == nullptr)
+            throw std::runtime_error("mkdtemp failed");
         sockaddr_un address{};
-        const std::string path = socket.string();
-        if (path.size() >= sizeof(address.sun_path)) throw std::runtime_error("socket path too long");
-        address.sun_family = AF_UNIX;
-        path.copy(address.sun_path, path.size());
-        listener = providers::Descriptor(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
-        if (listener.get() < 0 ||
-            ::bind(listener.get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
-            ::chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0 || ::listen(listener.get(), SOMAXCONN) != 0)
-            throw std::runtime_error("the module socket could not open");
+        bool bound = false;
+        try {
+            directory = pattern;
+            socket = directory / "module.sock";
+            const std::string path = socket.string();
+            if (path.size() >= sizeof(address.sun_path))
+                throw std::runtime_error("socket path too long");
+            address.sun_family = AF_UNIX;
+            path.copy(address.sun_path, path.size());
+            listener = providers::Descriptor(
+                ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
+            if (listener.get() < 0 ||
+                ::bind(listener.get(),
+                       reinterpret_cast<const sockaddr*>(&address),
+                       sizeof(address)) != 0)
+                throw std::runtime_error("the module socket could not bind");
+            bound = true;
+            if (::chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0 ||
+                ::listen(listener.get(), SOMAXCONN) != 0)
+                throw std::runtime_error("the module socket could not listen");
+        } catch (...) {
+            // The object's destructor does not run after a failed constructor.
+            // Stack paths still work if the first path allocation failed.
+            listener.reset();
+            if (bound) static_cast<void>(::unlink(address.sun_path));
+            static_cast<void>(::rmdir(pattern));
+            throw;
+        }
     }
     SocketActivatedModule(const SocketActivatedModule&) = delete;
     SocketActivatedModule& operator=(const SocketActivatedModule&) = delete;

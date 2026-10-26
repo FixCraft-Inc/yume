@@ -165,11 +165,11 @@ list may hold 16 MiB, the other files 128 MiB, and all lists together
 | `max_queued_bytes` | 65536 to 67108864 | The session's byte budget. Receive windows grow up to it, so a far path is faster with more. A session holds up to the budget of outbound data and twice the budget, at least 8 MiB, of received records |
 | `max_pending_opens` | 1 to 1024 | OPENs waiting for an answer, at most `max_streams` |
 | `max_rekey_jobs` | 2 to 64 | Rekey operations in flight, two for a crossed rotation |
-| `max_control_messages` | 8 to 4096 | Control records queued for sending |
+| `max_control_messages` | 8 to 4096 | Connection control records, such as PONG and rekey messages, queued for sending. Credit and CLOSE records are bounded per receive window and per stream instead |
 | `max_packet_bytes` | 576 to 65535 | The largest packet, at most `max_frame_bytes` |
 | `max_packet_batch` | 1 to 256 | The most packets one C ABI packet read or write call moves |
 | `max_epoch_bytes` | 1 MiB to 64 MiB, a power of two, 1 MiB when absent | The most payload one directional key epoch protects. A session uses the smaller of the two sides' values |
-| `credit_returns_per_window` | 2, 4 or 8, 2 when absent | How often a receive window at its maximum returns credit. More lets a far sender use more of the window, and sends more small records upstream |
+| `credit_returns_per_window` | 2, 4 or 8, 2 when absent | Normal batching frequency for a receive window at its maximum. More lets a far sender use more of the window, and sends more small records upstream. Consumed connection credit also returns early when the peer has less than one maximum frame left; see [YTP/1 flow credit](protocol/YTP_1.md#flow-credit-update) |
 | `idle_epoch_rotation` | `true` or `false`, false when absent | Whether this side rotates a key epoch that has carried records once it is 250 ms old, without waiting for its next send. The first send after a pause then needs no extra round trip, but each burst ends with a rekey exchange of about 1.7 KB each way, which the browser captures do not show |
 | `max_egress_mbps` | 1 to 1000000, server only | The rate stream payload shares between busy identities by their weight |
 

@@ -175,7 +175,11 @@ def load_production_opening(emitter: pathlib.Path) -> tuple[H2Opening, dict]:
 
 
 def diff(yume: H2Opening, ref: H2Opening) -> list[Delta]:
-    deltas: list[Delta] = []
+    # Per-setting diagnostics below cannot represent order or repeated IDs.
+    # Compare the complete sequence too: both are observable on the wire.
+    deltas = [Delta("SETTINGS in order",
+                    json.dumps(yume.settings, separators=(",", ":")),
+                    json.dumps(ref.settings, separators=(",", ":")))]
     ids = sorted(set(dict(yume.settings)) | set(dict(ref.settings)))
     ymap, rmap = dict(yume.settings), dict(ref.settings)
     for i in ids:

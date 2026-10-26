@@ -17,6 +17,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <new>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -28,6 +29,7 @@
 
 #include "runtime/circuit_client.hpp"
 #include "runtime/circuit_node.hpp"
+#include "test_support/allocation_failure.hpp"
 #include "test_support/circuit_fixtures.hpp"
 
 namespace {
@@ -130,6 +132,63 @@ ytp1::Destination named(std::uint16_t port) {
     result.port = port;
     return result;
 }
+
+// Inject inside one incoming client callback, after the fixture has built
+// the record. This exercises the production decode/delivery/abort path
+// without failing unrelated in-memory transport bookkeeping.
+class ReadProbe final : public StreamResponder,
+                        public std::enable_shared_from_this<ReadProbe> {
+public:
+    explicit ReadProbe(std::shared_ptr<StreamResponder> inner)
+        : inner_(std::move(inner)) {}
+    engine::ExecutorAffinity executor_affinity() const noexcept override {
+        return inner_->executor_affinity();
+    }
+    engine::ServiceKind service_kind() const noexcept override {
+        return inner_->service_kind();
+    }
+    std::size_t max_write_size() const noexcept override {
+        return inner_->max_write_size();
+    }
+    bool terminated() const noexcept override { return inner_->terminated(); }
+    void async_read(CancellationToken token,
+                    ReadCompletion completion) override {
+        inner_->async_read(
+            std::move(token),
+            [self = shared_from_this(), done = std::move(completion)](
+                Result<ReceivedRecord> result) mutable {
+                const bool inject = self->nth != 0U && result.ok() &&
+                                    (!self->data_only ||
+                                     result.value().payload().size() > 1024U);
+                if (inject)
+                    test::arm_allocation_failure(std::exchange(self->nth, 0U));
+                done(std::move(result));
+                if (inject) {
+                    self->fired = test::disarm_allocation_failure();
+                    self->observed = true;
+                }
+            });
+    }
+    void async_write(Buffer data, CancellationToken token,
+                     WriteCompletion completion) override {
+        inner_->async_write(std::move(data), std::move(token),
+                            std::move(completion));
+    }
+    Status shutdown_write() noexcept override {
+        return inner_->shutdown_write();
+    }
+    void close(Status reason) noexcept override {
+        inner_->close(std::move(reason));
+    }
+
+    std::size_t nth{0U};
+    bool data_only{true};
+    bool fired{false};
+    bool observed{false};
+
+private:
+    std::shared_ptr<StreamResponder> inner_;
+};
 
 // Three nodes, north, east and west, with west an exit. Each open_next
 // makes an in-memory stream to the named node unless redirected.
@@ -265,8 +324,8 @@ struct Cluster {
     // out of the way of tests that do not test them.
     std::shared_ptr<ClientCircuit> circuit(
         const std::vector<std::string>& route, std::string client = {},
-        Status* accepted = nullptr,
-        runtime::circuit::ClientLimits limits = {}) {
+        Status* accepted = nullptr, runtime::circuit::ClientLimits limits = {},
+        std::shared_ptr<ReadProbe>* probe = nullptr) {
         if (client.empty()) {
             client = std::to_string(++clients);
             client.insert(0, 64U - client.size(), 'e');
@@ -283,7 +342,12 @@ struct Cluster {
             std::vector<keys::CompositePublic> hops;
             for (const auto& name : route)
                 hops.push_back(identities[name]->identity);
-            return take(ClientCircuit::create(runtime.context(), crypto, mine,
+            std::shared_ptr<StreamResponder> entry = mine;
+            if (probe) {
+                *probe = std::make_shared<ReadProbe>(mine);
+                entry = *probe;
+            }
+            return take(ClientCircuit::create(runtime.context(), crypto, entry,
                                               hops, limits));
         });
     }
@@ -475,7 +539,7 @@ void test_three_hops(Cluster& cluster) {
 // kept: what the client's window let the exit send ahead of the reader.
 std::size_t sent_ahead(Cluster& cluster,
                        const std::shared_ptr<StreamResponder>& stream,
-                       std::size_t drain) {
+                       std::size_t drain, bool close_stream = true) {
     struct Reader {
         std::size_t drained{0U};
         std::size_t kept_bytes{0U};
@@ -514,7 +578,7 @@ std::size_t sent_ahead(Cluster& cluster,
     return cluster.runtime.sync([&] {
         CHECK(reader->drained >= drain);
         *next = nullptr;
-        stream->close(Status(StatusCode::Cancelled));
+        if (close_stream) stream->close(Status(StatusCode::Cancelled));
         reader->kept.clear();
         return reader->kept_bytes;
     });
@@ -788,7 +852,11 @@ void test_client_bounds(Cluster& cluster) {
 // The exit grants at most 8 MiB of stream window across one circuit, so
 // with 256 KiB windows the 33rd stream at once is refused.
 void test_circuit_window_total(Cluster& cluster) {
-    auto circuit = cluster.circuit({"north", "west"});
+    // Give the client a larger cap so this still exercises the exit's
+    // independent bound, rather than the client's admission check.
+    runtime::circuit::ClientLimits limits;
+    limits.circuit_window = 9U << 20U;
+    auto circuit = cluster.circuit({"north", "west"}, {}, nullptr, limits);
     CHECK(cluster.build(circuit).ok());
     std::vector<std::shared_ptr<StreamResponder>> held;
     for (int index = 0; index < 32; ++index) {
@@ -805,6 +873,287 @@ void test_circuit_window_total(Cluster& cluster) {
         for (const auto& stream : held) stream->close(Status(StatusCode::Cancelled));
         circuit->close();
     });
+}
+
+// A retained application stream still owns callback delivery after every
+// circuit owner and its entry read have gone away.
+void test_retained_stream_completions(Cluster& cluster) {
+    auto circuit = cluster.circuit({"north", "west"});
+    CHECK(cluster.build(circuit).ok());
+    auto stream = take(cluster.open(circuit, 443));
+    cluster.runtime.sync([&] {
+        circuit->close();
+        circuit.reset();
+    });
+    cluster.runtime.sync([] {});
+    std::size_t reads = 0U;
+    std::size_t writes = 0U;
+    bool initiating = true;
+    cluster.runtime.sync([&] {
+        const auto executor_thread = std::this_thread::get_id();
+        stream->async_read({}, [&, executor_thread](Result<ReceivedRecord> r) {
+            CHECK(!initiating && std::this_thread::get_id() == executor_thread);
+            CHECK(!r.ok() && r.status().code() == StatusCode::Cancelled);
+            ++reads;
+        });
+        stream->async_write(
+            take(Buffer::allocate(0U, 1U)), {},
+            [&, executor_thread](Status status, std::size_t size) {
+                CHECK(!initiating &&
+                      std::this_thread::get_id() == executor_thread);
+                CHECK(status.code() == StatusCode::Closed && size == 0U);
+                ++writes;
+            });
+        initiating = false;
+    });
+    cluster.runtime.sync([&] { CHECK(reads == 1U && writes == 1U); });
+
+    // Before admission, a failure to reserve delivery may complete inline,
+    // on the same context. Neither callback may disappear with its argument.
+    cluster.runtime.sync([&] {
+        engine::StreamResponder::ReadCompletion read =
+            [&](Result<ReceivedRecord> r) {
+                CHECK(r.status().code() == StatusCode::ResourceExhausted);
+                ++reads;
+            };
+        test::arm_allocation_failure(1U);
+        stream->async_read({}, std::move(read));
+        CHECK(test::disarm_allocation_failure());
+        engine::StreamResponder::WriteCompletion write = [&](Status status,
+                                                             std::size_t) {
+            CHECK(status.code() == StatusCode::ResourceExhausted);
+            ++writes;
+        };
+        auto empty = take(Buffer::allocate(0U, 1U));
+        test::arm_allocation_failure(1U);
+        stream->async_write(std::move(empty), {}, std::move(write));
+        CHECK(test::disarm_allocation_failure());
+        CHECK(reads == 2U && writes == 2U);
+    });
+}
+
+// Fault every allocation made while an open is admitted: encoding, stream
+// storage, map publication and BEGIN queuing. Each call owns one completion,
+// including a stream that failed before it was visible to circuit close.
+void test_open_allocation_failures(Cluster& cluster) {
+    bool covered_all = false;
+    for (std::size_t nth = 1U; nth <= 40U; ++nth) {
+        auto circuit = cluster.circuit({"north", "west"});
+        CHECK(cluster.build(circuit).ok());
+        const auto to = destination(443);
+        std::size_t callbacks = 0U;
+        bool fired = false;
+        cluster.runtime.sync([&] {
+            ClientCircuit::Opened opened = [&](auto result) {
+                ++callbacks;
+                if (result.ok())
+                    result.value()->close(Status(StatusCode::Cancelled));
+            };
+            test::arm_allocation_failure(nth);
+            circuit->open_stream(to, std::move(opened));
+            fired = test::disarm_allocation_failure();
+        });
+        cluster.runtime.sync([&] {
+            CHECK(callbacks == 1U);
+            circuit->close();
+        });
+        if (!fired) {
+            covered_all = true;
+            break;
+        }
+    }
+    CHECK(covered_all);
+}
+
+void test_read_allocation_failures(Cluster& cluster, bool data) {
+    bool covered_all = false;
+    for (std::size_t nth = 1U; nth <= 24U; ++nth) {
+        std::shared_ptr<ReadProbe> probe;
+        auto circuit =
+            cluster.circuit({"north", "west"}, {}, nullptr, {}, &probe);
+        CHECK(cluster.build(circuit).ok());
+        auto promise = std::make_shared<std::promise<StatusCode>>();
+        auto future = promise->get_future();
+        std::size_t callbacks = 0U;
+        cluster.runtime.sync([&] {
+            circuit->open_stream(
+                destination(data ? 19U : 25U),
+                [&, promise](Result<std::shared_ptr<StreamResponder>> opened) {
+                    CHECK(opened.ok());
+                    if (!opened.ok()) return;
+                    probe->nth = nth;
+                    probe->data_only = data;
+                    const auto stream = opened.value();
+                    stream->async_read({}, [&, promise, stream](
+                                               Result<ReceivedRecord> result) {
+                        ++callbacks;
+                        if (result.ok()) {
+                            promise->set_value(StatusCode::Ok);
+                            return;
+                        }
+                        const auto code = result.status().code();
+                        // A terminal allocation/protocol/refusal error
+                        // remains terminal even if data was buffered.
+                        stream->async_read({}, [promise, code](auto later) {
+                            CHECK(!later.ok() && later.status().code() == code);
+                            promise->set_value(code);
+                        });
+                    });
+                });
+        });
+        CHECK(future.wait_for(2s) == std::future_status::ready);
+        const bool fired = cluster.runtime.sync([&] {
+            CHECK(probe->observed && callbacks == 1U);
+            circuit->close();
+            return probe->fired;
+        });
+        if (!fired) {
+            covered_all = true;
+            break;
+        }
+    }
+    CHECK(covered_all);
+}
+
+// Read initiation has its own allocations before any incoming record. A
+// failed reservation or cancellation registration must settle the read,
+// and cancellation of an accepted read must not need another allocation.
+void test_read_initiation_failures(Cluster& cluster) {
+    bool covered_all = false;
+    for (std::size_t nth = 1U; nth <= 16U; ++nth) {
+        auto circuit = cluster.circuit({"north", "west"});
+        CHECK(cluster.build(circuit).ok());
+        auto stream = take(cluster.open(circuit, 443));
+        engine::CancellationSource cancellation;
+        std::size_t calls = 0U;
+        bool fired = false;
+        cluster.runtime.sync([&] {
+            StreamResponder::ReadCompletion done = [&](auto result) {
+                ++calls;
+                CHECK(!result.ok());
+                CHECK(result.status().code() == StatusCode::ResourceExhausted ||
+                      result.status().code() == StatusCode::Cancelled);
+            };
+            test::arm_allocation_failure(nth);
+            stream->async_read(cancellation.token(), std::move(done));
+            fired = test::disarm_allocation_failure();
+            test::before_allocate = [](std::size_t) { throw std::bad_alloc(); };
+            const bool cancelled = cancellation.cancel();
+            test::before_allocate = nullptr;
+            CHECK(cancelled);
+        });
+        cluster.runtime.sync([&] {
+            CHECK(calls == 1U);
+            circuit->close();
+        });
+        if (!fired) {
+            covered_all = true;
+            break;
+        }
+    }
+    CHECK(covered_all);
+}
+
+void test_write_allocation_failures(Cluster& cluster) {
+    {
+        auto circuit = cluster.circuit({"north", "west"});
+        CHECK(cluster.build(circuit).ok());
+        auto stream = take(cluster.open(circuit, 443));
+        constexpr std::size_t kInitialWrites = 8U;
+        constexpr std::size_t kBlockedWrites = 32U;
+        std::array<std::size_t, kInitialWrites + kBlockedWrites> calls{};
+        cluster.runtime.sync([&] {
+            // No peer work runs until this context call returns. Fill the
+            // forward queue and send window, leaving further writes queued.
+            for (std::size_t index = 0U; index < kInitialWrites; ++index) {
+                stream->async_write(
+                    take(Buffer::allocate(65536U, 65536U)), {},
+                    [&, index](Status, std::size_t) { ++calls[index]; });
+            }
+            std::vector<Buffer> buffers;
+            std::vector<StreamResponder::WriteCompletion> completions;
+            for (std::size_t index = 0U; index < kBlockedWrites; ++index) {
+                buffers.push_back(take(Buffer::allocate(1U, 1U)));
+                completions.emplace_back([&, index](Status, std::size_t) {
+                    ++calls[kInitialWrites + index];
+                });
+            }
+            bool escaped = false;
+            test::arm_allocation_failure(1U);
+            try {
+                for (std::size_t index = 0U; index < kBlockedWrites; ++index)
+                    stream->async_write(std::move(buffers[index]), {},
+                                        std::move(completions[index]));
+            } catch (const std::bad_alloc&) {
+                escaped = true;
+            }
+            const bool fired = test::disarm_allocation_failure();
+            CHECK(fired && !escaped);
+            circuit->close();
+        });
+        cluster.runtime.sync([&] {
+            for (const auto count : calls) CHECK(count == 1U);
+        });
+    }
+
+    bool covered_all = false;
+    for (std::size_t nth = 1U; nth <= 24U; ++nth) {
+        auto circuit = cluster.circuit({"north", "west"});
+        CHECK(cluster.build(circuit).ok());
+        auto stream = take(cluster.open(circuit, 443));
+        std::size_t callbacks = 0U;
+        bool fired = false;
+        cluster.runtime.sync([&] {
+            auto buffer = take(Buffer::allocate(4096U, 4096U));
+            engine::StreamResponder::WriteCompletion done =
+                [&](Status, std::size_t) { ++callbacks; };
+            test::arm_allocation_failure(nth);
+            stream->async_write(std::move(buffer), {}, std::move(done));
+            fired = test::disarm_allocation_failure();
+        });
+        cluster.runtime.sync([&] {
+            CHECK(callbacks == 1U);
+            circuit->close();
+        });
+        if (!fired) {
+            covered_all = true;
+            break;
+        }
+    }
+    CHECK(covered_all);
+}
+
+// The receive-window budget includes initial grants, not only growth. A
+// released stream returns its grant so a later open can be admitted.
+void test_client_window_admission(Cluster& cluster) {
+    runtime::circuit::ClientLimits limits;
+    limits.circuit_window = limits.stream_window;
+    auto circuit = cluster.circuit({"north", "west"}, {}, nullptr, limits);
+    CHECK(cluster.build(circuit).ok());
+    auto first = take(cluster.open(circuit, 443));
+    auto refused = cluster.open(circuit, 443);
+    CHECK(!refused.ok() &&
+          refused.status().code() == StatusCode::ResourceExhausted);
+    cluster.runtime.sync([&] {
+        CHECK(circuit->streams() == 1U);
+        first->close(Status(StatusCode::Cancelled));
+    });
+    auto admitted = cluster.open(circuit, 443);
+    CHECK(admitted.ok());
+    cluster.runtime.sync([&] { circuit->close(); });
+
+    // Growth uses the same budget as a new initial grant. One stream that
+    // has grown to 512 KiB fills this circuit even though its count is one.
+    limits.circuit_window = 2U * limits.stream_window;
+    auto growing = cluster.circuit({"north", "west"}, {}, nullptr, limits);
+    CHECK(cluster.build(growing).ok());
+    auto download = take(cluster.open(growing, 19));
+    const auto ahead = sent_ahead(cluster, download, 3U << 20U, false);
+    CHECK(ahead > limits.stream_window && ahead <= limits.circuit_window);
+    auto after_growth = cluster.open(growing, 443);
+    CHECK(!after_growth.ok() &&
+          after_growth.status().code() == StatusCode::ResourceExhausted);
+    cluster.runtime.sync([&] { growing->close(); });
 }
 
 constexpr std::size_t kFairStreams = 4U;
@@ -962,6 +1311,13 @@ int main() {
             test_extend_failures(cluster);
             test_client_bounds(cluster);
             test_circuit_window_total(cluster);
+            test_client_window_admission(cluster);
+            test_retained_stream_completions(cluster);
+            test_open_allocation_failures(cluster);
+            test_read_allocation_failures(cluster, true);
+            test_read_allocation_failures(cluster, false);
+            test_read_initiation_failures(cluster);
+            test_write_allocation_failures(cluster);
             test_download_fairness(cluster);
             test_upload_fairness(cluster);
             test_middle_loss(cluster);

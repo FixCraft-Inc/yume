@@ -142,6 +142,12 @@ Commands that change an existing server or cluster write each replaced
 file beside it and rename it over the old one.
 Each replacement is atomic, but a command that touches several files is
 not one filesystem transaction.
+Before publication, failed cluster edits and
+.B add-client
+remove their newly created files even if rollback bookkeeping runs out
+of memory.
+Once a replacement publishes references to those files, a later failure
+preserves them and reports the partial publication.
 .SH ACTIONS
 .TP
 .B tune
@@ -222,9 +228,11 @@ every file already referenced.
 .B cluster-remove
 Take a node out of a cluster.
 Every other node forgets it, and the removed node loses its cluster
-section, its
+section and its
 .B credentials/cluster
-directory and the serial it saved, so it runs alone after a restart.
+directory, so it runs alone after a restart.
+Its saved serial is removed only through a relative path inside its
+server directory, without parent traversal or symlinked directories.
 Sign a new list afterwards.
 .TP
 .B cluster-sign

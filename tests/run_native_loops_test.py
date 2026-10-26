@@ -167,9 +167,12 @@ def run(yumed: Path, yume: Path, openssl: Path, module: Path | None) -> None:
             daemon = start(yumed, server_config, environment, server_log)
             processes.append(daemon)
             session.wait_for_port("127.0.0.1", server_port, daemon, time.monotonic() + 30)
-            clients = [start(yume, config, environment, root / f"yume{index}.log")
-                       for index, config in enumerate(configs)]
-            processes.extend(clients)
+            clients = []
+            for index, config in enumerate(configs):
+                client = start(yume, config, environment, root / f"yume{index}.log")
+                # Cleanup must own each child before the next spawn can fail.
+                processes.append(client)
+                clients.append(client)
             for client, port in zip(clients, ports):
                 session.wait_for_port("127.0.0.1", port, client, time.monotonic() + 30)
 

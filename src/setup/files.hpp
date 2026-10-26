@@ -104,6 +104,10 @@ void rename_replace(const std::filesystem::path& from,
                     const std::filesystem::path& to);
 // Removes a file, ignoring one that is already gone.
 void remove_file(const std::filesystem::path& path) noexcept;
+// Best-effort removal beneath root. Refuses absolute paths, parent traversal
+// and symlinked directories; a final symlink is unlinked without following it.
+void remove_file_beneath(const std::filesystem::path& root,
+                         const std::filesystem::path& relative) noexcept;
 // Removes a tree without following symlinks and without C++ allocation,
 // so cleanup still runs when memory is exhausted. Errors are ignored.
 void remove_tree(const std::filesystem::path& path) noexcept;

@@ -51,6 +51,12 @@ std::size_t rekey_queue_reserve(const SessionLimits& limits) noexcept {
            ytp1::kRekeyInitMessageBytes + ytp1::kRekeyAckMessageBytes;
 }
 
+std::size_t engine_control_reserve(const SessionLimits& limits) noexcept {
+    // CREDIT is the largest engine obligation; CLOSE carries only one byte.
+    return ytp1::kFrameHeaderSize + kProtectedEnvelopeBytes +
+           limits.max_security_overhead + sizeof(std::uint32_t);
+}
+
 enum class StreamCloseCode : std::uint8_t {
     Normal = 0U,
     Unauthorized = 1U,
@@ -330,9 +336,10 @@ Status validate_limits(const SessionLimits& limits) {
         return Status(StatusCode::InvalidArgument,
                       "session rekey or security-overhead limit is invalid");
     }
-    if (limits.max_queued_bytes <= rekey_queue_reserve(limits)) {
+    if (limits.max_queued_bytes <=
+        rekey_queue_reserve(limits) + engine_control_reserve(limits)) {
         return Status(StatusCode::InvalidArgument,
-                      "session queue cannot reserve directional rekey controls");
+                      "session queue cannot reserve rekey and engine controls");
     }
     if (limits.rekey_ack_timeout <= std::chrono::milliseconds::zero() ||
         limits.rekey_ack_timeout > kMaxRekeyAckTimeout) {
@@ -520,8 +527,28 @@ private:
     struct ReceiveWindow final {
         std::uint64_t size{0U};
         std::uint64_t unreturned{0U};
+        // Returned or grown credit that no grant record carries yet.
+        std::uint64_t owed{0U};
+        // Credit carried by grant records behind the rekey barrier. It joins
+        // inbound credit when its record enters the wire queue.
+        std::uint64_t granting{0U};
+        // Grant records accepted but not yet sent. While
+        // credit_returns_per_window of them wait, later returns coalesce.
+        std::uint32_t grants_queued{0U};
         std::optional<std::chrono::steady_clock::time_point> last_return;
     };
+
+    enum class ControlKind { None, Credit, Fin, Terminal, Settlement };
+
+    struct EngineControl final {
+        ControlKind kind{ControlKind::None};
+        StreamId stream_id{StreamId::control()};
+        std::uint32_t increment{0U};
+        // A deferred record retains its stream slot across rekey flushing.
+        bool reserved{false};
+    };
+
+    enum class QueueAdmission { Unattempted, Refused, Accepted };
 
     struct StreamStateData final {
         StreamStateData(StreamId value,
@@ -540,10 +567,18 @@ private:
         bool closed{false};
         bool opening{true};
         bool open_published{false};
+        bool acceptance_ready{false};
         bool terminal_sent{false};
         bool terminal_received{false};
         bool settlement_sent{false};
         bool settlement_received{false};
+        bool fin_owed{false};
+        std::optional<StreamCloseCode> terminal_owed;
+        bool settlement_owed{false};
+        bool fin_queued{false};
+        bool terminal_queued{false};
+        bool settlement_queued{false};
+        std::size_t queued_controls{0U};
         OpenCompletion open_completion;
         CancellationRegistration open_cancellation;
         bool local_write_shutdown_requested{false};
@@ -569,19 +604,21 @@ private:
     };
 
     struct OutboundItem final {
-        OutboundItem(Buffer value,
-                     bool is_control_value,
+        OutboundItem(Buffer value, bool is_control_value,
                      std::size_t completion_bytes_value,
-                     Carrier::SendCompletion callback) noexcept
+                     Carrier::SendCompletion callback,
+                     EngineControl control_value) noexcept
             : wire(std::move(value)),
               is_control(is_control_value),
               completion_bytes(completion_bytes_value),
-              completion(std::move(callback)) {}
+              completion(std::move(callback)),
+              control(control_value) {}
 
         Buffer wire;
         bool is_control{false};
         std::size_t completion_bytes{0U};
         Carrier::SendCompletion completion;
+        EngineControl control;
     };
 
     struct ActiveSend final {
@@ -589,21 +626,22 @@ private:
         std::size_t wire_bytes{0U};
         std::size_t completion_bytes{0U};
         Carrier::SendCompletion completion;
+        EngineControl control;
     };
 
     struct DeferredRecord final {
-        DeferredRecord(ytp1::RecordType type_value,
-                       StreamId stream_id_value,
-                       Buffer value,
-                       bool is_control_value,
+        DeferredRecord(ytp1::RecordType type_value, StreamId stream_id_value,
+                       Buffer value, bool is_control_value,
                        std::size_t completion_bytes_value,
-                       Carrier::SendCompletion callback) noexcept
+                       Carrier::SendCompletion callback,
+                       EngineControl control_value) noexcept
             : type(type_value),
               stream_id(stream_id_value),
               payload(std::move(value)),
               is_control(is_control_value),
               completion_bytes(completion_bytes_value),
-              completion(std::move(callback)) {}
+              completion(std::move(callback)),
+              control(control_value) {}
 
         ytp1::RecordType type;
         StreamId stream_id;
@@ -611,6 +649,7 @@ private:
         bool is_control{false};
         std::size_t completion_bytes{0U};
         Carrier::SendCompletion completion;
+        EngineControl control;
     };
 
     Status initialize_security();
@@ -623,24 +662,40 @@ private:
     Status accept_established_output(AuthenticationOutput& output);
     Status advertise_post_authentication_state();
 
-    Status enqueue_record(ytp1::RecordType type,
-                          StreamId stream_id,
-                          std::span<const std::byte> payload,
-                          bool protect,
-                          bool is_control,
-                          std::size_t completion_bytes = 0U,
+    Status enqueue_record(ytp1::RecordType type, StreamId stream_id,
+                          std::span<const std::byte> payload, bool protect,
+                          bool is_control, std::size_t completion_bytes = 0U,
                           Carrier::SendCompletion completion = {},
-                          bool bypass_rekey_barrier = false);
-    Status defer_record(ytp1::RecordType type,
-                        StreamId stream_id,
-                        std::span<const std::byte> payload,
-                        bool is_control,
+                          bool bypass_rekey_barrier = false,
+                          QueueAdmission* admission = nullptr,
+                          EngineControl control = {ControlKind::None,
+                                                   StreamId::control(), 0U,
+                                                   false});
+    Status defer_record(ytp1::RecordType type, StreamId stream_id,
+                        std::span<const std::byte> payload, bool is_control,
                         std::size_t completion_bytes,
-                        Carrier::SendCompletion completion);
+                        Carrier::SendCompletion completion,
+                        QueueAdmission* admission, EngineControl control);
     Status flush_deferred_records();
     std::size_t outbound_queue_limit() const noexcept {
         return limits_.max_queued_bytes - rekey_queue_reserve(limits_);
     }
+    std::size_t application_queue_limit() const noexcept {
+        return outbound_queue_limit() - engine_control_reserve(limits_);
+    }
+    bool grant_slot_free(const ReceiveWindow& window) const noexcept {
+        return window.grants_queued < limits_.credit_returns_per_window;
+    }
+    Status reserve_control_locked(EngineControl& control) noexcept;
+    Status admit_control_locked(const EngineControl& control) noexcept;
+    void complete_control_locked(const EngineControl& control,
+                                 bool admitted) noexcept;
+    bool select_owed_control_locked(EngineControl& control,
+                                    StreamCloseCode& close) noexcept;
+    Status drain_owed_controls() noexcept;
+    void complete_local_acceptance(StreamId stream_id) noexcept;
+    bool retire_stream_locked(StreamId stream_id) noexcept;
+    void collect_stream_credit_locked(StreamStateData& stream) noexcept;
     Result<Buffer> encode_frame(ytp1::RecordType type,
                                 StreamId stream_id,
                                 std::span<const std::byte> payload) const;
@@ -672,6 +727,7 @@ private:
 
     void return_receive_credit(StreamId stream_id,
                                std::size_t bytes) noexcept;
+    void take_connection_credit_locked(bool due, std::uint64_t growth) noexcept;
     std::uint64_t return_threshold(std::uint64_t window, std::uint64_t packet,
                                    std::uint64_t maximum) const noexcept;
     void note_packet_locked(StreamStateData& stream,
@@ -683,8 +739,6 @@ private:
         std::chrono::steady_clock::time_point sent,
         std::chrono::steady_clock::time_point now) noexcept;
     void drain_pending_writes() noexcept;
-    Status send_stream_credit(StreamId stream_id, std::uint32_t increment);
-    Status send_close(StreamId stream_id, StreamCloseCode code);
     Status finish_stream_shutdown_if_ready(StreamId stream_id) noexcept;
     void remove_stream(StreamId stream_id, Status reason) noexcept;
     void cancel_pending_read(StreamId stream_id,
@@ -765,6 +819,12 @@ private:
     std::uint64_t outbound_connection_credit_{0U};
     std::uint64_t inbound_connection_credit_{0U};
     ReceiveWindow connection_window_;
+    bool controls_draining_{false};
+    bool controls_drain_again_{false};
+    // Set whenever a stream obligation may have become sendable and cleared
+    // by a scan that finds none, so a drain per record need not visit every
+    // stream.
+    bool stream_controls_owed_{false};
     // Round trips timed locally from this side's AUTH flight to the peer's
     // answer and from each REKEY_INIT to its ACK. Neither adds a record.
     std::optional<std::chrono::steady_clock::duration> round_trip_;
@@ -1532,20 +1592,12 @@ Status SessionEngine::Impl::advertise_post_authentication_state() {
     if (!capabilities.ok()) {
         return capabilities;
     }
-    const auto encoded_credit = ytp1::EncodeCreditUpdate(
-        limits_.initial_connection_credit);
-    if (!encoded_credit.ok()) {
-        return Status(StatusCode::Internal,
-                      "validated connection credit could not be encoded");
-    }
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        inbound_connection_credit_ = limits_.initial_connection_credit;
         connection_window_.size = limits_.initial_connection_credit;
+        connection_window_.owed = limits_.initial_connection_credit;
     }
-    return enqueue_record(
-        ytp1::RecordType::ConnectionCredit, StreamId::control(),
-        as_bytes(*encoded_credit.value), true, true);
+    return drain_owed_controls();
 }
 
 Result<Buffer> SessionEngine::Impl::encode_frame(
@@ -1632,20 +1684,343 @@ Result<Buffer> SessionEngine::Impl::protect_frame(
     return Result<Buffer>(std::move(output));
 }
 
+Status SessionEngine::Impl::reserve_control_locked(
+    EngineControl& control) noexcept {
+    if (control.kind == ControlKind::None || control.reserved) {
+        return Status::success();
+    }
+    StreamStateData* stream = nullptr;
+    if (!control.stream_id.is_control()) {
+        const auto it = streams_.find(control.stream_id.value());
+        // A stream that closed after its credit was chosen dropped that credit.
+        if (it == streams_.end() ||
+            (control.kind == ControlKind::Credit && it->second->closed)) {
+            return Status::diagnostic(StatusCode::Closed, "stream is closed");
+        }
+        stream = it->second.get();
+    }
+    if (control.kind == ControlKind::Credit) {
+        auto& window = stream ? stream->receive_window : connection_window_;
+        if (control.increment > window.owed) {
+            return Status::diagnostic(StatusCode::Internal,
+                                      "local credit exceeds what is owed");
+        }
+        window.owed -= control.increment;
+        window.granting += control.increment;
+        ++window.grants_queued;
+    }
+    control.reserved = true;
+    if (!stream) return Status::success();
+    ++stream->queued_controls;
+    switch (control.kind) {
+        case ControlKind::None:
+        case ControlKind::Credit:
+            break;
+        case ControlKind::Fin:
+            stream->fin_queued = true;
+            break;
+        case ControlKind::Terminal:
+            stream->terminal_queued = true;
+            break;
+        case ControlKind::Settlement:
+            stream->settlement_queued = true;
+            break;
+    }
+    return Status::success();
+}
+
+Status SessionEngine::Impl::admit_control_locked(
+    const EngineControl& control) noexcept {
+    if (control.kind == ControlKind::None) return Status::success();
+    StreamStateData* stream = nullptr;
+    if (!control.stream_id.is_control()) {
+        const auto it = streams_.find(control.stream_id.value());
+        if (it == streams_.end()) {
+            return Status::diagnostic(StatusCode::Internal,
+                                      "engine control lost its stream");
+        }
+        stream = it->second.get();
+    }
+    if (control.kind == ControlKind::Credit) {
+        auto& window = stream ? stream->receive_window : connection_window_;
+        auto& inbound =
+            stream ? stream->inbound_credit : inbound_connection_credit_;
+        if (control.increment > window.granting || inbound > window.size ||
+            control.increment > window.size - inbound) {
+            return Status::diagnostic(
+                StatusCode::Internal,
+                "local credit exceeds its receive window");
+        }
+        window.granting -= control.increment;
+        inbound += control.increment;
+        return Status::success();
+    }
+    switch (control.kind) {
+        case ControlKind::None:
+        case ControlKind::Credit:
+            break;
+        case ControlKind::Fin:
+            stream->fin_owed = false;
+            break;
+        case ControlKind::Terminal:
+            stream->terminal_owed.reset();
+            break;
+        case ControlKind::Settlement:
+            stream->settlement_owed = false;
+            break;
+    }
+    // Settlement may follow once the FIN or terminal CLOSE is in the queue.
+    stream_controls_owed_ = true;
+    return Status::success();
+}
+
+void SessionEngine::Impl::collect_stream_credit_locked(
+    StreamStateData& stream) noexcept {
+    auto& window = stream.receive_window;
+    if (stream.closed || !grant_slot_free(window) || window.unreturned == 0U ||
+        window.unreturned < return_threshold(window.size, stream.largest_packet,
+                                             stream.max_receive_credit)) {
+        return;
+    }
+    const auto growth = grow_window_locked(window, stream.max_receive_credit,
+                                           std::chrono::steady_clock::now());
+    window.owed += std::exchange(window.unreturned, 0U) + growth;
+    stream_controls_owed_ = true;
+    // Keep the connection window at one and a half times any stream window,
+    // as Chromium does, so a stream whose reader stalls leaves credit for the
+    // others.
+    const auto floor = std::min<std::uint64_t>(window.size + window.size / 2U,
+                                               limits_.max_connection_credit);
+    if (floor > connection_window_.size) {
+        connection_window_.owed += floor - connection_window_.size;
+        connection_window_.size = floor;
+    }
+}
+
+bool SessionEngine::Impl::retire_stream_locked(StreamId stream_id) noexcept {
+    const auto it = streams_.find(stream_id.value());
+    if (it == streams_.end()) return false;
+    const auto& stream = *it->second;
+    const bool settled =
+        stream.terminal_sent
+            ? stream.settlement_received &&
+                  (!stream.terminal_received || stream.settlement_sent)
+            : stream.settlement_sent &&
+                  (stream.terminal_received || stream.settlement_received);
+    if (!stream.closed || !settled || stream.queued_controls != 0U ||
+        stream.receive_window.owed != 0U || stream.fin_owed ||
+        stream.terminal_owed || stream.settlement_owed) {
+        return false;
+    }
+    streams_.erase(it);
+    return true;
+}
+
+void SessionEngine::Impl::complete_control_locked(const EngineControl& control,
+                                                  bool admitted) noexcept {
+    if (terminal_locked() || control.kind == ControlKind::None) return;
+    if (control.stream_id.is_control()) {
+        // The only connection-scope engine control is credit.
+        auto& window = connection_window_;
+        --window.grants_queued;
+        if (!admitted) window.granting -= control.increment;
+        const bool due =
+            window.unreturned >=
+            return_threshold(window.size, 0U, limits_.max_connection_credit);
+        const auto growth =
+            due ? grow_window_locked(window, limits_.max_connection_credit,
+                                     std::chrono::steady_clock::now())
+                : 0U;
+        take_connection_credit_locked(due, growth);
+        return;
+    }
+    const auto it = streams_.find(control.stream_id.value());
+    if (it == streams_.end()) return;
+    auto& stream = *it->second;
+    --stream.queued_controls;
+    stream_controls_owed_ = true;
+    switch (control.kind) {
+        case ControlKind::None:
+            break;
+        case ControlKind::Credit:
+            --stream.receive_window.grants_queued;
+            if (!admitted) stream.receive_window.granting -= control.increment;
+            collect_stream_credit_locked(stream);
+            break;
+        case ControlKind::Fin:
+            stream.fin_queued = false;
+            break;
+        case ControlKind::Terminal:
+            stream.terminal_queued = false;
+            break;
+        case ControlKind::Settlement:
+            stream.settlement_queued = false;
+            break;
+    }
+    retire_stream_locked(control.stream_id);
+}
+
+bool SessionEngine::Impl::select_owed_control_locked(
+    EngineControl& control, StreamCloseCode& close) noexcept {
+    // Windows never exceed their validated maxima, which are at most 2^30.
+    if (connection_window_.owed != 0U && grant_slot_free(connection_window_)) {
+        control.kind = ControlKind::Credit;
+        control.increment = static_cast<std::uint32_t>(connection_window_.owed);
+        return true;
+    }
+    if (!stream_controls_owed_) return false;
+    // A stream queues at most credit_returns_per_window grants and one
+    // record of each close kind, so the stream bound also bounds queued
+    // controls. Anything beyond that waits here as owed state.
+    for (const auto& [_, stream] : streams_) {
+        control.stream_id = stream->id;
+        if (stream->terminal_owed && !stream->terminal_queued) {
+            control.kind = ControlKind::Terminal;
+            close = *stream->terminal_owed;
+        } else if (!stream->closed && stream->receive_window.owed != 0U &&
+                   grant_slot_free(stream->receive_window)) {
+            control.kind = ControlKind::Credit;
+            control.increment =
+                static_cast<std::uint32_t>(stream->receive_window.owed);
+        } else if (stream->fin_owed && !stream->fin_queued) {
+            control.kind = ControlKind::Fin;
+        } else if (stream->settlement_owed && !stream->settlement_queued &&
+                   !stream->terminal_owed && !stream->fin_owed) {
+            control.kind = ControlKind::Settlement;
+            close = StreamCloseCode::Settled;
+        }
+        if (control.kind != ControlKind::None) return true;
+    }
+    // Whatever remains waits for a queued record, whose completion or
+    // admission sets the flag again.
+    stream_controls_owed_ = false;
+    return false;
+}
+
+void SessionEngine::Impl::complete_local_acceptance(
+    StreamId stream_id) noexcept {
+    OpenCompletion completion;
+    CancellationRegistration registration;
+    std::shared_ptr<StreamResponder> responder;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = streams_.find(stream_id.value());
+        if (it == streams_.end() || it->second->closed ||
+            !it->second->acceptance_ready)
+            return;
+        auto& stream = *it->second;
+        stream.acceptance_ready = false;
+        completion = std::exchange(stream.open_completion, nullptr);
+        registration = std::move(stream.open_cancellation);
+        responder = stream.responder;
+    }
+    registration.unregister();
+    invoke_noexcept(completion, Result<std::shared_ptr<StreamResponder>>(
+                                    std::move(responder)));
+}
+
+Status SessionEngine::Impl::drain_owed_controls() noexcept {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (terminal_locked()) return Status::success();
+        if (controls_draining_) {
+            controls_drain_again_ = true;
+            return Status::success();
+        }
+        controls_draining_ = true;
+        controls_drain_again_ = false;
+    }
+    struct DrainGuard final {
+        Impl& owner;
+        bool released{false};
+        ~DrainGuard() noexcept {
+            if (!released) {
+                std::lock_guard<std::mutex> lock(owner.mutex_);
+                owner.controls_draining_ = false;
+            }
+            owner.notify_if_teardown_complete();
+        }
+    } guard{*this};
+    try {
+        for (;;) {
+            EngineControl control;
+            StreamCloseCode close = StreamCloseCode::Normal;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (terminal_locked()) return Status::success();
+                if (!select_owed_control_locked(control, close)) {
+                    controls_draining_ = false;
+                    guard.released = true;
+                    return Status::success();
+                }
+                controls_drain_again_ = false;
+            }
+            std::array<std::uint8_t, sizeof(std::uint32_t)> credit{};
+            const std::array<std::byte, kClosePayloadBytes> close_payload{
+                static_cast<std::byte>(close)};
+            std::span<const std::byte> payload = close_payload;
+            ytp1::RecordType type = ytp1::RecordType::Close;
+            if (control.kind == ControlKind::Credit) {
+                const auto encoded =
+                    ytp1::EncodeCreditUpdate(control.increment);
+                if (!encoded.ok()) {
+                    const Status failure =
+                        Status::diagnostic(StatusCode::Internal,
+                                           "owed credit could not be encoded");
+                    fail(copy_failure(failure));
+                    return failure;
+                }
+                credit = *encoded.value;
+                payload = as_bytes(credit);
+                type = control.stream_id.is_control()
+                           ? ytp1::RecordType::ConnectionCredit
+                           : ytp1::RecordType::StreamCredit;
+            }
+            QueueAdmission admission = QueueAdmission::Unattempted;
+            const Status status =
+                enqueue_record(type, control.stream_id, payload, true, false,
+                               0U, {}, false, &admission, control);
+            if (admission == QueueAdmission::Refused) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (controls_drain_again_) continue;
+                controls_draining_ = false;
+                guard.released = true;
+                return Status::success();
+            }
+            if (status.ok() && control.kind == ControlKind::Credit &&
+                !control.stream_id.is_control()) {
+                complete_local_acceptance(control.stream_id);
+            }
+            if (!status.ok() && status.code() != StatusCode::Closed) {
+                fail(copy_failure(status));
+                return status;
+            }
+        }
+    } catch (const std::bad_alloc&) {
+        fail(Status::diagnostic(StatusCode::ResourceExhausted));
+        return Status::diagnostic(StatusCode::ResourceExhausted);
+    } catch (...) {
+        fail(Status::diagnostic(StatusCode::Internal));
+        return Status::diagnostic(StatusCode::Internal);
+    }
+}
+
 Status SessionEngine::Impl::defer_record(
-    ytp1::RecordType type,
-    StreamId stream_id,
-    std::span<const std::byte> payload,
-    bool is_control,
-    std::size_t completion_bytes,
-    Carrier::SendCompletion completion) {
+    ytp1::RecordType type, StreamId stream_id,
+    std::span<const std::byte> payload, bool is_control,
+    std::size_t completion_bytes, Carrier::SendCompletion completion,
+    QueueAdmission* admission, EngineControl control) {
+    const std::size_t queue_limit = control.kind == ControlKind::None
+                                        ? application_queue_limit()
+                                        : outbound_queue_limit();
     const std::size_t overhead = ytp1::kFrameHeaderSize +
         kProtectedEnvelopeBytes + security_->max_sealed_overhead();
     // Refusals here consume no record token, so their diagnostics must not
     // throw into a caller that would treat the exception as a lost token.
     if (payload.size() > limits_.max_frame_payload ||
-        payload.size() > outbound_queue_limit() ||
-        overhead > outbound_queue_limit() - payload.size()) {
+        payload.size() > queue_limit ||
+        overhead > queue_limit - payload.size()) {
+        if (admission) *admission = QueueAdmission::Refused;
         return Status::diagnostic(StatusCode::ResourceExhausted,
                                   "deferred record exceeds the queue bound");
     }
@@ -1657,13 +2032,14 @@ Status SessionEngine::Impl::defer_record(
         }
         if (is_control &&
             queued_control_messages_ >= limits_.max_control_messages - 2U) {
+            if (admission) *admission = QueueAdmission::Refused;
             return Status::diagnostic(StatusCode::ResourceExhausted,
                                       "control-message queue is full");
         }
         const std::size_t retained = queued_wire_bytes_ +
                                      pending_write_bytes_;
-        if (retained > outbound_queue_limit() ||
-            reservation > outbound_queue_limit() - retained) {
+        if (retained > queue_limit || reservation > queue_limit - retained) {
+            if (admission) *admission = QueueAdmission::Refused;
             return Status::diagnostic(StatusCode::ResourceExhausted,
                                       "session outbound queue is full");
         }
@@ -1696,7 +2072,19 @@ Status SessionEngine::Impl::defer_record(
         }
         deferred_records_.emplace_back(
             type, stream_id, std::move(copy).take_value(), is_control,
-            completion_bytes, std::move(completion));
+            completion_bytes, std::move(completion), control);
+        Status reserved =
+            reserve_control_locked(deferred_records_.back().control);
+        if (!reserved.ok()) {
+            // Engine controls carry no completion, so nothing is lost here.
+            deferred_records_.pop_back();
+            queued_wire_bytes_ -= reservation;
+            if (is_control) {
+                --queued_control_messages_;
+            }
+            return reserved;
+        }
+        if (admission) *admission = QueueAdmission::Accepted;
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         bench_probe::count(bench_probe::Count::DeferredRecords);
         bench_probe::count(bench_probe::Count::DeferredBytes, payload.size());
@@ -1715,14 +2103,11 @@ Status SessionEngine::Impl::defer_record(
 }
 
 Status SessionEngine::Impl::enqueue_record(
-    ytp1::RecordType type,
-    StreamId stream_id,
-    std::span<const std::byte> payload,
-    bool protect,
-    bool is_control,
-    std::size_t completion_bytes,
-    Carrier::SendCompletion completion,
-    bool bypass_rekey_barrier) {
+    ytp1::RecordType type, StreamId stream_id,
+    std::span<const std::byte> payload, bool protect, bool is_control,
+    std::size_t completion_bytes, Carrier::SendCompletion completion,
+    bool bypass_rekey_barrier, QueueAdmission* admission,
+    EngineControl control) {
     std::unique_lock<std::mutex> ordering_lock;
     if (protect) {
         ordering_lock = std::unique_lock<std::mutex>(
@@ -1806,7 +2191,8 @@ Status SessionEngine::Impl::enqueue_record(
     }
     if (protect && !bypass_rekey_barrier) {
         return defer_record(type, stream_id, payload, is_control,
-                            completion_bytes, std::move(completion));
+                            completion_bytes, std::move(completion), admission,
+                            control);
     }
 
     // Taken when this record starts a fresh outbound epoch, and run once the
@@ -1824,8 +2210,10 @@ Status SessionEngine::Impl::enqueue_record(
     const std::size_t reservation = fixed + payload.size();
     const bool rekey_control = type == ytp1::RecordType::RekeyInit ||
                                type == ytp1::RecordType::RekeyAck;
-    const std::size_t queue_limit = rekey_control
-        ? limits_.max_queued_bytes : outbound_queue_limit();
+    const std::size_t queue_limit = rekey_control ? limits_.max_queued_bytes
+                                    : control.kind != ControlKind::None
+                                        ? outbound_queue_limit()
+                                        : application_queue_limit();
     const std::uint32_t control_limit = limits_.max_control_messages -
                                       (rekey_control ? 0U : 2U);
     std::optional<RecordKeyToken> token;
@@ -1839,19 +2227,6 @@ Status SessionEngine::Impl::enqueue_record(
             if (it == streams_.end() || it->second->closed) {
                 return Status::diagnostic(StatusCode::Closed,
                                           "stream is closed");
-            }
-            if (type == ytp1::RecordType::StreamCredit) {
-                const auto increment = ytp1::DecodeCreditUpdate(as_u8(payload));
-                if (!increment.ok() ||
-                    it->second->inbound_credit >
-                        it->second->receive_window.size ||
-                    *increment.value > it->second->receive_window.size -
-                                           it->second->inbound_credit) {
-                    return Status::diagnostic(
-                        StatusCode::Internal,
-                        "local stream credit exceeds its bound");
-                }
-                it->second->inbound_credit += *increment.value;
             }
         }
         if (!protect) {
@@ -1876,6 +2251,7 @@ Status SessionEngine::Impl::enqueue_record(
         }
         if (is_control &&
             queued_control_messages_ >= control_limit) {
+            if (admission) *admission = QueueAdmission::Refused;
             return Status::diagnostic(StatusCode::ResourceExhausted,
                                       "control-message queue is full");
         }
@@ -1883,9 +2259,14 @@ Status SessionEngine::Impl::enqueue_record(
                                      pending_write_bytes_;
         if (retained > queue_limit ||
             reservation > queue_limit - retained) {
+            if (admission) *admission = QueueAdmission::Refused;
             return Status::diagnostic(StatusCode::ResourceExhausted,
                                       "session outbound queue is full");
         }
+        Status control_status = reserve_control_locked(control);
+        if (control_status.ok()) control_status = admit_control_locked(control);
+        if (!control_status.ok()) return control_status;
+        if (admission) *admission = QueueAdmission::Accepted;
         if (type == ytp1::RecordType::Open) {
             streams_.at(stream_id.value())->open_published = true;
         }
@@ -1989,9 +2370,9 @@ Status SessionEngine::Impl::enqueue_record(
                 return Status::diagnostic(StatusCode::Closed,
                                           "session is closed");
             }
-            outbound_queue_.emplace_back(
-                std::move(wire_buffer), is_control, completion_bytes,
-                std::move(completion));
+            outbound_queue_.emplace_back(std::move(wire_buffer), is_control,
+                                         completion_bytes,
+                                         std::move(completion), control);
             queued_wire_bytes_ -= reservation - actual;
         }
     } catch (const std::bad_alloc&) {
@@ -2097,6 +2478,10 @@ Status SessionEngine::Impl::flush_deferred_records() {
             }
         }
         if (closed) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                complete_control_locked(record.control, false);
+            }
             invoke_noexcept(record.completion,
                             Status::diagnostic(StatusCode::Closed), 0U);
             record.completion = {};
@@ -2121,9 +2506,10 @@ Status SessionEngine::Impl::flush_deferred_records() {
                     *completion = {};
                 };
             }
-            status = enqueue_record(record.type, record.stream_id,
-                payload.bytes(), true, record.is_control,
-                record.completion_bytes, std::move(submitted));
+            status = enqueue_record(
+                record.type, record.stream_id, payload.bytes(), true,
+                record.is_control, record.completion_bytes,
+                std::move(submitted), false, nullptr, record.control);
         } catch (const std::bad_alloc&) {
             status = Status::diagnostic(StatusCode::ResourceExhausted);
         } catch (...) {
@@ -2134,7 +2520,13 @@ Status SessionEngine::Impl::flush_deferred_records() {
                 invoke_noexcept(*completion, copy_failure(status), 0U);
                 *completion = {};
             }
-            if (status.code() == StatusCode::Closed) continue;
+            if (status.code() == StatusCode::Closed) {
+                // The stream closed after the check above, before its record
+                // entered the wire queue.
+                std::lock_guard<std::mutex> lock(mutex_);
+                complete_control_locked(record.control, false);
+                continue;
+            }
             drain.reason = copy_failure(status);
             return status;
         }
@@ -2166,9 +2558,9 @@ void SessionEngine::Impl::request_send_pump() noexcept {
             OutboundItem item = std::move(outbound_queue_.front());
             outbound_queue_.pop_front();
             const std::size_t wire_size = item.wire.size();
-            active_send_.emplace(ActiveSend{
-                item.is_control, wire_size, item.completion_bytes,
-                std::move(item.completion)});
+            active_send_.emplace(
+                ActiveSend{item.is_control, wire_size, item.completion_bytes,
+                           std::move(item.completion), item.control});
             wire.emplace(std::move(item.wire));
             send_in_progress_ = true;
             cancellation = cancellation_.token();
@@ -2223,6 +2615,7 @@ void SessionEngine::Impl::on_send_complete(
             status = Status::diagnostic(
                 StatusCode::Internal, "carrier reported a partial record send");
         }
+        complete_control_locked(active.control, true);
         completion = std::move(active.completion);
         completion_bytes = status.ok() ? active.completion_bytes : 0U;
         must_fail = !status.ok() && !terminal_locked();
@@ -2243,6 +2636,8 @@ void SessionEngine::Impl::on_send_complete(
     }
     invoke_noexcept(completion, std::move(status), completion_bytes);
     if (must_fail) return;
+    const Status controls = drain_owed_controls();
+    if (!controls.ok()) return;
     request_send_pump();
 }
 
@@ -2746,10 +3141,12 @@ void SessionEngine::Impl::complete_peer_open(StreamId stream_id,
                 initial = std::min(limits_.initial_stream_credit,
                                    it->second->max_receive_credit);
                 it->second->receive_window.size = initial;
+                it->second->receive_window.owed = initial;
+                stream_controls_owed_ = true;
             }
         }
         if (status.ok()) {
-            status = send_stream_credit(stream_id, initial);
+            status = drain_owed_controls();
             if (status.ok()) status = finish_stream_shutdown_if_ready(stream_id);
             // A concurrent local cancellation can win before acceptance is
             // published. Its terminal handshake already owns stream cleanup.
@@ -2896,6 +3293,7 @@ Status SessionEngine::Impl::process_application_data(
         note_packet_locked(*stream, record.payload.size());
         payload_bytes_received_.fetch_add(record.payload.size(), std::memory_order_relaxed);
         if (!discard_crossed_data) {
+            take_connection_credit_locked(false, 0U);
             application_record.emplace(std::move(copied).take_value(),
                 CarrierCredit(record.payload.size(), std::move(*release)));
             if (stream->pending_read) {
@@ -2926,7 +3324,7 @@ Status SessionEngine::Impl::process_application_data(
             std::move(*application_record));
         invoke_noexcept(pending_read->completion, std::move(result));
     }
-    return Status::success();
+    return drain_owed_controls();
 }
 
 Status SessionEngine::Impl::process_close(const ytp1::RecordView& record) {
@@ -3005,6 +3403,11 @@ Status SessionEngine::Impl::abort_stream(StreamId stream_id,
         unpublished = !it->second->opened_by_peer &&
                       !it->second->open_published;
         it->second->terminal_sent = !unpublished;
+        if (!unpublished) {
+            it->second->terminal_owed = code;
+            stream_controls_owed_ = true;
+            if (!it->second->fin_queued) it->second->fin_owed = false;
+        }
     }
     remove_stream(stream_id, std::move(reason));
     if (unpublished) {
@@ -3021,7 +3424,7 @@ Status SessionEngine::Impl::abort_stream(StreamId stream_id,
     }
     // Marking closed precedes publication. The record-order lock in enqueue
     // prevents any later DATA or credit publication after this terminal CLOSE.
-    return send_close(stream_id, code);
+    return drain_owed_controls();
 }
 
 Status SessionEngine::Impl::settle_handshake(StreamId stream_id) {
@@ -3036,21 +3439,18 @@ Status SessionEngine::Impl::settle_handshake(StreamId stream_id) {
             (stream->terminal_received ||
              (stream->local_write_closed && stream->peer_write_closed))) {
             stream->settlement_sent = true;
+            stream->settlement_owed = true;
+            stream_controls_owed_ = true;
             send_settlement = true;
         }
     }
     if (send_settlement) {
-        const auto status = send_close(stream_id, StreamCloseCode::Settled);
+        const auto status = drain_owed_controls();
         if (!status.ok()) return copy_failure(status);
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const bool settled = stream->terminal_sent
-            ? stream->settlement_received &&
-              (!stream->terminal_received || stream->settlement_sent)
-            : stream->settlement_sent &&
-              (stream->terminal_received || stream->settlement_received);
-        if (settled) streams_.erase(stream_id.value());
+        retire_stream_locked(stream_id);
     }
     return Status::success();
 }
@@ -3103,32 +3503,19 @@ Status SessionEngine::Impl::process_stream_credit(const ytp1::RecordView& record
             stream->opening = false;
             --pending_opens_;
             accepted = true;
+            stream->acceptance_ready = true;
             initial = std::min(limits_.initial_stream_credit,
                                stream->max_receive_credit);
             stream->receive_window.size = initial;
+            stream->receive_window.owed = initial;
+            stream_controls_owed_ = true;
         }
         if (stream->closed) return Status::success();
     }
     if (accepted) {
-        Status credit = send_stream_credit(stream->id, initial);
+        Status credit = drain_owed_controls();
         if (credit.code() == StatusCode::Closed) return Status::success();
         if (!credit.ok()) return credit;
-        OpenCompletion completion;
-        CancellationRegistration registration;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (!stream->closed) {
-                // Empty the field, which a move need not do (libc++ leaves a
-                // small target in place), or removing the stream would
-                // complete this OPEN a second time.
-                completion = std::exchange(stream->open_completion, nullptr);
-                registration = std::move(stream->open_cancellation);
-            }
-        }
-        registration.unregister();
-        std::shared_ptr<StreamResponder> responder = stream->responder;
-        invoke_noexcept(completion,
-            Result<std::shared_ptr<StreamResponder>>(std::move(responder)));
     }
     drain_pending_writes();
     return Status::success();
@@ -3232,9 +3619,20 @@ void SessionEngine::Impl::async_open(
             }
         }
         if (!admission.ok()) { reject(std::move(admission)); return; }
+        QueueAdmission admission_result = QueueAdmission::Unattempted;
         Status sent = enqueue_record(ytp1::RecordType::Open, stream->id,
-                                     as_bytes(*encoded.value), true, false);
-        if (!sent.ok()) { fail(std::move(sent)); return; }
+                                     as_bytes(*encoded.value), true, false, 0U,
+                                     {}, false, &admission_result);
+        if (!sent.ok()) {
+            if (admission_result == QueueAdmission::Refused) {
+                const auto closed = abort_stream(
+                    stream->id, StreamCloseCode::Aborted, std::move(sent));
+                if (!closed.ok()) fail(copy_failure(closed));
+            } else {
+                fail(std::move(sent));
+            }
+            return;
+        }
         const auto weak = weak_owner();
         auto registered = cancellation.register_callback([weak, id = stream->id] {
             if (const auto engine = weak.lock()) engine->impl_->cancel_open(id);
@@ -3248,7 +3646,8 @@ void SessionEngine::Impl::async_open(
         auto registration = std::move(registered).take_value();
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (!stream->closed && stream->opening) {
+            if (!stream->closed &&
+                (stream->opening || stream->acceptance_ready)) {
                 stream->open_cancellation = std::move(registration);
             }
         }
@@ -3272,8 +3671,10 @@ void SessionEngine::Impl::cancel_open(StreamId stream_id) noexcept {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto it = streams_.find(stream_id.value());
-            if (it == streams_.end() || !it->second->opening ||
-                it->second->opened_by_peer || it->second->closed) return;
+            if (it == streams_.end() ||
+                (!it->second->opening && !it->second->acceptance_ready) ||
+                it->second->opened_by_peer || it->second->closed)
+                return;
         }
         const auto status =
             abort_stream(stream_id, StreamCloseCode::Aborted,
@@ -3451,8 +3852,8 @@ void SessionEngine::Impl::stream_write(
                                          pending_write_bytes_;
             if (storage_bytes > limits_.max_stream_queued_bytes -
                                     stream.outbound_queued_bytes ||
-                retained > outbound_queue_limit() ||
-                storage_bytes > outbound_queue_limit() - retained) {
+                retained > application_queue_limit() ||
+                storage_bytes > application_queue_limit() - retained) {
                 status = Status::diagnostic(StatusCode::ResourceExhausted,
                                             "stream write queue is full");
             } else if (operation_ids_exhausted_) {
@@ -3681,28 +4082,6 @@ void SessionEngine::Impl::stream_close(
     }
 }
 
-Status SessionEngine::Impl::send_stream_credit(
-    StreamId stream_id,
-    std::uint32_t increment) {
-    const auto encoded = ytp1::EncodeCreditUpdate(increment);
-    if (!encoded.ok()) {
-        return Status(StatusCode::Internal,
-                      "validated stream credit could not be encoded");
-    }
-    return enqueue_record(
-        ytp1::RecordType::StreamCredit, stream_id,
-        as_bytes(*encoded.value), true, false);
-}
-
-Status SessionEngine::Impl::send_close(
-    StreamId stream_id,
-    StreamCloseCode code) {
-    const std::array<std::byte, kClosePayloadBytes> payload{
-        static_cast<std::byte>(code)};
-    return enqueue_record(ytp1::RecordType::Close, stream_id,
-                          payload, true, false);
-}
-
 Status SessionEngine::Impl::finish_stream_shutdown_if_ready(
     StreamId stream_id) noexcept try {
     {
@@ -3722,9 +4101,11 @@ Status SessionEngine::Impl::finish_stream_shutdown_if_ready(
         // already accepted for this stream. Mark the side closed before the
         // unlocked enqueue so concurrent writers cannot pass the FIN.
         it->second->local_write_closed = true;
+        it->second->fin_owed = true;
+        stream_controls_owed_ = true;
     }
 
-    Status status = send_close(stream_id, StreamCloseCode::Normal);
+    Status status = drain_owed_controls();
     if (!status.ok()) {
         remove_stream(stream_id, copy_failure(status));
         return status;
@@ -3753,124 +4134,92 @@ Status SessionEngine::Impl::finish_stream_shutdown_if_ready(
     return Status::diagnostic(StatusCode::Internal);
 }
 
-void SessionEngine::Impl::return_receive_credit(
-    StreamId stream_id,
-    std::size_t bytes) noexcept try {
+void SessionEngine::Impl::return_receive_credit(StreamId stream_id,
+                                                std::size_t bytes) noexcept
+    try {
     if (bytes == 0U || bytes > ytp1::kMaxCreditIncrement) {
         fail(Status::diagnostic(StatusCode::Internal,
                                 "application returned invalid receive credit"));
         return;
     }
-    std::uint64_t stream_increment = 0U;
-    std::uint64_t connection_increment = 0U;
     bool valid = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (terminal_locked()) {
-            return;
-        }
-        // The peer's credit, the bytes this side holds and the bytes it has
-        // consumed without returning never exceed the window. A stream grant
-        // on its way to the carrier is not yet in inbound_credit.
-        ReceiveWindow& connection = connection_window_;
-        valid = inbound_connection_credit_ <= connection.size &&
-                connection.unreturned <=
-                    connection.size - inbound_connection_credit_ &&
-                bytes <= connection.size - inbound_connection_credit_ -
-                             connection.unreturned;
+        if (terminal_locked()) return;
+        // The peer's credit, credit on its way to the peer, and the bytes
+        // this side holds or has consumed without returning never exceed the
+        // window. Each term is at most 2^30, so the sum cannot overflow.
+        const auto can_return = [bytes](const ReceiveWindow& window,
+                                        std::uint64_t inbound) noexcept {
+            const std::uint64_t outside =
+                inbound + window.granting + window.owed + window.unreturned;
+            return outside <= window.size && bytes <= window.size - outside;
+        };
+        auto& connection = connection_window_;
+        valid = can_return(connection, inbound_connection_credit_);
         const auto it = streams_.find(stream_id.value());
-        const bool stream_is_live =
-            valid && it != streams_.end() && !it->second->closed;
-        if (stream_is_live) {
-            const StreamStateData& stream = *it->second;
-            const ReceiveWindow& window = stream.receive_window;
-            valid = stream.inbound_credit <= window.size &&
-                    window.unreturned <= window.size - stream.inbound_credit &&
-                    bytes <=
-                        window.size - stream.inbound_credit - window.unreturned;
+        const bool stream_is_live = it != streams_.end() && !it->second->closed;
+        if (valid && stream_is_live) {
+            valid = can_return(it->second->receive_window,
+                               it->second->inbound_credit);
         }
         if (valid) {
-            const auto now = std::chrono::steady_clock::now();
-            std::uint64_t connection_floor = 0U;
             if (stream_is_live) {
-                StreamStateData& stream = *it->second;
-                ReceiveWindow& window = stream.receive_window;
-                window.unreturned += bytes;
-                if (window.unreturned >=
-                    return_threshold(window.size, stream.largest_packet,
-                                     stream.max_receive_credit)) {
-                    const std::uint64_t growth = grow_window_locked(
-                        window, stream.max_receive_credit, now);
-                    stream_increment = window.unreturned + growth;
-                    window.unreturned = 0U;
-                    connection_floor = window.size + window.size / 2U;
-                }
+                auto& stream = *it->second;
+                stream.receive_window.unreturned += bytes;
+                collect_stream_credit_locked(stream);
             }
             connection.unreturned += bytes;
             const bool due = connection.unreturned >=
                              return_threshold(connection.size, 0U,
                                               limits_.max_connection_credit);
-            std::uint64_t growth =
-                due ? grow_window_locked(connection,
-                                         limits_.max_connection_credit, now)
+            const auto growth =
+                due && grant_slot_free(connection)
+                    ? grow_window_locked(connection,
+                                         limits_.max_connection_credit,
+                                         std::chrono::steady_clock::now())
                     : 0U;
-            // Keep the connection window at one and a half times any stream
-            // window, as Chromium does, so a stream whose reader stalls
-            // leaves credit for the others.
-            const std::uint64_t floor = std::min<std::uint64_t>(
-                connection_floor, limits_.max_connection_credit);
-            if (floor > connection.size) {
-                growth += floor - connection.size;
-                connection.size = floor;
-            }
-            if (due || growth != 0U) {
-                connection_increment = connection.unreturned + growth;
-                connection.unreturned = 0U;
-                inbound_connection_credit_ += connection_increment;
-            }
+            take_connection_credit_locked(due, growth);
         }
     }
     if (!valid) {
         fail(protocol_failure("receive-credit accounting overflowed"));
         return;
     }
-    // Windows never exceed their validated maxima, which are at most 2^30.
-    const Status stream_credit =
-        stream_increment != 0U
-            ? send_stream_credit(stream_id,
-                                 static_cast<std::uint32_t>(stream_increment))
-            : Status::success();
-    Status connection_status = Status::success();
-    if (connection_increment != 0U) {
-        const auto connection = ytp1::EncodeCreditUpdate(
-            static_cast<std::uint32_t>(connection_increment));
-        connection_status =
-            connection.ok()
-                ? enqueue_record(ytp1::RecordType::ConnectionCredit,
-                                 StreamId::control(),
-                                 as_bytes(*connection.value), true, true)
-                : Status::diagnostic(
-                      StatusCode::Internal,
-                      "returned connection credit could not be encoded");
-    }
-    if (!stream_credit.ok() && stream_credit.code() != StatusCode::Closed) {
-        fail(copy_failure(stream_credit));
-    } else if (!connection_status.ok()) {
-        fail(copy_failure(connection_status));
-    }
+    const Status status = drain_owed_controls();
+    if (!status.ok()) fail(copy_failure(status));
 } catch (const std::bad_alloc&) {
     fail(Status::diagnostic(StatusCode::ResourceExhausted));
 } catch (...) {
     fail(Status::diagnostic(StatusCode::Internal));
 }
 
+void SessionEngine::Impl::take_connection_credit_locked(
+    bool due, std::uint64_t growth) noexcept {
+    // A stalled stream can hold more than half the connection window. Once
+    // the peer has less than one frame left, waiting for the usual batch can
+    // strand consumed credit forever. Check on both receive and release:
+    // the last arriving record may belong to the unread stream, after every
+    // useful record has already been consumed. Only consumed bytes return;
+    // application-held leases and the receive-window bound stay intact.
+    // While every grant slot is queued, returns coalesce into the next grant.
+    auto& connection = connection_window_;
+    connection.owed += growth;
+    if (!grant_slot_free(connection) ||
+        (!due && growth == 0U &&
+         inbound_connection_credit_ >= limits_.max_frame_payload)) {
+        return;
+    }
+    connection.owed += std::exchange(connection.unreturned, 0U);
+}
+
 std::uint64_t SessionEngine::Impl::return_threshold(
     std::uint64_t window, std::uint64_t packet,
     std::uint64_t maximum) const noexcept {
-    // Credit goes back once half a window is consumed, as Chromium and
-    // nghttp2 return it. A peer blocked on credit holds less than one frame
-    // of it, so a receiver whose application keeps up has consumed more than
-    // the window less one frame. Returning by then keeps the peer moving.
+    // Credit normally goes back once half a window is consumed, as Chromium
+    // and nghttp2 return it. With no application-held bytes, a peer blocked
+    // below one frame has consumed more than the window less one frame.
+    // Shared connection credit also has the blocked-peer return above.
     // Consumed credit below the threshold stays parked here, so a window
     // that can no longer grow returns more often when configured to: a
     // sender it holds back then moves more than half of it per round trip.
@@ -3943,6 +4292,8 @@ void SessionEngine::Impl::remove_stream(StreamId stream_id,
         if (it == streams_.end() || it->second->closed) return;
         stream = it->second;
         stream->closed = true;
+        stream->receive_window.owed = 0U;
+        stream->receive_window.unreturned = 0U;
         if (stream->responder &&
             (reason.code() != StatusCode::Closed ||
              !stream->local_write_closed || !stream->peer_write_closed)) {
@@ -4372,6 +4723,8 @@ Status SessionEngine::Impl::process_rekey_ack(
     if (!flushed.ok()) {
         return flushed;
     }
+    const Status controls = drain_owed_controls();
+    if (!controls.ok()) return controls;
     drain_pending_writes();
     return Status::success();
 }
@@ -4487,7 +4840,8 @@ void SessionEngine::Impl::notify_if_teardown_complete() noexcept {
         // outside the queues stop owns. Let that owner settle its callback
         // before notifying closure. Move the diagnostic without allocating.
         if (!teardown_drained_ || pending_writes_draining_ ||
-            send_completions_in_progress_ != 0U || teardown_complete_)
+            controls_draining_ || send_completions_in_progress_ != 0U ||
+            teardown_complete_)
             return;
         teardown_complete_ = true;
         closed = std::move(closed_completion_);

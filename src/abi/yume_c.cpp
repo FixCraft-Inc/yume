@@ -136,15 +136,23 @@ struct EndpointControl {
     // operations take a shared lease, which lets stop cancel them without
     // destroying the backend until the last operation has settled.
     std::shared_ptr<yume::embed::EndpointBackend> backend;
-    // The start in progress, which a stop on another thread cancels. Under
-    // mutex.
-    std::shared_ptr<yume::embed::StartCancellation> starting;
+    // Identity and cancellation of the latest accepted start, under mutex.
+    // Retained after startup so a blocking channel operation can distinguish
+    // runs even when stop/start reuses the same backend. A lease retains this
+    // object too, preventing its address from being reused before settlement.
+    std::shared_ptr<yume::embed::StartCancellation> start_attempt;
     // The latest failed start or ended session, kept across stop and across
     // a replaced backend. Under mutex.
     yume_status last_failure{YUME_STATUS_OK};
     std::array<char, YUME_MAX_DIAGNOSTIC_TEXT> last_failure_message{};
     // The traffic of backends this handle has replaced. Under mutex.
     yume::embed::BackendTraffic carried;
+    // The current start's counts when its stopped backend is discarded.
+    // STARTING resets them; only a successful start lets status use the
+    // backend's counts, which may still belong to its previous run otherwise.
+    std::uint64_t sessions{0U};
+    std::uint32_t failed_attempts{0U};
+    bool backend_counts_current{false};
     // The attached device, with the library's duplicate of the caller's
     // descriptor. Changed with both mutexes held, while stopped.
     std::optional<yume::embed::BackendDevice> device;
@@ -755,16 +763,21 @@ void remember_backend_failure(EndpointControl& control) noexcept {
 }
 
 // Replaces nothing yet: drops the stopped backend, which the next start
-// rebuilds, and keeps the traffic it counted. The caller holds both
-// mutexes.
+// rebuilds, and keeps its traffic and the current start's counters. The
+// caller holds both mutexes.
 void discard_backend(EndpointControl& control) {
     if (!control.backend) return;
-    const yume::embed::BackendTraffic counted =
-        control.backend->status().traffic;
+    const auto status = control.backend->status();
+    const yume::embed::BackendTraffic counted = status.traffic;
     control.carried.payload_bytes_sent += counted.payload_bytes_sent;
     control.carried.payload_bytes_received += counted.payload_bytes_received;
     control.carried.record_bytes_sent += counted.record_bytes_sent;
     control.carried.record_bytes_received += counted.record_bytes_received;
+    if (control.backend_counts_current) {
+        control.sessions = status.sessions;
+        control.failed_attempts = status.failed_attempts;
+    }
+    control.backend_counts_current = false;
     control.backend.reset();
 }
 
@@ -780,7 +793,7 @@ yume_status stop_endpoint_control(
         {
             std::lock_guard<std::mutex> state_lock(control->mutex);
             if (control->state == YUME_ENDPOINT_STARTING) {
-                starting = control->starting;
+                starting = control->start_attempt;
             }
         }
         if (starting) starting->cancel();
@@ -1705,7 +1718,10 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
                     "endpoint cannot start from its current state");
             }
             endpoint->control->state = YUME_ENDPOINT_STARTING;
-            endpoint->control->starting = cancellation;
+            endpoint->control->sessions = 0U;
+            endpoint->control->failed_attempts = 0U;
+            endpoint->control->backend_counts_current = false;
+            endpoint->control->start_attempt = cancellation;
         }
         clear_diagnostic(&endpoint->header);
         emit_endpoint_event(endpoint->runtime, endpoint->control->id,
@@ -1793,7 +1809,6 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
         bool cancelled = false;
         {
             std::lock_guard<std::mutex> lock(endpoint->control->mutex);
-            endpoint->control->starting.reset();
             cancelled = endpoint->runtime->stopping.load() ||
                         endpoint->control->state != YUME_ENDPOINT_STARTING ||
                         cancellation->cancelled();
@@ -1810,6 +1825,7 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
                     endpoint->control->state = YUME_ENDPOINT_STOPPED;
                 }
             } else {
+                endpoint->control->backend_counts_current = started;
                 endpoint->control->state =
                     started ? YUME_ENDPOINT_RUNNING : YUME_ENDPOINT_FAILED;
             }
@@ -1907,9 +1923,11 @@ yume_status yume_endpoint_get_status(const yume_endpoint* endpoint,
         value.idle_epoch_rotation = limits.idle_epoch_rotation() ? 1U : 0U;
 
         // A start in progress holds the lifecycle mutex, so only the state
-        // mutex is taken here and the snapshot never waits for it.
-        std::shared_ptr<yume::embed::EndpointBackend> backend;
+        // mutex is taken here. Backend status reads take no lifecycle lock
+        // and wait for no transport work. Keep the state lock through that
+        // read so a new start cannot mix the two counter generations.
         yume::embed::BackendTraffic traffic;
+        yume::embed::BackendStatus status;
         {
             std::lock_guard<std::mutex> lock(endpoint->control->mutex);
             value.state = endpoint->control->state;
@@ -1918,10 +1936,16 @@ yume_status yume_endpoint_get_status(const yume_endpoint* endpoint,
                         endpoint->control->last_failure_message.data(),
                         sizeof(value.last_failure_message));
             traffic = endpoint->control->carried;
-            backend = endpoint->control->backend;
+            value.sessions = endpoint->control->sessions;
+            value.failed_attempts = endpoint->control->failed_attempts;
+            if (endpoint->control->backend) {
+                status = endpoint->control->backend->status();
+                if (endpoint->control->backend_counts_current) {
+                    value.sessions = status.sessions;
+                    value.failed_attempts = status.failed_attempts;
+                }
+            }
         }
-        yume::embed::BackendStatus status;
-        if (backend) status = backend->status();
         if (value.state == YUME_ENDPOINT_RUNNING) {
             switch (status.session) {
                 case yume::embed::BackendSession::None:
@@ -1947,8 +1971,6 @@ yume_status yume_endpoint_get_status(const yume_endpoint* endpoint,
                                  status.peer_fingerprint_sha256);
             }
             value.retry_ms = status.retry_ms;
-            value.sessions = status.sessions;
-            value.failed_attempts = status.failed_attempts;
             value.device_tcp_connections = status.device_tcp_connections;
             value.device_udp_destinations = status.device_udp_destinations;
         }
@@ -2079,6 +2101,7 @@ yume_status backend_channel_io(yume_endpoint* endpoint,
                                         "runtime is stopping");
         }
         std::shared_ptr<yume::embed::EndpointBackend> backend;
+        std::shared_ptr<yume::embed::StartCancellation> start_attempt;
         {
             std::lock_guard<std::mutex> lifecycle_lock(
                 endpoint->control->lifecycle_mutex);
@@ -2089,6 +2112,7 @@ yume_status backend_channel_io(yume_endpoint* endpoint,
                                             "endpoint is not running");
             }
             backend = endpoint->control->backend;
+            start_attempt = endpoint->control->start_attempt;
         }
         if (!backend) {
             return fail_with_diagnostic(
@@ -2140,13 +2164,15 @@ yume_status backend_channel_io(yume_endpoint* endpoint,
         {
             // Stop is allowed to race a blocking open/accept. Revalidate the
             // lease before publishing so an operation that settled during
-            // teardown cannot escape as a live handle.
+            // teardown cannot escape as a live handle, including after a
+            // restart of the same backend.
             std::lock_guard<std::mutex> lifecycle_lock(
                 endpoint->control->lifecycle_mutex);
             std::lock_guard<std::mutex> state_lock(endpoint->control->mutex);
             if (endpoint->runtime->stopping.load() ||
                 endpoint->control->state != YUME_ENDPOINT_RUNNING ||
-                endpoint->control->backend != backend) {
+                endpoint->control->backend != backend ||
+                endpoint->control->start_attempt != start_attempt) {
                 return fail_with_diagnostic(
                     &endpoint->header, YUME_STATUS_CANCELLED,
                     packet ? "endpoint stopped while the packet operation was settling"

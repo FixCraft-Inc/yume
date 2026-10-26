@@ -101,6 +101,10 @@ if(YUME_TEST_NATIVE_TRAFFIC)
 endif()
 
 foreach(_target IN LISTS _consumer_targets)
+    if(YUME_CONSUMER_CXX_LINK_FLAGS)
+        separate_arguments(_cxx_link_flags NATIVE_COMMAND "${YUME_CONSUMER_CXX_LINK_FLAGS}")
+        target_link_options(${_target} PRIVATE "$<$<LINK_LANGUAGE:CXX>:${_cxx_link_flags}>")
+    endif()
     if(MSVC)
         target_compile_options(${_target} PRIVATE /W4 /WX)
     elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" OR

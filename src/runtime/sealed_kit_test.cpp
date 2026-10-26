@@ -11,10 +11,13 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <new>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -26,6 +29,8 @@
 #include <openssl/evp.h>
 #include <openssl/kdf.h>
 #include <openssl/params.h>
+
+#include "test_support/allocation_failure.hpp"
 
 namespace {
 namespace kit = yume::runtime::kit;
@@ -328,6 +333,142 @@ public:
     std::filesystem::path path;
 };
 
+constexpr std::size_t kSecretFixtureBytes = 7777U;
+
+// Observe only the operation under test. The callbacks neither allocate nor
+// inspect freed storage; wiping is checked immediately before deallocation.
+struct AllocationProbe final {
+    enum class Mode { Count, ReplaceDirectory, Wipe };
+    explicit AllocationProbe(Mode value) : mode(value) {}
+    AllocationProbe(const AllocationProbe&) = delete;
+    AllocationProbe& operator=(const AllocationProbe&) = delete;
+    ~AllocationProbe() { disarm(); }
+
+    void arm() {
+        active = this;
+        yume::test::before_allocate = before;
+        yume::test::after_allocate = after;
+        yume::test::before_deallocate = releasing;
+    }
+    void disarm() noexcept {
+        yume::test::before_allocate = nullptr;
+        yume::test::after_allocate = nullptr;
+        yume::test::before_deallocate = nullptr;
+        active = nullptr;
+    }
+    static void before(std::size_t size) {
+        auto& probe = *active;
+        probe.allocated += size;
+        if (probe.mode == Mode::ReplaceDirectory &&
+            size == kSecretFixtureBytes && !probe.fired) {
+            probe.fired = true;
+            probe.replaced =
+                ::rename(probe.original.c_str(), probe.moved.c_str()) == 0 &&
+                ::symlink(probe.outside.c_str(), probe.original.c_str()) == 0;
+        }
+        if (probe.mode == Mode::Wipe && probe.storage && !probe.fired) {
+            probe.fired = true;
+            throw std::bad_alloc();
+        }
+    }
+    static void after(void* storage, std::size_t size) {
+        if (active->mode == Mode::Wipe && size == kSecretFixtureBytes)
+            active->storage = storage;
+    }
+    static void releasing(void* storage) noexcept {
+        if (!storage || storage != active->storage) return;
+        active->released = true;
+        active->wiped = true;
+        const auto* bytes = static_cast<volatile const unsigned char*>(storage);
+        for (std::size_t i = 0U; i < kSecretFixtureBytes; ++i)
+            if (bytes[i] != 0U) active->wiped = false;
+        active->storage = nullptr;
+    }
+
+    inline static AllocationProbe* active{nullptr};
+    Mode mode;
+    std::filesystem::path original, moved, outside;
+    std::size_t allocated{0U};
+    void* storage{nullptr};
+    bool fired{false}, replaced{false}, released{false}, wiped{false};
+};
+
+void write_fixture(const std::filesystem::path& path, std::size_t count,
+                   char byte) {
+    std::ofstream file(path, std::ios::binary);
+    file << std::string(count, byte);
+    file.close();
+    check(file.good(), "cannot write test fixture");
+}
+
+void test_directory_replacement(bool replace_root) {
+    Directory directory;
+    const auto root = directory.path / "kit";
+    const auto child = root / "credentials";
+    std::filesystem::create_directories(child);
+    write_fixture(child / "first", kSecretFixtureBytes, 'a');
+    write_fixture(child / "second", 17U, 'b');
+    write_fixture(root / "yume.json", 2U, 'c');
+    const auto outside = directory.path / "outside";
+    const auto outside_child = replace_root ? outside / "credentials" : outside;
+    std::filesystem::create_directories(outside_child);
+    write_fixture(outside_child / "first", kSecretFixtureBytes, 'x');
+    write_fixture(outside_child / "second", 17U, 'x');
+    if (replace_root) write_fixture(outside / "yume.json", 2U, 'x');
+    AllocationProbe probe(AllocationProbe::Mode::ReplaceDirectory);
+    probe.original = replace_root ? root : child;
+    probe.moved = directory.path / "held";
+    probe.outside = outside;
+    probe.arm();
+    auto result = kit::read_directory(root);
+    probe.disarm();
+    check(probe.fired && probe.replaced,
+          "ancestor replacement was not injected");
+    if (replace_root) {
+        check(result.ok() && result.value().files.size() == 3U,
+              "pinned kit root was lost after rename");
+        check(result.value().files[1].bytes == Bytes(17U, 'b'),
+              "replacement root redirected a kit read");
+    } else {
+        check(!result.ok(), "a replaced child symlink redirected a kit read");
+    }
+}
+
+void test_directory_count_bounds_retained_paths() {
+    Directory directory;
+    const auto child = directory.path / "many";
+    std::filesystem::create_directory(child);
+    for (int index = 0; index < 1024; ++index) {
+        write_fixture(child / (std::string(40U, 'f') + std::to_string(index)),
+                      0U, 'x');
+    }
+    AllocationProbe probe(AllocationProbe::Mode::Count);
+    probe.arm();
+    const auto result = kit::read_directory(directory.path);
+    probe.disarm();
+    check(!result.ok(), "too many child files were accepted");
+    // Generous allowance for root/path wrappers and 32 bounded names; retaining
+    // all 1024 child paths breaches it independently of the final error code.
+    check(probe.allocated < 64U * 1024U,
+          "child paths were retained before the file-count bound");
+}
+
+void test_directory_plaintext_cleanup() {
+    Directory directory;
+    write_fixture(directory.path / "yume.json", kSecretFixtureBytes, 's');
+    AllocationProbe probe(AllocationProbe::Mode::Wipe);
+    probe.arm();
+    {
+        auto result = kit::read_directory(directory.path);
+        check(result.ok() ||
+                  result.status().code() == StatusCode::ResourceExhausted,
+              "unexpected injected read result");
+    }
+    probe.disarm();
+    check(probe.released && probe.wiped,
+          "owned kit plaintext was freed without wiping on allocation failure");
+}
+
 mode_t mode_of(const std::filesystem::path& path) {
     struct stat info{};
     check(::lstat(path.c_str(), &info) == 0, "stat failed");
@@ -379,6 +520,10 @@ int main() {
         test_wrong_code_and_tampering();
         test_malformed_contents();
         test_directories();
+        test_directory_replacement(true);
+        test_directory_replacement(false);
+        test_directory_count_bounds_retained_paths();
+        test_directory_plaintext_cleanup();
     } catch (const std::exception& error) {
         std::cerr << "sealed kit test failure: " << error.what() << '\n';
         return EXIT_FAILURE;

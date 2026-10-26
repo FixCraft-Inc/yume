@@ -231,6 +231,7 @@ runtime_sources=(
     tools/cover-node/workload.mjs
     tools/cover-node/workload-v1.json
     tools/cover-node/capture_chrome.mjs
+    tools/cover-node/capture_lifecycle.sh
     tools/cover-node/sanitize_netlog.mjs
     tools/cover-node/capture_yume151_runs.sh
     scripts/yume_capture_binary_provenance.py
@@ -311,27 +312,30 @@ python3 "$runtime_root/scripts/yume_capture_manifest.py" \
     --display "$DISPLAY" \
     --tls-wire-evidence "$capture_tls_wire"
 
+source "$runtime_root/tools/cover-node/capture_lifecycle.sh"
+
 node_pid=''
 chrome_pid=''
 relay_pid=''
 cleanup_children() {
+    local status=0
     if [[ -n $chrome_pid ]]; then
-        kill "$chrome_pid" 2>/dev/null || true
-        wait "$chrome_pid" 2>/dev/null || true
+        stop_capture_child "$chrome_pid" || status=1
         chrome_pid=''
     fi
     if [[ -n $relay_pid ]]; then
-        kill "$relay_pid" 2>/dev/null || true
-        wait "$relay_pid" 2>/dev/null || true
+        stop_capture_child "$relay_pid" || status=1
         relay_pid=''
     fi
     if [[ -n $node_pid ]]; then
-        kill "$node_pid" 2>/dev/null || true
-        wait "$node_pid" 2>/dev/null || true
+        stop_capture_child "$node_pid" || status=1
         node_pid=''
     fi
+    return "$status"
 }
-trap cleanup_children EXIT INT TERM
+trap cleanup_children EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if ! require_isolated_network; then
     exit 1
@@ -426,38 +430,35 @@ for run_index in $(seq 1 "$run_count"); do
         about:blank >"$run_dir/chrome.log" 2>&1 &
     chrome_pid=$!
 
-    ready=0
-    for _ in $(seq 1 150); do
-        if curl --silent --fail \
-            "http://127.0.0.1:$devtools_port/json/version" >/dev/null; then
-            ready=1
-            break
-        fi
-        if ! kill -0 "$chrome_pid" 2>/dev/null; then
-            break
-        fi
-        sleep 0.1
-    done
-    if [[ $ready != 1 ]]; then
+    if ! wait_capture_devtools "$chrome_pid" "$devtools_port" 15; then
         sed -n '1,160p' "$run_dir/chrome.log" >&2
         echo "$run_name: Chrome DevTools did not become ready" >&2
         exit 1
     fi
 
-    "$node_bin" "$runtime_root/tools/cover-node/capture_chrome.mjs" \
+    "$timeout_bin" --signal=TERM --kill-after=5s 180 \
+        "$node_bin" "$runtime_root/tools/cover-node/capture_chrome.mjs" \
         "$devtools_port" "https://$capture_sni:$cover_port/" "$idle_ms"
-    if ! wait "$chrome_pid"; then
-        echo "$run_name: Chrome exited unsuccessfully" >&2
+    chrome_status=0
+    wait_capture_child "$chrome_pid" 15 || chrome_status=$?
+    if (( chrome_status != 0 )); then
+        if (( chrome_status == 124 )) && kill -0 "$chrome_pid" 2>/dev/null; then
+            echo "$run_name: Chrome did not exit within 15 seconds" >&2
+        else
+            echo "$run_name: Chrome exited unsuccessfully (status $chrome_status)" >&2
+        fi
         exit 1
     fi
     chrome_pid=''
     if [[ -n $relay_pid ]]; then
-        wait "$relay_pid"
+        if ! wait_capture_child "$relay_pid" 15; then
+            echo "$run_name: TLS relay failed or did not exit within 15 seconds" >&2
+            exit 1
+        fi
         relay_pid=''
         rm -f -- "$run_dir/tls-wire-ready.json"
     fi
-    kill "$node_pid" 2>/dev/null || true
-    wait "$node_pid" 2>/dev/null || true
+    stop_capture_child "$node_pid"
     node_pid=''
 
     # Give Chrome's NetLog writer a bounded flush interval after Browser.close.

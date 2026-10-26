@@ -315,9 +315,16 @@ cover their labels.
   lines. `yume-relay-peer-pin-v1` is a pin learned on first use, and
   `yume-relay-peer-explicit-v1` marks a pin from the configured list that a
   verified handshake confirmed. A record that is not in canonical form is
-  refused.
+  refused. A verified commit flushes the trust directory even when matching
+  records already exist, so a retry cannot skip a previously failed directory
+  flush and report success.
 - Chat history is an encrypted, bounded log whose append is best effort and
-  never fails a relay. Reading it reports protection, I/O and integrity
+  never fails a relay. Under the configured history root, each instance uses
+  the full lowercase SHA-256 of its instance key as its directory name. That
+  directory holds `history.key` and one `chat-<digest>.log` per peer, where
+  `<digest>` is the full lowercase SHA-256 of the peer ID. Every ID uses this
+  naming scheme, including IDs that could otherwise be literal filenames.
+  Reading history reports protection, I/O and integrity
   failures instead of an empty history. A newline terminates each committed
   record. A bounded unterminated final record is reported as truncation while
   earlier authenticated records remain readable; the next append removes
@@ -326,6 +333,16 @@ cover their labels.
   flushed before a write is considered durable; append failures attempt to
   restore the prior log size, but a failed recovery flush cannot promise
   crash durability.
+
+The file-transfer receiver validates its positive timeout before creating
+receive state. Both conversion to a steady-clock duration and addition to the
+current steady-clock time must fit. Append and finish failures release
+descriptors and attempt to remove the inode-checked staging entry before
+constructing diagnostics. If
+diagnostic allocation fails, cleanup still completes and the operation returns
+failure with an empty diagnostic. A published destination that cannot safely
+be rolled back is retained, with its receive state settled before reporting
+the failure.
 
 ## Failure
 

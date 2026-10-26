@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <boost/asio/buffers_iterator.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/read_until.hpp>
@@ -225,6 +226,139 @@ void test_limits() {
     expect_failure(fetch("HTTP/1.1 200 OK\r\nX-Large: " + std::string(200U, 'x') +
                          "\r\nContent-Length: 0\r\n\r\n", "GET", "/", limits),
                    StatusCode::ResourceExhausted, "limit");
+}
+
+// Interim responses such as 103 Early Hints come before the final one and
+// leave nothing in it. A bounded number are skipped.
+void test_interim_responses_are_skipped() {
+    const auto outcome = fetch(
+        "HTTP/1.1 100 Continue\r\n\r\n"
+        "HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\n"
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    const auto& response = success(outcome);
+    CHECK(response.status == 200U);
+    CHECK(response.body == std::vector<std::uint8_t>({'o', 'k'}));
+    CHECK(!header(response, "link"));
+    const auto head =
+        success(fetch("HTTP/1.1 103 Early Hints\r\n\r\n"
+                      "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n",
+                      "HEAD"));
+    CHECK(header(head, "content-length") == "7");
+    std::string interim;
+    for (int count = 0; count < 9; ++count)
+        interim += "HTTP/1.1 100 Continue\r\n\r\n";
+    expect_failure(
+        fetch(interim + "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"),
+        StatusCode::Closed, "too many interim responses");
+    expect_failure(fetch("HTTP/1.1 103 Early Hints\r\n\r\n"),
+                   StatusCode::Closed, "backend response failed");
+}
+
+// A field that Connection names is hop-by-hop, whatever its case.
+void test_connection_nominated_fields_are_dropped() {
+    const auto outcome = fetch(
+        "HTTP/1.1 200 OK\r\nConnection: close, X-Hop\r\nconnection: x-OTHER\r\n"
+        "X-Hop: private\r\nX-Other: private\r\nX-Keep: kept\r\n"
+        "Content-Length: 0\r\n\r\n");
+    const auto& response = success(outcome);
+    CHECK(!header(response, "x-hop") && !header(response, "x-other"));
+    CHECK(header(response, "x-keep") == "kept");
+}
+
+// A backend on its own thread and context, so an allocation failure injected
+// on the fetch's thread cannot land in the backend.
+class ThreadBackend final {
+public:
+    explicit ThreadBackend(std::string reply)
+        : acceptor_(io_, tcp::endpoint(make_address("127.0.0.1"), 0)),
+          socket_(io_),
+          reply_(std::move(reply)),
+          port_(acceptor_.local_endpoint().port()) {
+        acceptor_.async_accept(
+            socket_, [this](const boost::system::error_code& error) {
+                if (error) return;
+                boost::asio::async_read_until(
+                    socket_, input_, "\r\n\r\n",
+                    [this](const boost::system::error_code& read, std::size_t) {
+                        if (read) return;
+                        boost::asio::async_write(
+                            socket_, boost::asio::buffer(reply_),
+                            [this](const boost::system::error_code&,
+                                   std::size_t) {
+                                boost::system::error_code ignored;
+                                socket_.shutdown(tcp::socket::shutdown_both,
+                                                 ignored);
+                                socket_.close(ignored);
+                            });
+                    });
+            });
+        thread_ =
+            std::thread([this] { io_.run_for(std::chrono::seconds(10)); });
+    }
+    ~ThreadBackend() {
+        io_.stop();
+        thread_.join();
+    }
+    ThreadBackend(const ThreadBackend&) = delete;
+    ThreadBackend& operator=(const ThreadBackend&) = delete;
+
+    std::uint16_t port() const { return port_; }
+
+private:
+    boost::asio::io_context io_;
+    tcp::acceptor acceptor_;
+    tcp::socket socket_;
+    boost::asio::streambuf input_;
+    std::string reply_;
+    std::uint16_t port_;
+    std::thread thread_;
+};
+
+// Fails each allocation the fetch makes after start, one per run, through
+// connect, request, interim and chunked final response. Every run settles the
+// completion exactly once and nothing escapes into the context.
+void test_allocation_failures_settle_once() {
+    const std::string reply =
+        "HTTP/1.1 103 Early Hints\r\nLink: </a.css>\r\n\r\n"
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Test: a\r\n\r\n"
+        "3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n";
+    bool covered = false;
+    std::size_t injected = 0U;
+    for (std::size_t nth = 1U; nth <= 512U && !covered; ++nth) {
+        auto io = context();
+        ThreadBackend backend(reply);
+        auto outcome = std::make_shared<Outcome>();
+        const auto handle = start_fetch(io, outcome, backend.port());
+        yume::test::arm_allocation_failure(nth);
+        bool escaped = false;
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        try {
+            while (outcome->calls == 0 &&
+                   std::chrono::steady_clock::now() < deadline)
+                io->poll();
+        } catch (...) {
+            escaped = true;
+        }
+        const bool fired = yume::test::disarm_allocation_failure();
+        if (escaped)
+            std::cerr << "allocation " << nth << " escaped into the context\n";
+        CHECK(!escaped);
+        CHECK(outcome->calls == 1);
+        if (fired) {
+            ++injected;
+            CHECK(outcome->result && !outcome->result->ok());
+        } else {
+            const auto& response = success(*outcome);
+            CHECK(response.body ==
+                  std::vector<std::uint8_t>({'a', 'b', 'c', 'd', 'e'}));
+            covered = true;
+        }
+        for (int round = 0; round < 10; ++round) io->poll();
+        CHECK(outcome->calls == 1);
+    }
+    CHECK(covered && injected != 0U);
+    std::cout << "loopback fetch allocation sweep: " << injected
+              << " injected positions and a successful control\n";
 }
 
 void test_backend_failures() {
@@ -438,8 +572,11 @@ int main() {
     test_head_keeps_the_reported_length();
     test_chunked_and_eof_bodies();
     test_limits();
+    test_interim_responses_are_skipped();
+    test_connection_nominated_fields_are_dropped();
     test_backend_failures();
     test_timeout_diagnostic_allocation_failure();
+    test_allocation_failures_settle_once();
     test_cancellation();
     test_completion_exceptions_are_contained();
     test_invalid_requests();

@@ -8,9 +8,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import socket
+import threading
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -40,6 +43,61 @@ def extension(kind: int, value: bytes) -> bytes:
 def handshake_record(kind: int, body: bytes, record_version: int = 0x0301) -> bytes:
     message = bytes([kind]) + len(body).to_bytes(3, "big") + body
     return b"\x16" + record_version.to_bytes(2, "big") + vector16(message)
+
+
+class RelayDeadlineTests(unittest.TestCase):
+    def test_stalled_destination_obeys_timeout(self) -> None:
+        # Fill a real socket buffer, then route another chunk into it. No
+        # connection timing or large transfer is needed to force sendall to wait.
+        incoming, writer = socket.socketpair()
+        outgoing, stalled = socket.socketpair()
+        outgoing.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        outgoing.setblocking(False)
+        for _ in range(1024):
+            try:
+                outgoing.send(b"x" * 65536)
+            except BlockingIOError:
+                break
+        else:
+            self.fail("could not saturate the destination socket")
+        writer.sendall(b"x" * 16384)
+        listener = mock.MagicMock()
+        listener.__enter__.return_value = listener
+        listener.accept.return_value = (incoming, None)
+        finished = threading.Event()
+        errors: list[BaseException] = []
+
+        def relay() -> None:
+            try:
+                WIRE.relay_once(("localhost", 1), ("localhost", 2),
+                                pathlib.Path("unused-report.json"), 0.1, None)
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                finished.set()
+
+        with mock.patch.object(WIRE.socket, "create_server", return_value=listener), \
+                mock.patch.object(WIRE.socket, "create_connection", return_value=outgoing):
+            worker = threading.Thread(target=relay, daemon=True)
+            worker.start()
+            bounded = finished.wait(2)
+            # Release the original buggy sendall too, so negative controls clean up.
+            stalled.close()
+            writer.close()
+            worker.join(3)
+        incoming.close()
+        outgoing.close()
+        self.assertFalse(worker.is_alive(), "relay thread did not clean up")
+        self.assertTrue(bounded, "relay forwarding ignored its timeout")
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], TimeoutError)
+
+    def test_timeout_must_be_finite_and_positive(self) -> None:
+        for timeout in (0, -1, float("inf"), float("nan")):
+            with self.subTest(timeout=timeout), \
+                    self.assertRaisesRegex(ValueError, "finite and positive"):
+                WIRE.relay_once(("localhost", 1), ("localhost", 2),
+                                pathlib.Path("unused-report.json"), timeout, None)
 
 
 class WireParserTests(unittest.TestCase):

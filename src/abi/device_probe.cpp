@@ -140,6 +140,31 @@ yume_endpoint_status status_of(const yume_endpoint* endpoint) {
     return status;
 }
 
+void check_stopped_status(const yume_endpoint* endpoint,
+                          const yume_endpoint_status& before) {
+    const auto stopped = status_of(endpoint);
+    const std::uint8_t empty_fingerprint[32]{};
+    check(stopped.state == YUME_ENDPOINT_STOPPED &&
+              stopped.session == YUME_SESSION_NONE &&
+              stopped.sessions == before.sessions &&
+              stopped.failed_attempts >= before.failed_attempts,
+          "stop discarded the current session counter generation");
+    check(stopped.connected_ms == 0U && stopped.epoch_bytes == 0U &&
+              stopped.retry_ms == 0U &&
+              std::memcmp(stopped.peer_fingerprint_sha256, empty_fingerprint,
+                          sizeof(empty_fingerprint)) == 0,
+          "a stopped endpoint retained active-session fields");
+    check(stopped.payload_bytes_sent >= before.payload_bytes_sent &&
+              stopped.payload_bytes_received >= before.payload_bytes_received &&
+              stopped.record_bytes_sent >= before.record_bytes_sent &&
+              stopped.record_bytes_received >= before.record_bytes_received,
+          "stop discarded the handle's traffic totals");
+    if (before.last_failure != YUME_STATUS_OK) {
+        check(stopped.last_failure != YUME_STATUS_OK,
+              "stop cleared the latest failure");
+    }
+}
+
 // What the bridge refuses before it has a device.
 void check_refusals(Peer& client, Peer& server, int descriptor) {
     yume_endpoint* const endpoint = client.endpoint.get();
@@ -302,17 +327,23 @@ int run(int argc, char** argv) {
                       << std::endl;
         } else if (line == "restart") {
             // The device stays attached across a stop and a start.
+            const auto before = status_of(endpoint);
             expect(yume_endpoint_stop(endpoint, 0U), YUME_STATUS_OK, "stop",
                    endpoint);
+            check_stopped_status(endpoint, before);
             expect(yume_endpoint_start(endpoint, kStartDeadline),
                    YUME_STATUS_OK, "restart with the device", endpoint);
             std::cout << "restarted" << std::endl;
         } else if (line == "stop") {
+            const auto before = status_of(endpoint);
             expect(yume_endpoint_stop(endpoint, 0U), YUME_STATUS_OK, "stop",
                    endpoint);
+            check_stopped_status(endpoint, before);
+            const auto stopped = status_of(endpoint);
             // A stopped endpoint lets its device go.
             expect(yume_endpoint_set_device(endpoint, nullptr), YUME_STATUS_OK,
                    "detach", endpoint);
+            check_stopped_status(endpoint, stopped);
             std::cout << "stopped" << std::endl;
         } else if (line == "quit") {
             return 0;

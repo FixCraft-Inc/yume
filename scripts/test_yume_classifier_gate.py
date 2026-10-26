@@ -12,6 +12,7 @@ from structure an observer cannot see.
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import random
@@ -76,6 +77,23 @@ class MetricTest(unittest.TestCase):
     def test_average_precision_bounds(self) -> None:
         self.assertAlmostEqual(average_precision([0.9, 0.8, 0.2, 0.1], [1, 1, 0, 0]), 1.0)
         self.assertLess(average_precision([0.1, 0.2, 0.8, 0.9], [1, 1, 0, 0]), 0.6)
+
+    def test_average_precision_constant_scores_equal_prevalence(self) -> None:
+        for labels in ([1, 1, 0, 0], [1, 0, 0, 0]):
+            for ordering in set(itertools.permutations(labels)):
+                with self.subTest(labels=ordering):
+                    self.assertAlmostEqual(average_precision([0.5] * 4, ordering),
+                                           sum(labels) / len(labels))
+
+    def test_average_precision_weights_each_tied_threshold(self) -> None:
+        # Recall increases by 1/3 at each threshold; precisions are 1, 2/3,
+        # and 3/4, so AP = 1/3 + 2/9 + 1/4 = 29/36.
+        for labels in ([1, 1, 0, 1], [1, 0, 1, 1]):
+            self.assertAlmostEqual(average_precision([0.9, 0.8, 0.8, 0.1], labels),
+                                   29 / 36)
+        # Two positives arrive together: 1/3 * 1 + 2/3 * 3/4 = 5/6.
+        self.assertAlmostEqual(average_precision([0.9, 0.8, 0.8, 0.8, 0.1],
+                                                 [1, 1, 0, 1, 0]), 5 / 6)
 
     def test_tpr_at_fpr_respects_ties(self) -> None:
         """Tied scores move as one group; a threshold cannot split them."""

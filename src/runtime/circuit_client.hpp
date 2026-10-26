@@ -84,6 +84,8 @@ public:
     // with the stream as soon as BEGIN is on its way, so writes follow BEGIN
     // at once. When the exit cannot reach the destination the stream's reads
     // and writes end with status_for the exit's reason.
+    // Accepted operations complete later on the context. If their delivery
+    // storage cannot be reserved, ResourceExhausted completes inline there.
     void open_stream(const ytp1::Destination& destination,
                      Opened done) noexcept;
 
@@ -94,6 +96,9 @@ public:
     bool ready() const noexcept;
     bool closed() const noexcept;
     std::size_t streams() const noexcept;
+    // A ready circuit can admit another initial window within both its
+    // stream-count and aggregate receive-window limits.
+    bool has_stream_capacity() const noexcept;
     // One observer, run once when the circuit ends.
     void on_closed(std::function<void()> observer) noexcept;
     void close() noexcept;

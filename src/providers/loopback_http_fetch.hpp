@@ -32,7 +32,8 @@ struct LoopbackHttpLimits final {
 
 struct LoopbackHttpResponse final {
     unsigned status{0};
-    // Lower-case names in the backend's order, without hop-by-hop fields.
+    // Lower-case names in the backend's order, without hop-by-hop fields or
+    // the fields that Connection names.
     // content-length is the size of body, or for HEAD the size the backend
     // reported for the matching GET.
     std::vector<std::pair<std::string, std::string>> headers;
@@ -57,7 +58,8 @@ public:
     // at most 8 KiB visible ASCII. Later failures reach the completion:
     // Closed when the backend cannot be reached, times out or ends before a
     // complete final response, ResourceExhausted when a response limit is
-    // exceeded, Cancelled after cancel().
+    // exceeded, Cancelled after cancel(). Up to 8 interim 1xx responses
+    // before the final one are skipped. More of them, or 101, are Closed.
     static engine::Result<std::shared_ptr<LoopbackHttpFetch>> start(
         const std::shared_ptr<AsioExecutionContext>& context,
         const boost::asio::ip::address& address, std::uint16_t port,

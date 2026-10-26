@@ -30,6 +30,7 @@ inline constexpr std::chrono::minutes kDefaultRelayReceiveTimeout{10};
 struct RelayReceiveLimits {
     std::uint64_t max_transfer_bytes{kDefaultRelayMaxReceiveBytes};
     std::size_t max_chunk_bytes{kRelayTransferChunkBytes};
+    // Positive and representable as a steady-clock duration and deadline.
     std::chrono::milliseconds max_duration{kDefaultRelayReceiveTimeout};
 };
 
@@ -54,7 +55,8 @@ bool DecodeRelayChunkBase64(std::string_view encoded,
 // component without following links. Bytes land in a private same-directory
 // staging file; Finish publishes it atomically without replacing an existing
 // destination only after exact-size and SHA-256 verification. Any failure or
-// unfinished destruction removes the inode-checked staging entry.
+// unfinished destruction attempts to remove the inode-checked staging entry.
+// Append/Finish settle owned state before constructing best-effort diagnostics.
 class RelayFileReceiver {
 public:
     RelayFileReceiver() = default;
@@ -86,7 +88,11 @@ public:
 
 private:
     void MoveFrom(RelayFileReceiver&& other) noexcept;
-    bool Fail(std::string message, std::string* error) noexcept;
+    bool Fail(std::string_view message, std::string* error) noexcept;
+    bool Fail(std::string_view action, std::string_view detail,
+              std::string* error) noexcept;
+    bool Fail(const char* action, int error_number,
+              std::string* error) noexcept;
 
     int directory_fd_{-1};
     int file_fd_{-1};

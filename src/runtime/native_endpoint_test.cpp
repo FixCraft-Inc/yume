@@ -25,6 +25,7 @@
 #include <functional>
 #include <future>
 #include <iostream>
+#include <new>
 #include <stdexcept>
 #include <thread>
 #include <optional>
@@ -32,6 +33,7 @@
 #include <span>
 #include <source_location>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -50,6 +52,7 @@
 #include "runtime/native_client_runtime.hpp"
 #include "runtime/native_forward.hpp"
 #include "runtime/native_server_runtime.hpp"
+#include "runtime/cluster_state.hpp"
 #include "runtime/native_socks5.hpp"
 #include <boost/asio/local/stream_protocol.hpp>
 #define YUME_TEST_ALIGNED_ALLOCATIONS 1
@@ -683,6 +686,24 @@ void test_credential_reload(const std::filesystem::path& kit) {
     store["keys"][0]["capabilities"] = nlohmann::json::array(
         {{{"service", "denied"}, {"kind", "stream"}}});
     write_store(store.dump());
+    // Dependent-state preparation refuses or throws before grants change.
+    // Established sessions keep their current policy after either outcome.
+    for (const bool throws : {false, true}) {
+        bool prepared = false;
+        const auto refused = runner.sync([&] {
+            return server->reload_credentials(
+                [&](const NativeClusterCredentials* cluster) {
+                    prepared = true;
+                    CHECK(cluster == nullptr);
+                    if (throws) throw std::bad_alloc();
+                    return Status(StatusCode::ResourceExhausted);
+                });
+        });
+        CHECK(prepared && refused.code() == StatusCode::ResourceExhausted);
+        CHECK(opens("echo"));
+        CHECK(!opens("denied"));
+        CHECK(session->state() == SessionState::Active);
+    }
     CHECK(runner.sync([&] { return server->reload_credentials(); }).ok());
     CHECK(!opens("echo"));
     CHECK(opens("denied"));
@@ -719,6 +740,70 @@ void test_credential_reload(const std::filesystem::path& kit) {
     runner.finish_and_join();
     CHECK(runner.exceptions.load() == 0U);
 }
+
+#ifdef YUME_NATIVE_TEST_ROUTES
+// The credential parser can accept a signed candidate whose link cannot be
+// built by this runtime. No part of that candidate may replace live state.
+void test_cluster_reload_preparation(const std::filesystem::path& kit) {
+    const auto root = kit / "reload-cluster";
+    const auto server_path = root / "node-a/server";
+    const auto install = [&](const char* revision) {
+        std::filesystem::copy(
+            root / revision, server_path / "credentials/cluster",
+            std::filesystem::copy_options::recursive |
+                std::filesystem::copy_options::overwrite_existing);
+    };
+    install("initial");
+    Runner runner;
+    const auto stopped = std::make_shared<bool>(false);
+    auto server = runner.sync([&] {
+        return take(NativeServerRuntime::create(
+            runner.context, load(server_path / "yumed.json"), server_path,
+            [stopped](Status) { *stopped = true; }));
+    });
+    const auto check_membership = [&](std::uint64_t serial, const char* peer) {
+        const auto status = runner.sync([&] { return server->status(); });
+        CHECK(status.cluster && status.cluster->serial == serial);
+        CHECK(status.cluster->links.size() == 1U);
+        CHECK(status.cluster->links.front().peer_name == peer);
+        CHECK(status.cluster->links.front().outbound.state ==
+              NativeClientState::Idle);
+        const auto saved =
+            take(cluster::read_state(server_path / "cluster-state.json"));
+        CHECK(saved && saved->serial == serial);
+    };
+    check_membership(1U, "node-b");
+
+    install("unusable");
+    // The candidate really removes B and adds C; its credentials parse, but
+    // the hostname for C needs the resolver this runtime intentionally lacks.
+    const auto candidate = take(
+        load_native_credentials(load(server_path / "yumed.json"), server_path));
+    CHECK(candidate.cluster && candidate.cluster->serial == 2U);
+    CHECK(candidate.cluster->links.size() == 1U);
+    CHECK(candidate.cluster->links.front().peer_name == "node-c");
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        const auto failed = runner.sync([&] { return server->reload(); });
+        CHECK(failed.code() == StatusCode::InvalidArgument);
+        check_membership(1U, "node-b");
+    }
+
+    // Reverting the rejected candidate remains possible because its serial
+    // was never saved. A repaired newer candidate then replaces the old peer.
+    install("initial");
+    CHECK(runner.sync([&] { return server->reload(); }).ok());
+    check_membership(1U, "node-b");
+    install("repaired");
+    CHECK(runner.sync([&] { return server->reload(); }).ok());
+    check_membership(3U, "node-c");
+    runner.sync([&] {
+        CHECK(!*stopped);
+        server->close();
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
+#endif
 
 // A server start armed before a reload authenticates against the reloaded
 // stores, so a client added by the reload connects on its first attempt.
@@ -3412,12 +3497,21 @@ void run(const std::filesystem::path& kit) {
 
 int main(int argc, char** argv) {
     try {
+        CHECK(argc == 2 || argc == 3);
+#ifdef YUME_NATIVE_TEST_ROUTES
+        if (argc == 3 && std::string_view(argv[2]) == "--cluster-reload-only") {
+            test_cluster_reload_preparation(argv[1]);
+            std::cout << "cluster reload preparation rollback passed\n";
+            return 0;
+        }
+#endif
         CHECK(argc == 2);
         test_server_sizing();
         test_adapter_configuration_rejections(argv[1]);
         run(argv[1]);
         test_session_ended_notifications(argv[1]);
 #ifdef YUME_NATIVE_TEST_ROUTES
+        test_cluster_reload_preparation(argv[1]);
         test_server_start_failure_delivery(argv[1], false);
         test_server_start_failure_delivery(argv[1], true);
 #ifdef YUME_TEST_WRAP_THREADS

@@ -201,10 +201,12 @@ as that supervisor makes it.
 
 ## Write a module
 
-`src/modules/echo/echo_module.cpp` is a complete module of under 100 lines. It
+`src/modules/echo/echo_module.cpp` is a complete module in one short file. It
 accepts connections on descriptor 3, reads the header line, greets the client
 by identity and echoes the stream back. Any program that can accept
 connections on an inherited UNIX socket can be a module. Read the header up to
 its newline without discarding what follows, since stream bytes can arrive in
 the same read. Exit promptly on SIGTERM. The daemon bounds how many streams
-reach a module, while the module bounds its own work on each one.
+reach a module, while the module bounds its own work on each one. When the
+module cannot serve one connection, for example because a process limit
+refuses its thread, it closes that connection and keeps serving the others.

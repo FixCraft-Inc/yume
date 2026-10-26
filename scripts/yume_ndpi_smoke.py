@@ -20,6 +20,7 @@ result and supports no claim that YUME is undetectable.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -73,27 +74,38 @@ def observe(arguments: argparse.Namespace, kit: Path, environment: dict[str, str
     session.configure_kit(kit, listen_address="127.0.0.1", networks=["127.0.0.1/32"],
                           connect_address="127.0.0.1", socks_port=socks_port)
 
-    captures = {}
-    for name, extra in (("default", []), ("dpi-only", ["-d"])):
-        with (output / f"ndpi-{name}.txt").open("wb") as log:
-            captures[name] = subprocess.Popen(
-                [str(arguments.ndpi_reader), "-i", "lo", "-s", str(arguments.duration),
-                 "-f", f"tcp port {arguments.port}", "-C", str(output / f"ndpi-{name}.csv"), *extra],
-                stdout=log, stderr=subprocess.STDOUT)
-    time.sleep(2.0)
+    def reap(process: subprocess.Popen) -> None:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
 
-    target = session.serve_payload("127.0.0.1", target_port, arguments.payload_bytes)
-    logs = {name: (output / f"{name}.log").open("wb") for name in ("yumed", "yume")}
-    server = subprocess.Popen([str(arguments.yumed), "--config", str(kit / "server/yumed.json")],
-                              env=environment, stdout=logs["yumed"], stderr=subprocess.STDOUT)
-    client = None
     transfers: list[dict[str, object]] = []
-    completed = False
-    try:
+    # Register each owned resource before starting the next one. ExitStack
+    # still runs the remaining cleanup if an earlier cleanup itself fails.
+    with contextlib.ExitStack() as cleanup:
+        captures = {}
+        for name, extra in (("default", []), ("dpi-only", ["-d"])):
+            with (output / f"ndpi-{name}.txt").open("wb") as log:
+                capture = subprocess.Popen(
+                    [str(arguments.ndpi_reader), "-i", "lo", "-s", str(arguments.duration),
+                     "-f", f"tcp port {arguments.port}", "-C", str(output / f"ndpi-{name}.csv"), *extra],
+                    stdout=log, stderr=subprocess.STDOUT)
+                cleanup.callback(reap, capture)
+                captures[name] = capture
+        time.sleep(2.0)
+        target = session.serve_payload("127.0.0.1", target_port, arguments.payload_bytes)
+        cleanup.callback(target.server_close)
+        cleanup.callback(target.shutdown)
+        logs = {name: cleanup.enter_context((output / f"{name}.log").open("wb"))
+                for name in ("yumed", "yume")}
+        server = subprocess.Popen([str(arguments.yumed), "--config", str(kit / "server/yumed.json")],
+                                  env=environment, stdout=logs["yumed"], stderr=subprocess.STDOUT)
+        cleanup.callback(reap, server)
         deadline = time.monotonic() + 30
         wait_for_log(output / "yumed.log", "listening on", server, deadline)
         client = subprocess.Popen([str(arguments.yume), "--config", str(kit / "client/yume.json")],
                                   env=environment, stdout=logs["yume"], stderr=subprocess.STDOUT)
+        cleanup.callback(reap, client)
         session.wait_for_port("127.0.0.1", socks_port, client, deadline)
         expected = session.payload_digest(arguments.payload_bytes)
         for _ in range(arguments.requests):
@@ -103,25 +115,14 @@ def observe(arguments: argparse.Namespace, kit: Path, environment: dict[str, str
                 raise session.SessionFailure("tunnelled payload differs from the served payload")
             transfers.append({"bytes": length, "seconds": round(seconds, 4)})
         session.stop_process(client, "yume")
-        client = None
         session.stop_process(server, "yumed")
-        completed = True
-    finally:
-        for process in (client, server):
-            if process is not None and process.poll() is None:
-                process.kill()
-                process.wait(timeout=5)
-        target.shutdown()
-        for handle in logs.values():
-            handle.close()
-        for capture in captures.values():
-            if not completed and capture.poll() is None:
-                capture.terminate()
+        for name, capture in captures.items():
             try:
-                capture.wait(timeout=arguments.duration + 30)
-            except subprocess.TimeoutExpired:
-                capture.kill()
-                capture.wait(timeout=5)
+                code = capture.wait(timeout=arguments.duration + 30)
+            except subprocess.TimeoutExpired as error:
+                raise session.SessionFailure(f"nDPI {name} capture timed out") from error
+            if code != 0:
+                raise session.SessionFailure(f"nDPI {name} capture exited with {code}")
     for name in ("yumed", "yume"):
         session.reject_secret_output(name, (output / f"{name}.log").read_text(errors="replace"))
     return transfers

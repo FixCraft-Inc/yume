@@ -135,7 +135,9 @@ Seal the client kit in *directory* into the file that **--output** names, and
 print a new code in five groups of five characters. The kit is the
 directory's regular files and those one level below it, at most 32 files of
 up to 256 KiB each, and its *yume.json* must be a client configuration. The
-file is Argon2id and AES-256-GCM output with no plaintext header, so it reads
+root path refuses symlinks and parent (`..`) components, and child files are
+opened beneath a pinned root without following links. The file is Argon2id
+and AES-256-GCM output with no plaintext header, so it reads
 as random bytes. Pass the code to the user by another channel than the file.
 @opt **--output** *file*
 @cli file: yes

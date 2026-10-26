@@ -1174,6 +1174,39 @@ void test_packet_boundaries_and_credit() {
     CHECK(trace->shutdown_calls == 0);
 }
 
+// A datagram larger than the session's packet bound, which a lowered
+// max_packet_bytes allows, is dropped like an empty one. The flow continues.
+void test_oversized_datagram_is_dropped() {
+    auto trace = std::make_shared<ChannelTrace>();
+    ManualPacketChannel* channel = nullptr;
+    auto provider = std::make_shared<ManualRouteProvider>([&] {
+        auto owned = std::make_unique<ManualPacketChannel>(trace);
+        channel = owned.get();
+        std::unique_ptr<PacketChannel> base = std::move(owned);
+        return RouteConnection::packet_channel(std::move(base));
+    });
+    auto stream =
+        std::make_shared<ManualStream>(ServiceKind::PacketChannel, 8U);
+    auto handler = direct_handler(ServiceKind::PacketChannel);
+    handler->on_route(authorized_request(ServiceKind::PacketChannel), provider,
+                      stream);
+    CHECK(channel);
+    CHECK(channel->receive_issues == 1);
+
+    channel->deliver("larger-than-eight");
+    CHECK(stream->write_issues == 0);
+    CHECK(stream->close_calls == 0);
+    CHECK(channel->receive_issues == 2);
+    channel->deliver("fits");
+    CHECK(stream->write_issues == 1);
+    CHECK((stream->writes == std::vector<std::string>{"fits"}));
+    stream->complete_write();
+    CHECK(channel->receive_issues == 3);
+
+    stream->end();
+    CHECK(stream->close_calls == 1);
+}
+
 void test_acceptance_waits_for_egress_and_cancels_late_ownership() {
     for (const int mode : {0, 1, 2}) {
         auto trace = std::make_shared<ChannelTrace>();
@@ -1305,6 +1338,7 @@ int main() {
         test_partial_completion_and_cancellation_close_once();
         test_route_to_stream_partial_completion();
         test_packet_boundaries_and_credit();
+        test_oversized_datagram_is_dropped();
         test_authorization_is_fail_closed();
         test_acceptance_waits_for_egress_and_cancels_late_ownership();
         std::cout << "direct route handler tests passed\n";

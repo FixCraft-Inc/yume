@@ -10,13 +10,17 @@
 #include <type_traits>
 
 #if YUME_ENABLE_DEV_DIAGNOSTICS
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
+#include <sys/resource.h>
 #include <unistd.h>
 #endif
 
@@ -25,9 +29,69 @@
 static_assert(yume::bench_probe::kEnabled ==
               static_cast<bool>(YUME_TEST_EXPECT_DEV_DIAGNOSTICS));
 
-int main() {
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+// Runs this program again under a process limit below this user's thread
+// count, so the recorder's writer thread is refused before main.
+int run_with_threads_refused(char* program) {
+    rlimit limit{};
+    if (::getrlimit(RLIMIT_NPROC, &limit) != 0) return 1;
+    std::string original_limit = std::to_string(limit.rlim_cur);
+    limit.rlim_cur = 1;
+    if (::setrlimit(RLIMIT_NPROC, &limit) != 0) return 1;
+    char child_flag[] = "--writer-refused-child";
+    char* child[] = {program, child_flag, original_limit.data(), nullptr};
+    ::execv("/proc/self/exe", child);
+    std::perror("execv");
+    return 1;
+}
+
+// The process must still reach main, with the probes off.
+int writer_refused(std::string_view original_limit) {
+    namespace probe = yume::bench_probe;
+    bool refused = false;
+    try {
+        std::thread([] {}).join();
+    } catch (const std::system_error&) {
+        refused = true;
+    }
+    // Thread refusal is established. LeakSanitizer needs its own inspection
+    // process at exit, so restore the inherited limit before that phase.
+    rlimit limit{};
+    if (::getrlimit(RLIMIT_NPROC, &limit) != 0) return 1;
+    const auto parsed = std::from_chars(
+        original_limit.data(), original_limit.data() + original_limit.size(),
+        limit.rlim_cur);
+    if (parsed.ec != std::errc{} ||
+        parsed.ptr != original_limit.data() + original_limit.size() ||
+        ::setrlimit(RLIMIT_NPROC, &limit) != 0) {
+        return 1;
+    }
+    if (!refused) {
+        std::puts("skipped: the process limit does not refuse threads");
+        return 77;
+    }
+    assert(!probe::detail::recorder().active());
+    probe::count(probe::Count::RotationBytes);
+    probe::duration(probe::Duration::RotationRoundTrip, 1);
+    probe::amount(probe::Amount::EpochBytesAtStart, 1);
+    // The recorder opened its file before the writer failed.
+    if (const char* prefix = std::getenv("YUME_BENCH_PROBE_FILE")) {
+        std::remove(
+            (std::string(prefix) + "." + std::to_string(::getpid())).c_str());
+    }
+    return 0;
+}
+#endif
+
+int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     namespace probe = yume::bench_probe;
 #if YUME_ENABLE_DEV_DIAGNOSTICS
+    if (argc == 2 && std::string_view(argv[1]) == "--writer-refused") {
+        return run_with_threads_refused(argv[0]);
+    }
+    if (argc == 3 && std::string_view(argv[1]) == "--writer-refused-child") {
+        return writer_refused(argv[2]);
+    }
     static_assert(probe::kEnabled);
     const char* prefix = std::getenv("YUME_BENCH_PROBE_FILE");
     probe::count(probe::Count::RotationBytes);

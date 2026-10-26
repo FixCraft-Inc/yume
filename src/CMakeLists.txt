@@ -967,6 +967,16 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
         add_test(NAME yume_setup_allocation_test COMMAND yume_setup_allocation_test)
         set_tests_properties(yume_setup_allocation_test PROPERTIES
             TIMEOUT 600 LABELS "native-runtime;provisioning")
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+           CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            add_executable(yume_setup_transaction_test setup/transaction_test.cpp)
+            target_link_libraries(yume_setup_transaction_test PRIVATE yume_setup)
+            target_link_options(yume_setup_transaction_test PRIVATE "-Wl,--wrap=close,--wrap=chmod")
+            yume_apply_perf_opts(yume_setup_transaction_test)
+            add_test(NAME yume_setup_transaction_test COMMAND yume_setup_transaction_test)
+            set_tests_properties(yume_setup_transaction_test PROPERTIES
+                TIMEOUT 120 LABELS "native-runtime;provisioning")
+        endif()
     endif()
 
     # The YTP/1 embedding backend adapts the native endpoint to the
@@ -1247,6 +1257,13 @@ if(YUME_BUILD_TESTING)
             YUME_RELAY_TESTDATA="${CMAKE_CURRENT_SOURCE_DIR}/modules/relay/testdata")
         target_compile_definitions(yume_module_relay_vectors_test PRIVATE
             YUME_RELAY_VECTORS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/modules/relay/testdata/relay_vectors.txt")
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+           CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_definitions(yume_module_relay_peer_trust_test PRIVATE
+                YUME_TEST_FSYNC_WRAP=1)
+            target_link_options(yume_module_relay_peer_trust_test PRIVATE
+                "LINKER:--wrap=fsync")
+        endif()
     endif()
     if(TARGET yume_module_codecs)
         add_executable(yume_module_codecs_codec_test modules/codecs/codec_test.cpp)
@@ -1279,6 +1296,14 @@ if(YUME_BUILD_TESTING)
             set_tests_properties(${_yume_files_target} PROPERTIES
                 TIMEOUT 120 LABELS "module;files")
         endforeach()
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+           CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_definitions(yume_module_files_file_receiver_test PRIVATE
+                YUME_TEST_RECEIVE_IO_WRAP=1)
+            target_link_options(yume_module_files_file_receiver_test PRIVATE
+                "LINKER:--wrap=write" "LINKER:--wrap=EVP_DigestUpdate"
+                "LINKER:--wrap=__cxa_throw")
+        endif()
     endif()
     if(YUME_BUILD_NATIVE_APPLICATION)
         add_test(NAME yume_setup_installed_layout
@@ -1459,6 +1484,15 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_bench_probe_record_test COMMAND yume_bench_probe_test)
         set_tests_properties(yume_bench_probe_record_test PROPERTIES ENVIRONMENT
             "YUME_BENCH_PROBE_FILE=${CMAKE_CURRENT_BINARY_DIR}/bench_probe_record_test")
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            # A process limit refuses the recorder's writer thread before
+            # main. Root is exempt from that limit, so the test skips there.
+            add_test(NAME yume_bench_probe_writer_refused_test
+                COMMAND yume_bench_probe_test --writer-refused)
+            set_tests_properties(yume_bench_probe_writer_refused_test PROPERTIES
+                SKIP_RETURN_CODE 77 ENVIRONMENT
+                "YUME_BENCH_PROBE_FILE=${CMAKE_CURRENT_BINARY_DIR}/bench_probe_writer_refused_test")
+        endif()
     endif()
     foreach(_shared_test IN ITEMS yume_websocket_codec_test yume_bounded_file_test
             yume_cover_profile_test yume_tls_fingerprint_test yume_secret_file_test
@@ -1783,6 +1817,11 @@ if(YUME_BUILD_TESTING)
 
     if(TARGET yume_native_credentials AND NOT WIN32)
         add_executable(yume_native_credentials_test runtime/native_credentials_test.cpp)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_definitions(yume_native_credentials_test PRIVATE
+                YUME_TEST_CREDENTIAL_STATUS_ALLOCATION=1)
+            target_link_options(yume_native_credentials_test PRIVATE "-Wl,--wrap=__cxa_throw")
+        endif()
         target_link_libraries(yume_native_credentials_test PRIVATE
             yume_native_credentials yume_openssl_security_provider OpenSSL::Crypto)
         yume_apply_perf_opts(yume_native_credentials_test)
@@ -1911,6 +1950,26 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_module_connector_test COMMAND yume_module_connector_test)
         set_tests_properties(yume_module_connector_test PROPERTIES
             TIMEOUT 60 LABELS "foundation;0.3;native-runtime")
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+           CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            add_executable(yume_fixture_lifetime_test test_support/fixture_lifetime_test.cpp)
+            target_link_libraries(yume_fixture_lifetime_test PRIVATE
+                yume_asio_execution_context yume_child_process OpenSSL::Crypto)
+            target_link_options(yume_fixture_lifetime_test PRIVATE
+                "-Wl,--wrap=mkdtemp,--wrap=socket,--wrap=bind,--wrap=chmod,--wrap=listen")
+            yume_apply_perf_opts(yume_fixture_lifetime_test)
+            add_test(NAME yume_fixture_lifetime_test COMMAND yume_fixture_lifetime_test)
+            set_tests_properties(yume_fixture_lifetime_test PROPERTIES
+                TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
+        endif()
+        # The echo module under a process limit that refuses every thread.
+        # Root is exempt from that limit, so the test skips there.
+        add_test(NAME yume_echo_module_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/tests/test_yume_echo_module.py"
+                --module "$<TARGET_FILE:yume-echo-module>")
+        set_tests_properties(yume_echo_module_test PROPERTIES
+            TIMEOUT 30 SKIP_RETURN_CODE 77 LABELS "foundation;0.3;native-runtime")
         add_executable(yume_native_local_listener_test runtime/local_listener_test.cpp)
         target_link_libraries(yume_native_local_listener_test PRIVATE
             yume_native_runtime yume_asio_tcp_byte_channel_provider Boost::system)
@@ -2132,6 +2191,23 @@ if(YUME_BUILD_TESTING)
         COMMAND yume_config_v1_test --closure ${_yume_complete_configs})
 
     if(YUME_BUILD_SHARED_ABI)
+        # Compile the shell directly to install a paused private backend and
+        # exercise stop/restart before stream or packet handle publication.
+        add_executable(yume_c_abi_lifecycle_test abi/yume_c_lifecycle_test.cpp)
+        target_include_directories(yume_c_abi_lifecycle_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/include")
+        target_compile_definitions(yume_c_abi_lifecycle_test PRIVATE YUME_ABI_BUILD=1)
+        target_link_libraries(yume_c_abi_lifecycle_test PRIVATE
+            yume_config_v1 yume_embed Threads::Threads)
+        yume_apply_perf_opts(yume_c_abi_lifecycle_test)
+        yume_assert_exact_link_dependencies(yume_c_abi_lifecycle_test
+            yume_config_v1 yume_embed Threads::Threads)
+        add_test(NAME yume_c_abi_lifecycle_test COMMAND yume_c_abi_lifecycle_test
+            "${CMAKE_SOURCE_DIR}/config/yume.json"
+            "${CMAKE_SOURCE_DIR}/config/yumed.json")
+        set_tests_properties(yume_c_abi_lifecycle_test PROPERTIES
+            TIMEOUT 15 LABELS "foundation;0.3;abi")
+
         add_executable(yume_c_abi_contract_test
             abi/yume_c_contract_test.cpp)
         target_link_libraries(yume_c_abi_contract_test PRIVATE yume_abi)
@@ -2248,6 +2324,9 @@ if(YUME_BUILD_TESTING)
                     "-DYUME_BUILD_DIR=${CMAKE_BINARY_DIR}"
                     "-DYUME_TEST_PREFIX=${CMAKE_BINARY_DIR}/sdk-consumers"
                     "-DYUME_BUILD_CONFIG=$<CONFIG>"
+                    "-DYUME_CONSUMER_C_FLAGS=${CMAKE_C_FLAGS}"
+                    "-DYUME_CONSUMER_CXX_FLAGS=${CMAKE_CXX_FLAGS}"
+                    "-DYUME_CONSUMER_CXX_LINK_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
                     "-DYUME_CONSUMER_SANITIZER_FLAGS=${_yume_sanitize_flags}"
                     "-DYUME_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
                     "-DYUME_PYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
@@ -2363,6 +2442,12 @@ if(YUME_BUILD_TESTING)
 
     # Transport-agnostic evidence, capture and documentation tooling.
     foreach(_yume_tool_test IN ITEMS
+            "yume_native_loops_cleanup_test;tests/test_run_native_loops_cleanup.py"
+            "yume_abi_install_gate_test;tests/test_yume_abi_install_gate.py"
+            "yume_chrome_capture_lifecycle_test;scripts/test_chrome_capture_lifecycle.py"
+            "yume_ezbuild_lock_test;scripts/test_ezbuild_lock.py"
+            "yume_ndpi_smoke_cleanup_test;scripts/test_yume_ndpi_smoke.py"
+            "yume_circuit_cleanup_test;scripts/test_yume_circuit_cleanup.py"
             "yume_tls_wire_test;tests/test_yume_tls_wire.py"
             "yume_socket_autotuning_test;tests/test_socket_autotuning.py"
             "yume_evaluation_reports_test;tests/test_yume_evaluation_reports.py"
@@ -2370,6 +2455,8 @@ if(YUME_BUILD_TESTING)
             "yume_bench_resources_test;scripts/test_yume_bench_resources.py"
             "yume_classifier_evidence_test;scripts/test_yume_classifier_evidence.py"
             "yume_classifier_gate_test;scripts/test_yume_classifier_gate.py"
+            "yume_branch_parity_test;scripts/test_check_branch_parity.py"
+            "yume_h2_fingerprint_test;scripts/test_yume_h2_fingerprint.py"
             "yume_classifier_features_test;scripts/test_yume_classifier_features.py"
             "yume_constrained_host_test;scripts/test_yume_constrained_host.py"
             "yume_capture_manifest_test;scripts/test_yume_capture_manifest.py"

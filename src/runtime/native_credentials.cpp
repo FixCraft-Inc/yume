@@ -930,7 +930,8 @@ Result<LoadedNativeCredentials> load_native_credentials(
                 Status(StatusCode::ResourceExhausted));
         }
     } catch (const Status& status) {
-        return Result<LoadedNativeCredentials>(status);
+        return Result<LoadedNativeCredentials>(
+            Status::diagnostic(status.code(), status.message()));
     } catch (...) {
         return Result<LoadedNativeCredentials>(Status(StatusCode::Internal));
     }

@@ -791,7 +791,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>,
     // material stays loaded, and a changed admission key is refused because
     // clients using the new key could not be admitted. On any failure the
     // previous credentials remain in force.
-    Status reload() noexcept {
+    Status reload(
+        const NativeEndpoint::PrepareClusterReload& prepare) noexcept {
         if (role != EndpointRole::Server || !reload_inputs)
             return Status::diagnostic(
                 StatusCode::FailedPrecondition,
@@ -814,6 +815,11 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>,
                     throw Status(StatusCode::FailedPrecondition,
                                  "the cluster list's serial is older than the "
                                  "loaded list's");
+            }
+            if (prepare) {
+                auto prepared = prepare(
+                    credentials.cluster ? &*credentials.cluster : nullptr);
+                if (!prepared.ok()) return prepared;
             }
             // The newer serial is saved before anything switches, so a
             // failed write leaves the previous credentials in force.
@@ -1585,9 +1591,10 @@ boost::asio::ip::tcp::endpoint NativeEndpoint::listener_endpoint(std::size_t ind
     return state_->listeners[index]->local_endpoint();
 }
 void NativeEndpoint::close() noexcept { state_->request_close(); }
-engine::Status NativeEndpoint::reload_credentials() {
+engine::Status NativeEndpoint::reload_credentials(
+    const PrepareClusterReload& prepare) {
     state_->context->require_context();
-    return state_->reload();
+    return state_->reload(prepare);
 }
 const NativeClusterCredentials* NativeEndpoint::cluster() const noexcept {
     return state_->cluster ? &*state_->cluster : nullptr;

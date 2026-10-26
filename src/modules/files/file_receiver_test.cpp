@@ -10,17 +10,26 @@
 
 #include <array>
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cerrno>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <typeinfo>
 #include <utility>
 #include <vector>
+
+#if defined(YUME_TEST_RECEIVE_IO_WRAP)
+#include <openssl/evp.h>
+#include <dirent.h>
+#endif
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -30,6 +39,51 @@
 namespace {
 
 constexpr std::string_view kRelayStagePrefix = ".yume-relay-part.";
+
+#if defined(YUME_TEST_RECEIVE_IO_WRAP)
+enum class ReceiveFaultKind { Write, Hash, Validation };
+
+struct ReceiveFault {
+    ReceiveFaultKind kind{ReceiveFaultKind::Write};
+    yume::files::RelayFileReceiver* receiver{nullptr};
+    const char* stage{nullptr};
+    dev_t device{};
+    ino_t inode{};
+    int file_fd{-1};
+    bool armed{false};
+    bool fired{false};
+    bool allocation_failed{false};
+    bool cleaned_before_diagnostic{false};
+    bool hash_throw_seen{false};
+};
+
+thread_local ReceiveFault receive_fault;
+
+void FailDiagnosticAllocation(std::size_t) {
+    struct stat info{};
+    const bool stage_removed =
+        ::lstat(receive_fault.stage, &info) != 0 && errno == ENOENT;
+    const bool file_closed =
+        receive_fault.file_fd < 0 ||
+        (::fcntl(receive_fault.file_fd, F_GETFD) < 0 && errno == EBADF);
+    receive_fault.cleaned_before_diagnostic =
+        !receive_fault.receiver->active() && stage_removed && file_closed;
+    receive_fault.allocation_failed = true;
+    yume::test::fail_allocations.store(true, std::memory_order_relaxed);
+    throw std::bad_alloc();
+}
+
+std::size_t OpenDescriptorCount() {
+    DIR* directory = ::opendir("/proc/self/fd");
+    assert(directory != nullptr);
+    std::size_t count = 0;
+    while (const auto* entry = ::readdir(directory)) {
+        if (entry->d_name[0] != '.') ++count;
+    }
+    assert(::closedir(directory) == 0);
+    return count;
+}
+#endif
 
 class TempDirectory {
 public:
@@ -111,12 +165,166 @@ void test_basename_validation_without_allocations() {
     assert(!allocated);
 }
 
+void test_receive_deadline_bounds() {
+    using namespace std::chrono;
+    using yume::files::RelayFileReceiver;
+    using yume::files::RelayReceiveLimits;
+    using Clock = steady_clock;
+    TempDirectory temp;
+    const auto destination = temp.path() / "must-not-be-created";
+    const std::string digest =
+        yume::relay::identity::sha256_hex(std::span<const std::uint8_t>{});
+    const auto horizon =
+        duration_cast<milliseconds>(Clock::time_point::max() - Clock::now());
+    const auto largest_duration =
+        duration_cast<milliseconds>(Clock::duration::max());
+    for (const auto duration :
+         {milliseconds::zero(), milliseconds{-1}, milliseconds::max(),
+          largest_duration + milliseconds{1}, horizon + milliseconds{1}}) {
+        RelayReceiveLimits limits;
+        limits.max_duration = duration;
+        RelayFileReceiver receiver;
+        std::string error;
+        assert(!receiver.Begin(destination, "rejected.bin", 0, digest, limits,
+                               &error));
+        assert(!receiver.active() && !receiver.complete());
+        assert(error == "relay receive limits are invalid");
+        assert(!std::filesystem::exists(destination));
+    }
+    for (const auto duration : {milliseconds{1000}, horizon - hours{1}}) {
+        RelayReceiveLimits limits;
+        limits.max_duration = duration;
+        RelayFileReceiver receiver;
+        std::string error;
+        assert(receiver.Begin(temp.path(), "accepted.bin", 0, digest, limits,
+                              &error));
+        assert(receiver.active() && !receiver.expired());
+        receiver.Abort();
+        assert(RelayStageEntries(temp.path()).empty());
+    }
+}
+
+#if defined(YUME_TEST_RECEIVE_IO_WRAP)
+void test_failure_cleanup_before_diagnostic() {
+    using yume::files::RelayFileReceiver;
+    using yume::files::RelayReceiveLimits;
+    for (const auto kind : {ReceiveFaultKind::Write, ReceiveFaultKind::Hash,
+                            ReceiveFaultKind::Validation}) {
+        TempDirectory temp;
+        const auto descriptors = OpenDescriptorCount();
+        RelayFileReceiver receiver;
+        const std::array<std::uint8_t, 1> bytes{42};
+        std::string error;
+        const auto digest = yume::relay::identity::sha256_hex(bytes);
+        assert(receiver.Begin(temp.path(), "failed.bin", 1, digest,
+                              RelayReceiveLimits{}, &error));
+        const auto stages = RelayStageEntries(temp.path());
+        assert(stages.size() == 1U);
+        struct stat info{};
+        assert(::stat(stages.front().c_str(), &info) == 0);
+        receive_fault = {};
+        receive_fault.kind = kind;
+        receive_fault.receiver = &receiver;
+        receive_fault.stage = stages.front().c_str();
+        receive_fault.device = info.st_dev;
+        receive_fault.inode = info.st_ino;
+        receive_fault.armed = true;
+        if (kind == ReceiveFaultKind::Validation) {
+            receive_fault.fired = true;
+            yume::test::before_allocate = FailDiagnosticAllocation;
+        }
+        struct Disarm {
+            ~Disarm() {
+                receive_fault.armed = false;
+                yume::test::before_allocate = nullptr;
+                yume::test::fail_allocations.store(false,
+                                                   std::memory_order_relaxed);
+            }
+        };
+        bool result = true;
+        bool escaped = false;
+        {
+            Disarm disarm;
+            try {
+                result = receiver.Append(kind == ReceiveFaultKind::Validation
+                                             ? std::span<const std::uint8_t>{}
+                                             : bytes,
+                                         &error);
+            } catch (const std::bad_alloc&) {
+                escaped = true;
+            }
+        }
+        assert(receive_fault.fired && receive_fault.allocation_failed);
+        assert(kind != ReceiveFaultKind::Hash || receive_fault.hash_throw_seen);
+        assert(receive_fault.cleaned_before_diagnostic);
+        assert(!escaped && !result);
+        assert(error.empty());
+        assert(!receiver.active() && !receiver.complete());
+        assert(RelayStageEntries(temp.path()).empty());
+        assert(!std::filesystem::exists(temp.path() / "failed.bin"));
+        assert(OpenDescriptorCount() == descriptors);
+    }
+}
+#endif
+
 }  // namespace
+
+#if defined(YUME_TEST_RECEIVE_IO_WRAP)
+extern "C" ssize_t __real_write(int fd, const void* bytes, std::size_t size);
+extern "C" ssize_t __wrap_write(int fd, const void* bytes, std::size_t size) {
+    if (receive_fault.armed && !receive_fault.fired) {
+        struct stat info{};
+        if (::fstat(fd, &info) == 0 && info.st_dev == receive_fault.device &&
+            info.st_ino == receive_fault.inode) {
+            receive_fault.file_fd = fd;
+            if (receive_fault.kind == ReceiveFaultKind::Write) {
+                receive_fault.fired = true;
+                yume::test::before_allocate = FailDiagnosticAllocation;
+                errno = EIO;
+                return -1;
+            }
+        }
+    }
+    return __real_write(fd, bytes, size);
+}
+
+extern "C" int __real_EVP_DigestUpdate(EVP_MD_CTX* context, const void* data,
+                                       std::size_t size);
+extern "C" int __wrap_EVP_DigestUpdate(EVP_MD_CTX* context, const void* data,
+                                       std::size_t size) {
+    if (receive_fault.armed && !receive_fault.fired &&
+        receive_fault.kind == ReceiveFaultKind::Hash) {
+        receive_fault.fired = true;
+        return 0;
+    }
+    return __real_EVP_DigestUpdate(context, data, size);
+}
+
+extern "C" [[noreturn]] void __real___cxa_throw(void*, std::type_info*,
+                                                void (*)(void*));
+extern "C" [[noreturn]] void __wrap___cxa_throw(void* exception,
+                                                std::type_info* type,
+                                                void (*destroy)(void*)) {
+    if (receive_fault.armed && receive_fault.fired &&
+        receive_fault.kind == ReceiveFaultKind::Hash &&
+        *type == typeid(std::runtime_error)) {
+        // Arm after the initiating error owns its message, independent of
+        // how the selected C++ runtime allocates exception storage.
+        receive_fault.hash_throw_seen = true;
+        yume::test::before_allocate = FailDiagnosticAllocation;
+    }
+    __real___cxa_throw(exception, type, destroy);
+}
+#endif
 
 int main() {
     using yume::files::RelayFileReceiver;
     using yume::files::RelayReceiveLimits;
 
+#if defined(YUME_TEST_RECEIVE_IO_WRAP)
+    test_failure_cleanup_before_diagnostic();
+#endif
+    test_receive_deadline_bounds();
     test_basename_validation_without_allocations();
     assert(RelayFileReceiver::IsSafeBasename("archive.bin"));
     assert(RelayFileReceiver::IsSafeBasename("report-2026.dat"));

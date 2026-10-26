@@ -450,14 +450,24 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
                    circuit::StreamOpened done) {
         using Opened = engine::Result<std::shared_ptr<engine::StreamResponder>>;
         if (closing) return done(Opened(Status(StatusCode::Closed)));
+        const auto* cluster = endpoint ? endpoint->cluster() : nullptr;
+        if (!cluster || cluster_expired)
+            return done(Opened(Status(StatusCode::FailedPrecondition)));
+        const auto member =
+            std::find_if(cluster->links.begin(), cluster->links.end(),
+                         [&](const NativeLinkCredentials& candidate) {
+                             return candidate.peer_identity == peer;
+                         });
+        if (member == cluster->links.end())
+            return done(Opened(Status(StatusCode::NotFound)));
         const auto link = std::find_if(
             links.begin(), links.end(), [&](const Link& candidate) {
-                return candidate.peer_identity == peer;
+                return candidate.peer_identity == peer &&
+                       candidate.material == member->material;
             });
         if (link == links.end())
             return done(Opened(Status(StatusCode::NotFound)));
-        const auto session =
-            cluster_expired ? nullptr : link->keeper->active_session();
+        const auto session = link->keeper->active_session();
         if (!session)
             return done(Opened(Status(StatusCode::FailedPrecondition)));
         session->async_open(common::kCircuitServiceName,
@@ -890,75 +900,86 @@ engine::Status NativeServerRuntime::reload() {
     const auto state = state_;
     state->context->require_context();
     if (state->closing || !state->endpoint) return Status(StatusCode::Closed);
-    auto status = state->endpoint->reload_credentials();
-    if (status.ok()) {
-        // The first endpoint published the new credentials through the
-        // share. Each other loop ends its own revoked sessions.
-        for (const auto& loop : state->loops) {
-            if (loop.context == state->context) continue;
-            loop.endpoint->end_unrecognized_sessions();
+    // Only fresh links belong to this transaction. Copies of unchanged links
+    // keep the live sessions running, even when later preparation fails.
+    struct Prepared final {
+        std::vector<State::Link> links;
+        std::vector<bool> fresh;
+        std::shared_ptr<const circuit::RoutesView> routes;
+        bool committed{false};
+
+        ~Prepared() noexcept {
+            if (committed) return;
+            for (std::size_t index = 0U; index < links.size(); ++index) {
+                if (!fresh[index]) continue;
+                links[index].keeper->close();
+                links[index].endpoint->close();
+            }
         }
-    }
-    const auto* cluster = state->endpoint->cluster();
-    if (!status.ok() || !cluster) return status;
+    } prepared;
+    Status status;
     try {
-        state->publish_routes();
-    } catch (const std::bad_alloc&) {
-        return Status(StatusCode::ResourceExhausted);
-    }
-    // A link whose peer and material are unchanged keeps running with its
-    // session. A new or changed peer gets a new link, and the links of
-    // removed or changed peers close. After expiry every link was closed, so
-    // none is kept. New links are built first, so a failure leaves the
-    // running set as it was. A peer holds up to kMaxPeerSessions sessions,
-    // so a replacement link is admitted while the old session is ending.
-    const auto kept = [&](const NativeLinkCredentials& credentials) {
-        return state->cluster_expired
-                   ? state->links.end()
-                   : std::find_if(state->links.begin(), state->links.end(),
+        status = state->endpoint->reload_credentials(
+            [&](const NativeClusterCredentials* cluster) {
+                if (!cluster) return Status::success();
+                prepared.routes = std::make_shared<const circuit::RoutesView>(
+                    circuit::RoutesView{cluster->routes,
+                                        cluster->routes_signature});
+                prepared.links.reserve(cluster->links.size());
+                prepared.fresh.reserve(cluster->links.size());
+                for (const auto& credentials : cluster->links) {
+                    const auto kept =
+                        state->cluster_expired
+                            ? state->links.end()
+                            : std::find_if(
+                                  state->links.begin(), state->links.end(),
                                   [&](const State::Link& link) {
                                       return link.peer_identity ==
                                                  credentials.peer_identity &&
                                              link.material ==
                                                  credentials.material;
                                   });
-    };
-    std::vector<State::Link> fresh;
-    std::vector<bool> is_fresh;
-    std::vector<State::Link> next;
-    try {
-        next.reserve(cluster->links.size());
-        is_fresh.reserve(cluster->links.size());
-        for (const auto& credentials : cluster->links) {
-            const bool make = kept(credentials) == state->links.end();
-            is_fresh.push_back(make);
-            if (make) fresh.push_back(state->make_link(credentials));
-        }
-    } catch (const Status& failure) {
-        State::close_links(fresh);
-        return Status::diagnostic(failure.code(), failure.message());
+                    const bool fresh = kept == state->links.end();
+                    prepared.links.push_back(
+                        fresh ? state->make_link(credentials) : *kept);
+                    prepared.fresh.push_back(fresh);
+                }
+                return Status::success();
+            });
     } catch (const std::bad_alloc&) {
-        State::close_links(fresh);
+        // Constructing the preparation callback can allocate before the
+        // endpoint's exception boundary is entered.
         return Status(StatusCode::ResourceExhausted);
+    } catch (...) {
+        return Status(StatusCode::Internal);
     }
-    // Nothing below allocates: next has room for every link, and links move
-    // and erase without throwing.
-    auto added = fresh.begin();
-    for (std::size_t index = 0U; index < cluster->links.size(); ++index) {
-        if (is_fresh[index]) {
-            next.push_back(std::move(*added++));
-            continue;
-        }
-        const auto old = kept(cluster->links[index]);
-        next.push_back(std::move(*old));
-        state->links.erase(old);
+    if (!status.ok()) return status;
+    // The first endpoint published the new credentials through the share.
+    // Each other loop ends its own revoked sessions.
+    for (const auto& loop : state->loops) {
+        if (loop.context == state->context) continue;
+        loop.endpoint->end_unrecognized_sessions();
     }
-    State::close_links(state->links);
-    state->links = std::move(next);
+    if (!state->endpoint->cluster()) return status;
+
+    // Credential publication succeeded. The remaining publication uses only
+    // nonthrowing swaps; close replaced links after the new view is visible.
+    state->links.swap(prepared.links);
+    state->routes_view.swap(prepared.routes);
+    prepared.committed = true;
     state->cluster_expired = false;
+    for (const auto& previous : prepared.links) {
+        const bool kept = std::any_of(state->links.begin(), state->links.end(),
+                                      [&](const State::Link& link) {
+                                          return link.keeper == previous.keeper;
+                                      });
+        if (kept) continue;
+        previous.keeper->close();
+        previous.endpoint->close();
+    }
     if (state->started) {
         for (std::size_t index = 0U; index < state->links.size(); ++index) {
-            if (is_fresh[index]) state->links[index].keeper->start();
+            if (prepared.fresh[index]) state->links[index].keeper->start();
         }
         providers::cancel_timer(state->expiry);
         state->arm_expiry();

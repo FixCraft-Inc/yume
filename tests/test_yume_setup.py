@@ -1219,6 +1219,49 @@ class ClusterSetupTests(unittest.TestCase):
         # The removed node can join again.
         self.add("south")
 
+    def test_remove_keeps_state_outside_the_server(self) -> None:
+        server = self.servers["south"]
+        outside = self.base / "outside"
+        outside.mkdir()
+        (server / "linked").symlink_to(outside, target_is_directory=True)
+        for state in ("../../outside/state", "linked/state", str(outside / "state")):
+            with self.subTest(state=state):
+                self.add("south")
+                for name in ("state", "state.new"):
+                    (outside / name).write_text("keep", encoding="utf-8")
+                path = server / "yumed.json"
+                config = json.loads(path.read_text(encoding="utf-8"))
+                config["cluster"]["state"]["file"] = state
+                path.write_text(json.dumps(config), encoding="utf-8")
+                self.tool("cluster-remove", "--cluster", str(self.operator),
+                          "--name", "south")
+                for name in ("state", "state.new"):
+                    self.assertEqual((outside / name).read_text(encoding="utf-8"), "keep")
+
+    def test_remove_cleans_nested_state_without_following_final_links(self) -> None:
+        server = self.servers["south"]
+        (server / "nested").mkdir()
+        outside = self.base / "keep-state"
+        outside.write_text("keep", encoding="utf-8")
+        for symlink in (False, True):
+            with self.subTest(symlink=symlink):
+                self.add("south")
+                for name in ("state", "state.new"):
+                    target = server / "nested" / name
+                    if symlink:
+                        target.symlink_to(outside)
+                    else:
+                        target.write_text("remove", encoding="utf-8")
+                path = server / "yumed.json"
+                config = json.loads(path.read_text(encoding="utf-8"))
+                config["cluster"]["state"]["file"] = "nested/state"
+                path.write_text(json.dumps(config), encoding="utf-8")
+                self.tool("cluster-remove", "--cluster", str(self.operator),
+                          "--name", "south")
+                for name in ("state", "state.new"):
+                    self.assertFalse(os.path.lexists(server / "nested" / name))
+                self.assertEqual(outside.read_text(encoding="utf-8"), "keep")
+
     def test_cluster_add_keeps_partial_publish_after_fsync_failure(self) -> None:
         self.add("north")
         result = YumeSetupTests.run_with_directory_fsync_failure(

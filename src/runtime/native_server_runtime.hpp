@@ -136,8 +136,10 @@ public:
     engine::Status start();
     std::vector<boost::asio::ip::tcp::endpoint> listener_endpoints() const;
     // Applies changed credential stores without dropping other sessions. See
-    // NativeEndpoint::reload_credentials. With a cluster, every link then
-    // restarts with the reloaded list and peer store.
+    // NativeEndpoint::reload_credentials. A cluster's replacement links and
+    // routes view are prepared before any credentials or serial are published.
+    // Failure leaves the running membership and links unchanged. Unchanged
+    // links retain their sessions; only new or changed links start afresh.
     engine::Status reload();
     // On the context: listeners, sessions and cluster links.
     NativeServerStatus status() const;

@@ -149,8 +149,8 @@ init_lock_root() {
         echo "${requested}"
         return 0
     fi
-    mkdir -p "${YUME_TMP_ROOT}/locks"
-    echo "${YUME_TMP_ROOT}/locks"
+    printf 'Cannot use the shared build lock directory: %s\n' "${requested}" >&2
+    return 1
 }
 
 hash_string() {
@@ -310,21 +310,34 @@ install_deps_linux() {
     return 1
 }
 
+lock_build_directory() {
+    local build_dir=$1
+    local canonical_dir lock_key lock_file
+    if ! need_cmd flock || ! need_cmd realpath; then
+        error "flock and realpath are required to lock the build directory."
+        exit 1
+    fi
+    canonical_dir=$(realpath -m -- "${build_dir}")
+    # A build or clean target must never contain the source checkout itself.
+    local source_root
+    source_root=$(realpath -e -- "${EZBUILD_REPO_ROOT}")
+    if [[ ${canonical_dir} == / || ${source_root} == "${canonical_dir}" ||
+          ${source_root} == "${canonical_dir}/"* ]]; then
+        error "The build directory must not be the source checkout or an ancestor."
+        exit 1
+    fi
+    lock_key=$(hash_string "${canonical_dir}")
+    lock_file="${YUME_LOCK_ROOT}/build-${lock_key}.lock"
+    exec 9>"${lock_file}"
+    if ! flock -n 9; then
+        error "Build directory '${build_dir}' is busy (lock: ${lock_file}). Stop the other build and retry."
+        exit 1
+    fi
+}
+
 build_project() {
     local build_dir="${YUME_BUILD_DIR:-build}"
-    if need_cmd flock; then
-        local build_root
-        local lock_key
-        local lock_file
-        build_root="$(pwd -P)"
-        lock_key="$(hash_string "${build_root}/${build_dir}")"
-        lock_file="${YUME_LOCK_ROOT}/build-${lock_key}.lock"
-        exec 9>"${lock_file}"
-        if ! flock -n 9; then
-            error "Build directory '${build_dir}' is busy (lock: ${lock_file}). Stop the other build and retry."
-            exit 1
-        fi
-    fi
+    lock_build_directory "${build_dir}"
     # Keep prior objects and evidence intact. A dedicated directory also
     # prevents an old cache from silently selecting another runtime.
     if [[ -f "${build_dir}/CMakeCache.txt" ]] &&
@@ -396,8 +409,9 @@ main() {
 
     if [[ $CLEAN_ONLY -eq 1 ]]; then
         info "YUME ezbuild starting..."
+        lock_build_directory "${YUME_BUILD_DIR:-build}"
         step "Cleaning build directory..."
-        rm -rf "${YUME_BUILD_DIR:-build}"
+        rm -rf -- "${YUME_BUILD_DIR:-build}"
         ok "Cleaned."
         exit 0
     fi

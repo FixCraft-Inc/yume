@@ -1243,6 +1243,90 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Fixed
 
+- **Retained relay storage and file receives.** History uses full SHA-256
+  names for every instance and peer, keeping literal IDs separate from digest
+  names. Trust-commit retries repeat the directory flush before reporting
+  success. File-receive failures clean up before allocating diagnostics, and
+  unrepresentable receive deadlines are rejected before state is created.
+
+- **Capture cleanup and evidence failures.** Circuit and nDPI capture tools
+  release earlier children and listeners when later startup or cleanup fails.
+  Missed capture deadlines remain failures after forced cleanup. nDPI reports
+  require complete packet accounting, and the TLS evidence relay keeps its
+  forwarding writes within the idle deadline.
+
+- **Setup rollback under allocation failure.** Cluster edits and client
+  enrollment remove exclusively created files when later bookkeeping fails.
+  Files referenced by a published replacement remain available if a later
+  directory flush fails.
+
+- **Credential failure reporting.** A refusal keeps its typed status when
+  copying its diagnostic runs out of memory, instead of terminating startup.
+
+- **Test-fixture failures.** Module socket construction removes its temporary
+  directory on failure. An unexpected circuit event-loop exception fails the
+  test, while synchronous task exceptions still reach their callers.
+
+- **Build-directory ownership.** Builds and cleans lock the same canonical
+  directory, including symlink aliases, and refuse to proceed without a usable
+  shared lock directory.
+
+- **ABI channel publication across restart.** A stream or packet open/accept
+  that finishes after endpoint stop is cancelled before publishing its handle,
+  even when a new start has reused the same backend.
+
+- **Sealed-kit input and cleanup.** Directory reads stay beneath a pinned
+  root, enforce the file-count limit while enumerating children, and read file
+  bytes and executable permission from the same descriptor. Temporary file
+  plaintext and generated code buffers are wiped on failure as well as success.
+
+- **Circuit completion and receive limits.** Circuit streams retain callback
+  delivery after their circuit owner is released and report allocation failures
+  through their status channels. Pool handoffs keep one completion owner through
+  conversion and provider initiation. New streams and growing windows share the
+  circuit's aggregate receive budget, and the pool selects a circuit with room
+  for the initial grant.
+
+- **Shorter-route consent.** Pending proposals are discarded when their session
+  or verified routes view changes, fails or expires. Stale proposal IDs cannot
+  authorize a shorter route. Previously accepted hop policies keep their
+  documented lifetime until the configured route length works again.
+
+- **Engine control records under a full outbound budget.** A session no longer
+  fails when data or pending writes fill its outbound byte budget and the
+  engine must publish its own acceptance credit, credit return, FIN, terminal
+  CLOSE or settlement. Ordinary records leave room for one such record, and the
+  rest wait as bounded per-stream and per-connection obligations sent in order
+  as earlier records complete. A window keeps at most
+  `credit_returns_per_window` grants waiting to be sent. Connection credit no
+  longer competes with PONG for `max_control_messages`, closing streams stay
+  counted until their owed records are sent, and a local OPEN that does not fit
+  fails alone with `ResourceExhausted`.
+
+- **Progress beside an unread stream.** The receiver returns already-consumed
+  connection credit when the peer has less than one maximum frame left,
+  including when the last arriving record belongs to the unread stream.
+  Previously the held stream could leave less usable credit than the normal
+  return threshold, stopping useful streams indefinitely. Held records keep
+  their credit, and queue budgets, receive windows and preset values retain
+  their bounds.
+
+- **Installed SDK discovery paths.** The pkg-config gate now reuses the
+  authenticated stream, route and packet probes already used by the CMake
+  gate. Both consumer paths preserve selected language and sanitizer options,
+  and C++ runtime link options stay out of C commands. Each fresh prefix
+  retains command results and nested CMake inventory/JUnit evidence.
+
+- **ABI authentication totals survive session end and stop.** Restores the
+  intended per-start lifetime of `sessions`, including stopped backend
+  replacement. An accepted `STARTING` transition begins a new counter
+  generation at zero, including when that start fails, is cancelled or
+  expires; calls rejected before that transition preserve the old generation.
+  Device reconnections accumulate in the same generation and retain the
+  matching `failed_attempts` through stop. Sticky
+  failure diagnostics and handle-wide byte totals keep their separate
+  lifetimes.
+
 - **ABI session-end status.** A client without a device publishes `ENDED`
   with the ended session's typed reason after recording its lifecycle line.
   A status read during notification delivery could previously pair `ENDED`

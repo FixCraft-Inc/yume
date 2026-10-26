@@ -65,6 +65,7 @@ idle, pinned host.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import json
 import os
@@ -143,6 +144,33 @@ def router_address(side: str) -> str:
     return f"10.{20 + SIDES.index(side)}.0.2"
 
 
+def reap_process(process: subprocess.Popen, stop_signal: int = signal.SIGKILL,
+                 timeout: float = 5) -> None:
+    """Reap an owned child, killing after a missed graceful deadline.
+
+    A failed graceful stop remains an error even when the fallback succeeds.
+    Callers use ExitStack so an error cannot skip their other owned resources.
+    """
+    try:
+        if process.poll() is None:
+            process.send_signal(stop_signal)
+        process.wait(timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            if process.poll() is None:
+                process.kill()
+        finally:
+            process.wait(timeout=5)
+        raise
+
+
+def join_listener(thread: threading.Thread) -> None:
+    if thread.ident is not None:
+        thread.join(timeout=1)
+        if thread.is_alive():
+            raise session.SessionFailure("relay listener did not stop")
+
+
 class Mesh:
     """Every side joined to one router namespace by its own veth pair.
 
@@ -206,10 +234,9 @@ class Mesh:
         return qdisc
 
     def close(self) -> None:
-        for holder in self.holders.values():
-            if holder.poll() is None:
-                holder.kill()
-                holder.wait(timeout=5)
+        with contextlib.ExitStack() as cleanup:
+            for holder in self.holders.values():
+                cleanup.callback(reap_process, holder)
 
 
 class HostRelay:
@@ -227,24 +254,35 @@ class HostRelay:
     FIRST_BYTE_SECONDS = 10.0
 
     def __init__(self, host: str, port: int = 0) -> None:
-        self.directory = Path(tempfile.mkdtemp(prefix="yume-circuit-serve-", dir="/tmp"))
         self.closed = threading.Event()
-        try:
+        self.directory = Path(tempfile.mkdtemp(prefix="yume-circuit-serve-", dir="/tmp"))
+        with contextlib.ExitStack() as rollback:
+            rollback.callback(shutil.rmtree, self.directory, ignore_errors=True)
             self.listener = socket.create_server((host, port), backlog=64)
-        except BaseException:
-            shutil.rmtree(self.directory, ignore_errors=True)
-            raise
-        port = self.listener.getsockname()[1]
-        self.ports = {"entry": port, "destination": port}
-        threading.Thread(target=self.accept, daemon=True).start()
+            rollback.callback(self.listener.close)
+            self.listener.settimeout(0.2)
+            port = self.listener.getsockname()[1]
+            self.ports = {"entry": port, "destination": port}
+            self.worker = threading.Thread(target=self.accept, daemon=True)
+            self.worker.start()
+            rollback.pop_all()
 
     def accept(self) -> None:
         while not self.closed.is_set():
             try:
                 connection, _ = self.listener.accept()
+            except TimeoutError:
+                continue
             except OSError:
                 return
-            threading.Thread(target=self.hand_in, args=(connection,), daemon=True).start()
+            if self.closed.is_set():
+                connection.close()
+                return
+            try:
+                threading.Thread(target=self.hand_in, args=(connection,), daemon=True).start()
+            except (RuntimeError, OSError, MemoryError) as error:
+                connection.close()
+                print(f"host relay connection worker refused: {error}", file=sys.stderr)
 
     def hand_in(self, connection: socket.socket) -> None:
         with connection:
@@ -263,8 +301,10 @@ class HostRelay:
 
     def close(self) -> None:
         self.closed.set()
-        self.listener.close()
-        shutil.rmtree(self.directory, ignore_errors=True)
+        with contextlib.ExitStack() as cleanup:
+            cleanup.callback(shutil.rmtree, self.directory, ignore_errors=True)
+            cleanup.callback(join_listener, self.worker)
+            cleanup.callback(self.listener.close)
 
 
 def pump(source: socket.socket, sink: socket.socket) -> None:
@@ -290,33 +330,62 @@ def pump(source: socket.socket, sink: socket.socket) -> None:
 class NamespaceRelay:
     """Joins each connection HostRelay hands in to its target inside."""
 
+    HANDOFF_SECONDS = 5.0
+
     def __init__(self, directory: Path, targets: dict[str, tuple[str, int]]) -> None:
+        self.closed = threading.Event()
         self.servers: list[socket.socket] = []
-        for name, target in targets.items():
-            path = directory / f"{name}.sock"
-            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            server.bind(str(path))
-            os.chmod(path, 0o600)
-            server.listen(64)
-            self.servers.append(server)
-            threading.Thread(target=self.accept, args=(server, target), daemon=True).start()
+        self.paths: list[Path] = []
+        self.workers: list[threading.Thread] = []
+        try:
+            for name, target in targets.items():
+                path = directory / f"{name}.sock"
+                server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.servers.append(server)
+                server.bind(str(path))
+                self.paths.append(path)
+                os.chmod(path, 0o600)
+                server.listen(64)
+                server.settimeout(0.2)
+                worker = threading.Thread(target=self.accept, args=(server, target), daemon=True)
+                self.workers.append(worker)
+                worker.start()
+        except BaseException:
+            self.close()
+            raise
 
     def accept(self, server: socket.socket, target: tuple[str, int]) -> None:
-        while True:
+        while not self.closed.is_set():
             try:
                 connection, _ = server.accept()
+            except TimeoutError:
+                continue
             except OSError:
                 return
+            descriptors: list[int] = []
             with connection:
-                try:
-                    _, descriptors, _, _ = socket.recv_fds(connection, 1, 1)
-                except OSError:
-                    continue
-            if len(descriptors) != 1:
+                deadline = time.monotonic() + self.HANDOFF_SECONDS
+                while not self.closed.is_set():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    connection.settimeout(min(0.2, remaining))
+                    try:
+                        _, descriptors, _, _ = socket.recv_fds(connection, 1, 1)
+                        break
+                    except TimeoutError:
+                        continue
+                    except OSError:
+                        break
+            if self.closed.is_set() or len(descriptors) != 1:
                 for descriptor in descriptors:
                     os.close(descriptor)
                 continue
-            threading.Thread(target=self.join, args=(descriptors[0], target), daemon=True).start()
+            try:
+                threading.Thread(target=self.join, args=(descriptors[0], target), daemon=True).start()
+            except (RuntimeError, OSError, MemoryError) as error:
+                os.close(descriptors[0])
+                print(f"namespace relay connection worker refused: {error}", file=sys.stderr)
 
     @staticmethod
     def join(descriptor: int, target: tuple[str, int]) -> None:
@@ -335,8 +404,14 @@ class NamespaceRelay:
                 inward.join()
 
     def close(self) -> None:
-        for server in self.servers:
-            server.close()
+        self.closed.set()
+        with contextlib.ExitStack() as cleanup:
+            for worker in self.workers:
+                cleanup.callback(join_listener, worker)
+            for path in self.paths:
+                cleanup.callback(path.unlink, missing_ok=True)
+            for server in self.servers:
+                cleanup.callback(server.close)
 
 
 def timed_download(socks_port: int | None, host: str, port: int, seconds: float) -> dict[str, float]:
@@ -590,12 +665,11 @@ def measure_condition(arguments: argparse.Namespace, mesh: Mesh, cluster: Cluste
         for path, client in clients.items():
             session.stop_process(client, f"yume {path}")
     finally:
-        for client in clients.values():
-            if client.poll() is None:
-                client.kill()
-                client.wait(timeout=5)
-        for handle in logs.values():
-            handle.close()
+        with contextlib.ExitStack() as cleanup:
+            for handle in logs.values():
+                cleanup.callback(handle.close)
+            for client in clients.values():
+                cleanup.callback(reap_process, client)
     for path in cluster.clients:
         session.reject_secret_output(
             "yume", (arguments.output / f"yume-{path}-{index}.log").read_text(encoding="utf-8", errors="replace"))
@@ -817,13 +891,16 @@ def run_inside(arguments: argparse.Namespace) -> int:
         report["error"] = str(error)
         code = 1
     finally:
-        for process in processes.values():
-            if process.poll() is None:
-                process.send_signal(signal.SIGKILL)
-                process.wait(timeout=5)
-        for handle in logs:
-            handle.close()
-        mesh.close()
+        try:
+            with contextlib.ExitStack() as cleanup:
+                cleanup.callback(mesh.close)
+                for handle in logs:
+                    cleanup.callback(handle.close)
+                for process in processes.values():
+                    cleanup.callback(reap_process, process)
+        except (OSError, subprocess.SubprocessError, session.SessionFailure) as error:
+            report["cleanup_error"] = str(error)
+            code = 1
     for name in NODES:
         log = arguments.output / f"{name}.log"
         if log.is_file():

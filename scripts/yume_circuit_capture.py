@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import datetime
 import json
 import os
@@ -313,10 +314,10 @@ def run_session(arguments: argparse.Namespace, mesh: circuit_wan.Mesh, cluster: 
         session.reject_secret_output("yume", log.read_text(encoding="utf-8", errors="replace"))
         return measured
     finally:
-        for process in (client, echo):
-            if process is not None and process.poll() is None:
-                process.kill()
-                process.wait(timeout=5)
+        with contextlib.ExitStack() as cleanup:
+            for process in (client, echo):
+                if process is not None:
+                    cleanup.callback(circuit_wan.reap_process, process)
 
 
 def run_inside(arguments: argparse.Namespace) -> int:
@@ -378,17 +379,18 @@ def run_inside(arguments: argparse.Namespace) -> int:
         report["error"] = str(error)
         code = 1
     finally:
-        for process in processes.values():
-            if process.poll() is None:
-                process.send_signal(signal.SIGKILL)
-                process.wait(timeout=5)
-        for capture, _ in captures:
-            if capture.poll() is None:
-                capture.send_signal(signal.SIGINT)
-                capture.wait(timeout=10)
-        for handle in logs:
-            handle.close()
-        mesh.close()
+        try:
+            with contextlib.ExitStack() as cleanup:
+                cleanup.callback(mesh.close)
+                for handle in logs:
+                    cleanup.callback(handle.close)
+                for capture, _ in captures:
+                    cleanup.callback(circuit_wan.reap_process, capture, signal.SIGINT, 10)
+                for process in processes.values():
+                    cleanup.callback(circuit_wan.reap_process, process)
+        except (OSError, subprocess.SubprocessError, session.SessionFailure) as error:
+            report["cleanup_error"] = str(error)
+            code = 1
     for capture, errors in captures:
         text = errors.read_text(encoding="utf-8", errors="replace")
         if capture.returncode not in (0, -signal.SIGINT) or \

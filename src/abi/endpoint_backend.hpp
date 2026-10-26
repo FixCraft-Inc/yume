@@ -245,9 +245,10 @@ struct BackendStatus {
     // started, or Ok when there has been none.
     BackendIo failure{BackendIo::Ok};
     std::string failure_message;
-    // A client that keeps its session up: sessions authenticated since it
-    // started, failed attempts since the latest of them, and the delay
-    // before the next attempt while it waits.
+    // Client authentications since the latest start, retained after end and
+    // stop; failed attempts since the latest authentication in that start.
+    // A server leaves both zero. retry_ms is the device client's delay
+    // before its next attempt while it waits.
     std::uint64_t sessions{0U};
     std::uint32_t failed_attempts{0U};
     std::uint64_t retry_ms{0U};

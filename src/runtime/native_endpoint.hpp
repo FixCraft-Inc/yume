@@ -338,7 +338,16 @@ public:
     // A cluster list naming another operator, or with a lower serial than the
     // loaded one, is refused. On failure the previous credentials stay in
     // force. FailedPrecondition for a client, Closed while closing.
-    engine::Status reload_credentials();
+    // An internal owner may prepare state derived from the candidate cluster
+    // before its serial is saved or any credentials are published. It must
+    // keep that state private until this call succeeds. Refusal or an exception
+    // leaves the current credentials and dependent state unchanged.
+    // The callback runs synchronously, receives nullptr without a cluster,
+    // and must not reenter this endpoint or retain the borrowed candidate.
+    using PrepareClusterReload =
+        std::function<engine::Status(const NativeClusterCredentials*)>;
+    [[nodiscard]] engine::Status reload_credentials(
+        const PrepareClusterReload& prepare = {});
     // Server, on the context: the verified cluster membership its
     // configuration names, as last loaded, or nullptr. A reload replaces it.
     const NativeClusterCredentials* cluster() const noexcept;

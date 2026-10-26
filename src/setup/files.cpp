@@ -19,6 +19,7 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -52,6 +53,10 @@ public:
         if (fd_ >= 0) static_cast<void>(::close(fd_));
     }
     int get() const noexcept { return fd_; }
+    void reset(int fd) noexcept {
+        static_cast<void>(close());
+        fd_ = fd;
+    }
     // Closes now and reports the result.
     int close() noexcept {
         const int fd = std::exchange(fd_, -1);
@@ -108,8 +113,11 @@ bool running_as_root() noexcept {
 void make_private_directory(const fs::path& path) {
     if (::mkdir(path.c_str(), 0700) != 0)
         fail_with("cannot create directory", path, errno);
-    if (::chmod(path.c_str(), 0700) != 0)
-        fail_with("cannot protect directory", path, errno);
+    if (::chmod(path.c_str(), 0700) != 0) {
+        const int error = errno;
+        static_cast<void>(::rmdir(path.c_str()));
+        fail_with("cannot protect directory", path, error);
+    }
 }
 
 void write_new_file(const fs::path& path,
@@ -276,6 +284,36 @@ void rename_replace(const fs::path& from, const fs::path& to) {
 
 void remove_file(const fs::path& path) noexcept {
     static_cast<void>(::unlink(path.c_str()));
+}
+
+void remove_file_beneath(const fs::path& root,
+                         const fs::path& relative) noexcept {
+    std::string_view remaining = relative.native();
+    if (remaining.empty() || remaining.front() == '/' ||
+        remaining.find('\0') != std::string_view::npos)
+        return;
+    Descriptor directory(
+        ::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    while (directory.get() >= 0 && !remaining.empty()) {
+        const auto separator = remaining.find('/');
+        const auto component = remaining.substr(0U, separator);
+        if (component == ".." || component.size() > NAME_MAX) return;
+        if (!component.empty() && component != ".") {
+            // Copy only one bounded component; cleanup never allocates.
+            std::array<char, NAME_MAX + 1U> name{};
+            std::memcpy(name.data(), component.data(), component.size());
+            if (separator == std::string_view::npos) {
+                static_cast<void>(::unlinkat(directory.get(), name.data(), 0));
+                return;
+            }
+            const int child =
+                ::openat(directory.get(), name.data(),
+                         O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            directory.reset(child);
+        }
+        if (separator == std::string_view::npos) return;
+        remaining.remove_prefix(separator + 1U);
+    }
 }
 
 namespace {

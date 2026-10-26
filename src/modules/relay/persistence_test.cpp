@@ -25,6 +25,7 @@
 #include "common/secure_erase.hpp"
 #include "fs/secret_file.hpp"
 #include "modules/relay/base64.hpp"
+#include "modules/relay/identity.hpp"
 #include "modules/relay/storage_crypto.hpp"
 #include "test_support/allocation_failure.hpp"
 
@@ -379,14 +380,50 @@ void test_history_append_allocation_wipes_plaintext() {
     assert(reached_success);
 }
 
+void test_history_endpoint_isolation() {
+    using namespace yume::relay;
+    TempDirectory temp;
+    const std::string endpoint =
+        "federation-peer:00112233445566778899aabbccddeeff";
+    const std::string literal = identity::sha256_hex(endpoint).substr(0, 24);
+    HistoryStore history(temp.path() / "history", "instance");
+    history.append_chat({1, endpoint, "First", "in", "first endpoint"});
+    history.append_chat({2, literal, "Second", "in", "second endpoint"});
+    const auto first = history.list_chat(endpoint);
+    assert(first.available && first.items.size() == 1U);
+    assert(first.items.front().peer_id == endpoint);
+    assert(first.items.front().text == "first endpoint");
+    const auto second = history.list_chat(literal);
+    assert(second.available && second.items.size() == 1U);
+    assert(second.items.front().peer_id == literal);
+    assert(second.items.front().text == "second endpoint");
+    assert(history.list_chat().items.size() == 2U);
+    assert(history.delete_chat(endpoint));
+    assert(history.list_chat(endpoint).items.empty());
+    assert(history.list_chat(literal).items.size() == 1U);
+
+    // Instance directories must have the same isolation as peer logs.
+    HistoryStore first_instance(temp.path() / "instances", endpoint);
+    HistoryStore second_instance(temp.path() / "instances", literal);
+    first_instance.append_chat({1, "peer", "Peer", "in", "first instance"});
+    second_instance.append_chat({2, "peer", "Peer", "in", "second instance"});
+    const auto first_items = first_instance.list_chat("peer");
+    const auto second_items = second_instance.list_chat("peer");
+    assert(first_items.available && first_items.items.size() == 1U);
+    assert(first_items.items.front().text == "first instance");
+    assert(second_items.available && second_items.items.size() == 1U);
+    assert(second_items.items.front().text == "second instance");
+}
+
 void test_history_record_schema() {
     using namespace yume::relay;
     TempDirectory temp;
     const auto root = temp.path() / "history";
     HistoryStore history(root, "schema");
     history.append_chat({0, "peer", "Peer", "in", "initialize key"});
-    const auto key = root / "schema/history.key";
-    const auto log = root / "schema/chat-peer.log";
+    const auto key = root / identity::sha256_hex("schema") / "history.key";
+    const auto log = root / identity::sha256_hex("schema") /
+                     ("chat-" + identity::sha256_hex("peer") + ".log");
 
     const std::string escaped =
         R"({"text":"line\n\"\\ 雪","direction":"out","peer_name":"","peer_id":"peer","ts_ms":-9223372036854775808})";
@@ -446,6 +483,7 @@ int main() {
     using namespace yume;
     using namespace yume::relay;
 
+    test_history_endpoint_isolation();
     test_history_selection_allocation_wipes_plaintext();
     test_history_append_allocation_wipes_plaintext();
     test_history_record_schema();
@@ -569,16 +607,19 @@ int main() {
     history.append_chat({2, "peer_b", "Peer B", "in", "second secret text"});
     history.append_chat(
         {3, "invalid_direction", "Invalid", "sideways", "must not persist"});
-    const auto instance_dir = history_root / "instance_a";
+    const auto instance_dir = history_root / identity::sha256_hex("instance_a");
     const auto history_key = instance_dir / "history.key";
-    const auto peer_a_log = instance_dir / "chat-peer_a.log";
-    const auto peer_b_log = instance_dir / "chat-peer_b.log";
+    const auto peer_a_log =
+        instance_dir / ("chat-" + identity::sha256_hex("peer_a") + ".log");
+    const auto peer_b_log =
+        instance_dir / ("chat-" + identity::sha256_hex("peer_b") + ".log");
     assert(mode_of(history_root) == S_IRWXU);
     assert(mode_of(instance_dir) == S_IRWXU);
     assert(mode_of(history_key) == (S_IRUSR | S_IWUSR));
     assert(mode_of(peer_a_log) == (S_IRUSR | S_IWUSR));
     assert(!std::filesystem::exists(
-        instance_dir / "chat-invalid_direction.log"));
+        instance_dir /
+        ("chat-" + identity::sha256_hex("invalid_direction") + ".log")));
     assert(read_all(peer_a_log).find("first secret text") == std::string::npos);
 
     auto peer_a = history.list_chat("peer_a");
@@ -644,10 +685,13 @@ int main() {
     HistoryStore relocated_history(relocated_root, "relocated");
     relocated_history.append_chat(
         {1, "original", "Original", "in", "bound to original log"});
-    const auto relocated_instance = relocated_root / "relocated";
+    const auto relocated_instance =
+        relocated_root / identity::sha256_hex("relocated");
     std::filesystem::rename(
-        relocated_instance / "chat-original.log",
-        relocated_instance / "chat-renamed.log");
+        relocated_instance /
+            ("chat-" + identity::sha256_hex("original") + ".log"),
+        relocated_instance /
+            ("chat-" + identity::sha256_hex("renamed") + ".log"));
     const auto relocated = relocated_history.list_chat("renamed");
     assert(!relocated.available && !relocated.error.empty() &&
            relocated.items.empty());
@@ -656,9 +700,11 @@ int main() {
     HistoryStore schema_history(schema_root, "schema");
     schema_history.append_chat(
         {1, "schema_peer", "Schema", "in", "valid"});
-    const auto schema_instance = schema_root / "schema";
+    const auto schema_instance = schema_root / identity::sha256_hex("schema");
     const auto schema_key = schema_instance / "history.key";
-    const auto schema_log = schema_instance / "chat-schema_peer.log";
+    const auto schema_log =
+        schema_instance /
+        ("chat-" + identity::sha256_hex("schema_peer") + ".log");
     write_authenticated_history_record(
         schema_key, schema_log,
         R"({"ts_ms":1,"peer_id":"schema_peer","peer_name":"Schema","direction":"in","text":"hidden","extra":true})");
@@ -706,7 +752,8 @@ int main() {
         std::ofstream output(victim);
         output << "unchanged";
     }
-    const auto evil_log = instance_dir / "chat-evil.log";
+    const auto evil_log =
+        instance_dir / ("chat-" + identity::sha256_hex("evil") + ".log");
     assert(::symlink(victim.c_str(), evil_log.c_str()) == 0);
     history.append_chat({4, "evil", "Evil", "out", "must not follow"});
     assert(read_all(victim) == "unchanged");
@@ -718,7 +765,8 @@ int main() {
     assert(read_all(victim) == "unchanged");
 
     history.append_chat({5, "mode_peer", "Mode", "in", "private"});
-    const auto mode_log = instance_dir / "chat-mode_peer.log";
+    const auto mode_log =
+        instance_dir / ("chat-" + identity::sha256_hex("mode_peer") + ".log");
     assert(::chmod(mode_log.c_str(), 0644) == 0);
     const auto before_unsafe_append = read_all(mode_log);
     history.append_chat({6, "mode_peer", "Mode", "in", "rejected"});
@@ -734,7 +782,8 @@ int main() {
     const auto fifo_root = temp.path() / "history-fifo";
     HistoryStore fifo_history(fifo_root, "fifo");
     assert(fifo_history.list_chat().available);
-    const auto fifo_log = fifo_root / "fifo" / "chat-pipe.log";
+    const auto fifo_log = fifo_root / identity::sha256_hex("fifo") /
+                          ("chat-" + identity::sha256_hex("pipe") + ".log");
     assert(::mkfifo(fifo_log.c_str(), 0600) == 0);
     const auto fifo_result = fifo_history.list_chat("pipe");
     assert(!fifo_result.available && !fifo_result.error.empty());
@@ -746,7 +795,8 @@ int main() {
     HistoryStore oversized_history(oversized_root, "oversized");
     assert(oversized_history.list_chat().available);
     const auto oversized_log =
-        oversized_root / "oversized" / "chat-oversized.log";
+        oversized_root / identity::sha256_hex("oversized") /
+        ("chat-" + identity::sha256_hex("oversized") + ".log");
     {
         std::ofstream output(oversized_log, std::ios::binary);
         assert(output.good());
@@ -763,7 +813,8 @@ int main() {
     assert(::symlink(history_root.c_str(), symlink_root.c_str()) == 0);
     HistoryStore linked_history(symlink_root, "linked");
     linked_history.append_chat({7, "peer", "Peer", "in", "blocked"});
-    assert(!std::filesystem::exists(history_root / "linked"));
+    assert(!std::filesystem::exists(history_root /
+                                    identity::sha256_hex("linked")));
 
     const auto concurrent_root = temp.path() / "concurrent";
     std::vector<std::thread> writers;
@@ -783,7 +834,7 @@ int main() {
     const auto scan_root = temp.path() / "history-scan-bound";
     HistoryStore scan_history(scan_root, "bounded");
     assert(scan_history.list_chat().available);
-    const auto scan_instance = scan_root / "bounded";
+    const auto scan_instance = scan_root / identity::sha256_hex("bounded");
     for (std::size_t index = 0; index < 1025U; ++index) {
         const auto path = scan_instance /
             ("chat-scan-" + std::to_string(index) + ".log");

@@ -392,15 +392,17 @@ public:
         flush();
         while (!settings_received_) receive();
     }
-    std::int32_t submit(std::string method, std::string path, bool extended = false) {
+    std::int32_t submit(std::string method, std::string path,
+                        bool extended = false, bool host_only = false) {
         const bool plain_connect = method == "CONNECT" && !extended;
         std::vector<std::pair<std::string, std::string>> values{
             {":method", std::move(method)}};
         if (!plain_connect) values.emplace_back(":scheme", "https");
-        values.emplace_back(":authority", authority_);
+        if (!host_only) values.emplace_back(":authority", authority_);
         if (!plain_connect) values.emplace_back(":path", std::move(path));
+        if (extended) values.emplace_back(":protocol", "websocket");
+        if (host_only) values.emplace_back("host", authority_);
         if (extended) {
-            values.emplace_back(":protocol", "websocket");
             values.emplace_back("sec-websocket-version", "13");
         }
         std::vector<nghttp2_nv> headers;
@@ -733,6 +735,14 @@ void test_http_cover_and_failed_admission() {
     CHECK(index.headers.at("date").size() == 29U &&
           index.headers.at("date").ends_with(" GMT"));
     CHECK(index.body == kIndex);
+    const auto host_index = h2.response(h2.submit("GET", "/", false, true));
+    CHECK(host_index.headers.at(":status") == "200");
+    CHECK(host_index.body == kIndex);
+    const auto host_head = h2.response(h2.submit("HEAD", "/", false, true));
+    CHECK(host_head.headers.at(":status") == "200");
+    CHECK(host_head.headers.at("content-length") ==
+          std::to_string(kIndex.size()));
+    CHECK(host_head.body.empty());
     const auto head = h2.response(h2.submit("HEAD", "/"));
     CHECK(head.headers.at(":status") == "200");
     CHECK(head.headers.at("content-length") == std::to_string(kIndex.size()));

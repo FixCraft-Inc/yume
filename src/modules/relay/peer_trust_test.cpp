@@ -31,6 +31,18 @@ namespace {
 namespace relay = yume::relay;
 using Bytes = yume::relay::identity::Bytes;
 
+#if defined(YUME_TEST_FSYNC_WRAP)
+struct DirectorySyncFault {
+    dev_t device{};
+    ino_t inode{};
+    unsigned calls{0};
+    unsigned failures{0};
+    bool armed{false};
+};
+
+thread_local DirectorySyncFault directory_sync_fault;
+#endif
+
 void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
@@ -216,6 +228,80 @@ struct Identities {
     std::string first_fingerprint{Fingerprint(first_encoded)};
     std::string second_fingerprint{Fingerprint(second_encoded)};
 };
+
+#if defined(YUME_TEST_FSYNC_WRAP)
+void TestDirectorySyncRetry(const std::filesystem::path& root,
+                            const Identities& identities) {
+    for (const bool explicit_pin : {false, true}) {
+        const auto directory =
+            root / (explicit_pin ? "sync-explicit" : "sync-tofu");
+        Check(std::filesystem::create_directory(directory),
+              "create sync test directory");
+        Check(::chmod(directory.c_str(), S_IRWXU) == 0,
+              "protect sync test directory");
+        constexpr std::string_view endpoint = "sync-peer";
+        relay::PeerTrustStore tofu(Config(directory));
+        if (explicit_pin) {
+            (void)tofu.commit_verified(endpoint, identities.first_encoded);
+        }
+        const auto config =
+            explicit_pin
+                ? Config(
+                      directory, relay::PeerTrustMode::Pinned,
+                      {{std::string(endpoint), identities.first_fingerprint}})
+                : Config(directory);
+        relay::PeerTrustStore store(config);
+        struct stat info{};
+        Check(::stat(directory.c_str(), &info) == 0,
+              "stat sync test directory");
+        directory_sync_fault = {info.st_dev, info.st_ino, 0, 1, true};
+        struct Disarm {
+            ~Disarm() { directory_sync_fault.armed = false; }
+        } disarm;
+        ExpectFailure(
+            [&] {
+                (void)store.commit_verified(endpoint, identities.first_encoded);
+            },
+            "trust commit ignored directory fsync failure");
+        Check(directory_sync_fault.calls == 1 &&
+                  directory_sync_fault.failures == 0,
+              "fault did not reach the trust-record directory flush");
+        Check(std::filesystem::is_regular_file(RecordPath(
+                  directory, endpoint, explicit_pin ? ".explicit" : ".pin")),
+              "directory flush failure did not retain the synced record");
+
+        // The obligation must survive closing and reopening the store.
+        relay::PeerTrustStore reopened(config);
+        directory_sync_fault.calls = 0;
+        directory_sync_fault.failures = 1;
+        ExpectFailure(
+            [&] {
+                (void)reopened.commit_verified(endpoint,
+                                               identities.first_encoded);
+            },
+            "trust commit retry skipped failed directory durability");
+        Check(directory_sync_fault.calls == 1 &&
+                  directory_sync_fault.failures == 0,
+              "trust commit retry did not repeat the directory flush");
+        directory_sync_fault.calls = 0;
+        const auto committed =
+            reopened.commit_verified(endpoint, identities.first_encoded);
+        Check(directory_sync_fault.calls == 1 && !committed.commit_required &&
+                  committed.pin_persisted &&
+                  committed.explicit_authorized == explicit_pin,
+              "trust retry did not finish directory durability");
+        directory_sync_fault.calls = 0;
+        ExpectFailure(
+            [&] {
+                (void)reopened.commit_verified(endpoint,
+                                               identities.second_encoded);
+            },
+            "trust retry accepted a conflicting fingerprint");
+        Check(directory_sync_fault.calls == 0,
+              "conflicting trust commit reached durability");
+    }
+}
+#endif
 
 void TestTofuAndProtectedFiles(const std::filesystem::path& root,
                                const Identities& identities) {
@@ -812,10 +898,33 @@ void TestListingRejectsPlantedRecords(const std::filesystem::path& root,
 
 }  // namespace
 
+#if defined(YUME_TEST_FSYNC_WRAP)
+extern "C" int __real_fsync(int fd);
+extern "C" int __wrap_fsync(int fd) {
+    if (directory_sync_fault.armed) {
+        struct stat info{};
+        if (::fstat(fd, &info) == 0 && S_ISDIR(info.st_mode) &&
+            info.st_dev == directory_sync_fault.device &&
+            info.st_ino == directory_sync_fault.inode) {
+            ++directory_sync_fault.calls;
+            if (directory_sync_fault.failures != 0) {
+                --directory_sync_fault.failures;
+                errno = EIO;
+                return -1;
+            }
+        }
+    }
+    return __real_fsync(fd);
+}
+#endif
+
 int main() {
     TempDirectory temp;
     TestInputValidation(temp.path());
     const Identities identities;
+#if defined(YUME_TEST_FSYNC_WRAP)
+    TestDirectorySyncRetry(temp.path(), identities);
+#endif
     TestTofuAndProtectedFiles(temp.path(), identities);
     TestExplicitAndPinnedPolicy(temp.path(), identities);
     TestDirectorySymlinks(temp.path(), identities);

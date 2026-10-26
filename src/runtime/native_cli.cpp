@@ -512,6 +512,7 @@ int seal_kit(NativeCliRole role, const std::filesystem::path& directory,
         say(role, describe("cannot make a kit code", code.status()));
         return kExitFailure;
     }
+    const security::ScopedErase code_guard(code.value());
     const auto sealed = kit::seal(contents.value(), code.value());
     if (!sealed.ok()) {
         say(role, describe("cannot seal the kit", sealed.status()));
@@ -543,7 +544,9 @@ int seal_kit(NativeCliRole role, const std::filesystem::path& directory,
         say(role, "cannot write the output file");
         return kExitFailure;
     }
-    std::printf("%s\n", kit::display_code(code.value()).c_str());
+    auto displayed = kit::display_code(code.value());
+    const security::ScopedErase displayed_guard(displayed);
+    std::printf("%s\n", displayed.c_str());
     std::fflush(stdout);
     return kExitStopped;
 }

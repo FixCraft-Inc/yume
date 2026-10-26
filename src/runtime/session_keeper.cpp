@@ -131,6 +131,11 @@ NativeClientStatus SessionKeeper::status() const {
     return copy;
 }
 
+std::pair<std::uint64_t, std::uint32_t> SessionKeeper::session_counts() const {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    return {published_.sessions, published_.failed_attempts};
+}
+
 void SessionKeeper::record_failure(const Status& failure) noexcept {
     transition(
         [&](NativeClientStatus& current) { current.last_failure = failure; });

@@ -794,6 +794,11 @@ PeerTrustDecision PeerTrustStore::commit_verified(
         throw PeerTrustError(
             "relay peer trust commit did not reach a durable state");
     }
+    // A prior attempt can leave a synced record after its directory flush
+    // failed. Re-establish durability even when no record needed creation.
+    if (::fsync(directory->get()) != 0) {
+        ThrowErrno("sync relay peer trust directory", errno);
+    }
     return committed;
 }
 

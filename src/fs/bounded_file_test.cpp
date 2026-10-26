@@ -8,9 +8,11 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
@@ -154,6 +156,8 @@ void test_confined_root_is_pinned_across_rename() {
     assert(fs::create_directory(replacement));
     write_text(root / "marker.txt", "original");
     write_text(replacement / "marker.txt", "outside");
+    assert(::chmod((root / "marker.txt").c_str(), 0600) == 0);
+    assert(::chmod((replacement / "marker.txt").c_str(), 0700) == 0);
     const struct utimbuf timestamp {1700000000, 1700000000};
     assert(::utime((root / "marker.txt").c_str(), &timestamp) == 0);
 
@@ -170,6 +174,11 @@ void test_confined_root_is_pinned_across_rename() {
     assert(pinned->read_text("marker.txt", 64, &contents, &error, &modification_time));
     assert(contents == "original");
     assert(modification_time == timestamp.modtime);
+    std::vector<std::uint8_t> binary;
+    bool executable = true;
+    assert(pinned->read_file("marker.txt", 64, &binary, &error, &executable));
+    assert(std::string(binary.begin(), binary.end()) == "original");
+    assert(!executable);
     assert(::symlink(replacement.c_str(), (moved / "link").c_str()) == 0);
     assert(!pinned->read_text("link/marker.txt", 64, &contents, &error));
     assert(!yume::runtime::FileRoot::open(root, &error));

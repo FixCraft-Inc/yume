@@ -328,11 +328,23 @@ void test_allocation_failures_settle_once() {
         auto io = context();
         ThreadBackend backend(reply);
         auto outcome = std::make_shared<Outcome>();
-        const auto handle = start_fetch(io, outcome, backend.port());
-        yume::test::arm_allocation_failure(nth);
+        std::shared_ptr<LoopbackHttpFetch> handle;
         bool escaped = false;
-        const auto deadline = std::chrono::steady_clock::now() + 5s;
         try {
+            on_context(io, [&] {
+                auto started = LoopbackHttpFetch::start(
+                    io, make_address("127.0.0.1"), backend.port(), "GET", "/",
+                    {}, [outcome](Result<LoopbackHttpResponse> result) {
+                        ++outcome->calls;
+                        outcome->result.emplace(std::move(result));
+                    });
+                CHECK(started.ok() && outcome->calls == 0);
+                handle = std::move(started).take_value();
+                // poll() may drain the entire fetch. Arm before this
+                // handler returns and lets the posted begin run.
+                yume::test::arm_allocation_failure(nth);
+            });
+            const auto deadline = std::chrono::steady_clock::now() + 5s;
             while (outcome->calls == 0 &&
                    std::chrono::steady_clock::now() < deadline)
                 io->poll();

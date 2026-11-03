@@ -992,7 +992,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     # opens sealed kits with the implementation yume --import-kit uses, and
     # keeps the session of a client with a device up as yume does.
     set(_yume_embed_links
-        yume_native_endpoint yume_openssl_security_provider yume_message_log
+        yume_native_endpoint yume_native_credentials yume_openssl_security_provider yume_message_log
         yume_sealed_kit yume_session_keeper Threads::Threads Boost::system)
     if(TARGET yume_device_bridge)
         list(APPEND _yume_embed_links yume_device_bridge)

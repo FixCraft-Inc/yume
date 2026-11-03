@@ -1241,6 +1241,56 @@ void test_tcp_round_trip_and_half_close(RequestFactory& requests) {
     server.wait();
 }
 
+void test_tcp_reset_is_terminal_read_failure(RequestFactory& requests) {
+    for (const bool reset_before_read : {false, true}) {
+        std::promise<void> close_peer;
+        auto close_peer_future = close_peer.get_future().share();
+        std::promise<void> peer_ready;
+        auto peer_ready_future = peer_ready.get_future();
+        TcpServer server([&](Tcp::socket& socket) {
+            boost::system::error_code error;
+            socket.set_option(boost::asio::socket_base::linger(true, 0), error);
+            CHECK(!error);
+            peer_ready.set_value();
+            CHECK(close_peer_future.wait_for(3s) == std::future_status::ready);
+            socket.close(error);
+            CHECK(!error);
+        });
+
+        IoRuntime runtime;
+        auto provider = make_provider(runtime);
+        auto opened =
+            open_route(runtime, provider,
+                       requests.make(ipv4_destination(
+                           ytp1::TransportProtocol::Tcp, server.port())));
+        CHECK(opened.ok());
+        auto connection = std::move(opened).take_value();
+        auto channel = connection.take_byte_channel();
+        CHECK(channel);
+
+        CHECK(peer_ready_future.wait_for(3s) == std::future_status::ready);
+        std::optional<AsyncTicket<Result<Buffer>>> pending;
+        if (!reset_before_read)
+            pending.emplace(start_read(runtime, *channel, 8U));
+        close_peer.set_value();
+        server.wait();
+        if (reset_before_read)
+            pending.emplace(start_read(runtime, *channel, 8U));
+        auto result = await(*pending);
+        CHECK(!result.ok());
+        CHECK(result.status().code() == StatusCode::Internal);
+        CHECK(pending->calls->load(std::memory_order_relaxed) == 1U);
+
+        auto later = start_read(runtime, *channel, 1U);
+        CHECK(await(later).status().code() == StatusCode::Internal);
+        auto write = start_write(runtime, *channel, make_buffer("x", 1U));
+        CHECK(await(write).status.code() == StatusCode::Closed);
+        CHECK(runtime.invoke([&]() { return channel->shutdown_write(); })
+                  .code() == StatusCode::Closed);
+        channel->close();
+    }
+}
+
 // A read takes its buffer only once the socket has something to report. The
 // cases a plain readiness wait would get wrong: bytes already queued when a
 // read starts (the reactor reported their arrival before anything waited),
@@ -2195,16 +2245,23 @@ void test_open_allocation_failure_releases_capacity(RequestFactory& requests) {
 }  // namespace
 }  // namespace yume::providers
 
-int main() {
+int main(int argc, char** argv) {
 #if !defined(_WIN32)
     yume::test::before_allocate_on_any_thread.store(check_test_allocation);
 #endif
 
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--read-end") {
+            yume::providers::RequestFactory requests;
+            yume::providers::test_tcp_reset_is_terminal_read_failure(requests);
+            std::cout << "direct read-end regression passed\n";
+            return 0;
+        }
         yume::providers::test_creation_and_limits();
         yume::providers::RequestFactory requests;
         yume::providers::test_request_factory_across_epoch_lifetime(requests);
         yume::providers::test_tcp_round_trip_and_half_close(requests);
+        yume::providers::test_tcp_reset_is_terminal_read_failure(requests);
         yume::providers::test_tcp_read_waits_for_data(requests);
 #if !defined(_WIN32)
         yume::providers::test_idle_tcp_read_holds_no_buffer(requests);

@@ -475,7 +475,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(submission_mutex_);
             if (close_requested_) {
-                error = closed_status();
+                error = terminal_read_status();
             } else if (max_bytes == 0U || max_bytes > max_read_size()) {
                 error = Status::diagnostic(
                     StatusCode::InvalidArgument,
@@ -734,7 +734,7 @@ private:
             PendingRead& operation = *reads_.front();
             const auto requested = requested_terminal(operation.id);
             if (closed_ || read_eof_ || requested == StatusCode::Closed) {
-                settle_front_read(closed_status());
+                settle_front_read(terminal_read_status());
                 continue;
             }
             if (operation.cancelled || requested == StatusCode::Cancelled ||
@@ -948,7 +948,7 @@ private:
         PendingRead& operation = *reads_.front();
         const auto requested = requested_terminal(id);
         if (closed_ || requested == StatusCode::Closed) {
-            settle_front_read(closed_status());
+            settle_front_read(terminal_read_status());
             start_next_read();
             return;
         }
@@ -956,15 +956,23 @@ private:
             requested == StatusCode::Cancelled ||
             operation.cancellation_token.is_cancelled();
         if (cancelled || error == boost::asio::error::operation_aborted) {
-            settle_front_read(cancelled ? cancelled_status() : closed_status());
-            start_next_read();
+            if (cancelled) {
+                settle_front_read(cancelled_status());
+                start_next_read();
+                return;
+            }
+            terminate_read_failure(Status::diagnostic(
+                StatusCode::Internal, "Asio socket read was aborted"));
             return;
         }
         if (error) {
             if (error == boost::asio::error::eof) {
                 read_eof_ = true;
+                settle_front_read(closed_status());
+            } else {
+                terminate_read_failure(Status::diagnostic(
+                    StatusCode::Internal, "Asio socket read failed"));
             }
-            settle_front_read(closed_status());
             start_next_read();
             return;
         }
@@ -1013,10 +1021,12 @@ private:
             operation.cancellation_token.is_cancelled();
         if (closed_ || requested == StatusCode::Closed) {
             settle_front_write(closed_status(), total);
-        } else if (cancelled || error == boost::asio::error::operation_aborted) {
-            settle_front_write(cancelled ? cancelled_status() : closed_status(), total);
+        } else if (cancelled) {
+            settle_front_write(cancelled_status(), total);
         } else if (error || transferred == 0U) {
+            close_failed_socket();
             settle_front_write(closed_status(), total);
+            start_next_read();
         } else if (total == operation.buffer.size()) {
             settle_front_write(Status::success(), total);
         } else {
@@ -1053,6 +1063,36 @@ private:
         operation.reset();
         release_write_reservation(reserved);
         invoke_noexcept(completion, std::move(status), transferred);
+    }
+
+    Status terminal_read_status() const noexcept {
+        return socket_failed_ ? Status::diagnostic(StatusCode::Internal,
+                                                   "Asio socket channel failed")
+                              : closed_status();
+    }
+
+    void close_failed_socket() noexcept {
+        {
+            std::lock_guard<std::mutex> lock(submission_mutex_);
+            if (!close_requested_) {
+                socket_failed_ = true;
+                close_requested_ = true;
+            }
+        }
+        if (!closed_) {
+            closed_ = true;
+            boost::system::error_code ignored;
+            socket_.shutdown(Socket::shutdown_both, ignored);
+            socket_.close(ignored);
+            unregister_once();
+        }
+    }
+
+    void terminate_read_failure(Status status) noexcept {
+        close_failed_socket();
+        settle_front_read(socket_failed_ ? std::move(status) : closed_status());
+        start_next_read();
+        start_next_write();
     }
 
     void shutdown_write_on_context() noexcept {
@@ -1107,6 +1147,7 @@ private:
     bool draining_reads_{false};
     bool draining_writes_{false};
     bool read_eof_{false};
+    bool socket_failed_{false};
     bool write_shutdown_{false};
     bool shutdown_after_writes_{false};
     bool closed_{false};

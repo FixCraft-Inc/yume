@@ -8,6 +8,7 @@
         yume_runtime_destroy;
         yume_config_parse_json;
         yume_config_role;
+        yume_config_validate_client_credentials;
         yume_config_destroy;
         yume_endpoint_create;
         yume_endpoint_set_socket_protector;

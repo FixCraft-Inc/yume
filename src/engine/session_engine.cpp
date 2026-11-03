@@ -560,6 +560,12 @@ private:
               kind(kind_value),
               opened_by_peer(opened_by_peer_value) {}
 
+        bool expects_peer_settlement() const noexcept {
+            // A terminal CLOSE cannot discharge the peer's settlement after
+            // both FINs. The FIN flags retain that obligation across abort.
+            return terminal_sent || (local_write_closed && peer_write_closed);
+        }
+
         StreamId id;
         std::string service_name;
         ServiceKind kind;
@@ -1801,12 +1807,12 @@ bool SessionEngine::Impl::retire_stream_locked(StreamId stream_id) noexcept {
     const auto it = streams_.find(stream_id.value());
     if (it == streams_.end()) return false;
     const auto& stream = *it->second;
-    const bool settled =
-        stream.terminal_sent
-            ? stream.settlement_received &&
-                  (!stream.terminal_received || stream.settlement_sent)
-            : stream.settlement_sent &&
-                  (stream.terminal_received || stream.settlement_received);
+    const bool peer_settled =
+        !stream.expects_peer_settlement() || stream.settlement_received;
+    const bool local_settled =
+        stream.settlement_sent ||
+        (stream.terminal_sent && !stream.terminal_received);
+    const bool settled = peer_settled && local_settled;
     if (!stream.closed || !settled || stream.queued_controls != 0U ||
         stream.receive_window.owed != 0U || stream.fin_owed ||
         stream.terminal_owed || stream.settlement_owed) {
@@ -3345,8 +3351,7 @@ Status SessionEngine::Impl::process_close(const ytp1::RecordView& record) {
         auto& stream = *it->second;
         if (code == StreamCloseCode::Settled) {
             if (stream.settlement_received ||
-                (!stream.terminal_sent &&
-                 !(stream.local_write_closed && stream.peer_write_closed))) {
+                !stream.expects_peer_settlement()) {
                 return protocol_failure("stream settlement is unexpected");
             }
             stream.settlement_received = true;

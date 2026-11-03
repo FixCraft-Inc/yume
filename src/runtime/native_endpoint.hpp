@@ -300,7 +300,8 @@ public:
     // has no startup deadline; promotion begins its bounded authenticated
     // bootstrap. Client startup has one end-to-end deadline.
     // Synchronous refusal invokes no callback. Accepted completion is exactly
-    // once; the endpoint retains successful sessions until their engine teardown
+    // once, with its stored callback cleared before delivery; the endpoint
+    // retains successful sessions until their engine teardown
     // notification releases the slot on its context. Returned engines use that
     // context. A slot is unavailable until that notification is delivered.
     engine::Status async_start_session(Completion completion,

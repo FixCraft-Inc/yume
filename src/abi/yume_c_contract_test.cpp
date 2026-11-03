@@ -47,6 +47,7 @@ void ignored_event(const yume_event*, void* user_data) {
 struct ReentryContext {
     yume_runtime* runtime{nullptr};
     yume_endpoint* endpoint{nullptr};
+    yume_config* config{nullptr};
     std::uint32_t event_count{0};
     yume_status reentry_status{YUME_STATUS_OK};
     yume_status diagnostic_status{YUME_STATUS_OK};
@@ -61,6 +62,13 @@ void reentry_event(const yume_event* event, void* user_data) {
                 event->abi_version == YUME_ABI_VERSION,
             "callback event did not describe its complete layout");
     ++context->event_count;
+    std::array<std::uint8_t, 32> identity;
+    identity.fill(0xa5);
+    require(yume_config_validate_client_credentials(
+                context->config, identity.data(), identity.size()) ==
+                    YUME_STATUS_INVALID_STATE &&
+                identity[0] == 0,
+            "callback entered native credential validation");
     context->reentry_status = yume_endpoint_stop(context->endpoint, 0);
 
     yume_diagnostic diagnostic{};
@@ -305,6 +313,20 @@ int main(int argc, char** argv) {
                                    &config) == YUME_STATUS_OK,
             "config parse failed");
     require(config != nullptr, "config was not published");
+
+    std::array<std::uint8_t, 33> identity;
+    identity.fill(0xa5);
+    require(yume_config_validate_client_credentials(nullptr, identity.data(),
+                                                    identity.size()) ==
+                    YUME_STATUS_INVALID_ARGUMENT &&
+                identity[0] == 0 && identity[32] == 0xa5,
+            "credential validation invalid-handle output contract failed");
+    require(yume_config_validate_client_credentials(config, nullptr, 32U) ==
+                YUME_STATUS_INVALID_ARGUMENT,
+            "credential validation accepted null output storage");
+    require(yume_config_validate_client_credentials(config, nullptr, 0U) ==
+                YUME_STATUS_BUFFER_TOO_SMALL,
+            "credential validation sizing query failed");
 
     yume_config* rejected_config =
         reinterpret_cast<yume_config*>(static_cast<std::uintptr_t>(1));
@@ -560,6 +582,12 @@ int main(int argc, char** argv) {
                 YUME_STATUS_OK &&
                 yume_config_role(server_config) == YUME_ROLE_SERVER,
             "server config parse failed");
+    identity.fill(0xa5);
+    require(yume_config_validate_client_credentials(
+                server_config, identity.data(), identity.size()) ==
+                    YUME_STATUS_INVALID_ARGUMENT &&
+                identity[0] == 0 && identity[32] == 0xa5,
+            "client credential validation accepted a server configuration");
     yume_endpoint* server_endpoint = nullptr;
     require(yume_endpoint_create(first, server_config, &server_endpoint) ==
                 YUME_STATUS_OK,
@@ -795,7 +823,7 @@ int main(int argc, char** argv) {
     require(yume_endpoint_create(reentry.runtime, reentry_config,
                                  &reentry.endpoint) == YUME_STATUS_OK,
             "re-entry test endpoint creation failed");
-    yume_config_destroy(reentry_config);
+    reentry.config = reentry_config;
 
     require(yume_endpoint_start(reentry.endpoint, 0) ==
                 YUME_STATUS_UNSUPPORTED,
@@ -823,6 +851,7 @@ int main(int argc, char** argv) {
             "endpoint was unusable after callback exception containment");
     yume_endpoint_destroy(reentry.endpoint);
     yume_runtime_destroy(reentry.runtime);
+    yume_config_destroy(reentry_config);
 
     // Schema 1 is the only configuration. A document without "schema" is
     // refused by that member before the strict parser sees its other keys.

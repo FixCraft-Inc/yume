@@ -204,6 +204,9 @@ session bootstrap.
 files, per-identity service policy, client TCP/TLS/H2 or server FrontDoor, and
 `SessionBootstrap` on one caller-owned `AsioExecutionContext`. Its two roles
 share the same session engine.
+The endpoint clears each stored one-shot startup completion before delivery,
+so a completed callback cannot retain its caller and execution context through
+the session slot.
 Credential parsing uses a private OpenSSL context and passes canonical DER to
 the independent security factory. Admission, traffic access and administrator
 authority remain separate. `yume_private_files` owns the protected-file reader
@@ -373,6 +376,13 @@ operation in each direction, retains inbound carrier credit through the exact
 route write completion, preserves packet boundaries, and maps byte-stream EOF
 to directional write shutdown. Provider errors, partial completions, and
 cancellation close both sides once.
+Native byte-channel reads distinguish orderly EOF (`Closed`) from a socket
+read failure (`Internal`). A socket failure in either direction closes the
+native channel before its failing callback runs. Outstanding and later reads
+then report `Internal`, and queued writes settle once with their actual byte
+counts. The
+direct TCP readiness probe preserves a reported socket error because a probe
+can consume it before the subsequent read.
 The dispatcher supplies the graph's validated route provider to `async_route`;
 the bridge retains that instance through asynchronous settlement. Creating a
 handler requires destination authorization but does not select a provider.

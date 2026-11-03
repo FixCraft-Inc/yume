@@ -122,6 +122,43 @@ int main(void) {
         goto cleanup;
     }
 
+    {
+        unsigned char identity[33];
+        size_t index;
+        yume_status validated;
+        memset(identity, 0xa5, sizeof(identity));
+        if (yume_config_validate_client_credentials(config, NULL, 0u) !=
+                YUME_STATUS_BUFFER_TOO_SMALL ||
+            yume_config_validate_client_credentials(config, identity, 31u) !=
+                YUME_STATUS_BUFFER_TOO_SMALL ||
+            identity[31] != 0xa5 || identity[32] != 0xa5) {
+            result = fail("credential fingerprint sizing contract failed", 8);
+            goto cleanup;
+        }
+        for (index = 0; index < 31u; ++index) {
+            if (identity[index] != 0u) {
+                result =
+                    fail("credential sizing failure retained output bytes", 8);
+                goto cleanup;
+            }
+        }
+        validated = yume_config_validate_client_credentials(config, identity,
+                                                            sizeof(identity));
+        if (validated == YUME_STATUS_OK ||
+            validated == YUME_STATUS_INTERNAL_ERROR || identity[32] != 0xa5) {
+            result =
+                fail("credential validation did not reject absent files", 8);
+            goto cleanup;
+        }
+        for (index = 0; index < 32u; ++index) {
+            if (identity[index] != 0u) {
+                result = fail(
+                    "credential validation failure published an identity", 8);
+                goto cleanup;
+            }
+        }
+    }
+
     if (yume_endpoint_create(runtime, config, &endpoint) != YUME_STATUS_OK ||
         endpoint == NULL) {
         result = fail("endpoint creation failed", 8);

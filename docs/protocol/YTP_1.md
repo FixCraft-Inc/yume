@@ -305,8 +305,10 @@ The codes are:
 Code 0 closes only the sender's write side. Already accepted inbound records
 remain readable. After both directional FINs and draining queued inbound data,
 each side sends code 5 and retains the stream's closing state until receiving
-the peer's code 5. Returning application-held credit after closure restores
-connection credit only.
+the peer's code 5. A crossed terminal CLOSE does not discharge that peer
+settlement obligation, even if the local code 5 has already been sent.
+Returning application-held credit after closure restores connection credit
+only.
 
 Codes 1 through 4 terminate both directions and fail pending OPEN and I/O.
 The receiver sends code 5 after settling application ownership. The initiator

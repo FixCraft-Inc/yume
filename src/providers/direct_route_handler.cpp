@@ -605,6 +605,9 @@ private:
                 if (!result.ok()) {
                     if (kind_ == ServiceKind::ByteStream &&
                         result.status().code() == StatusCode::Closed) {
+                        // ByteChannel reserves a live read's Closed result
+                        // for orderly peer write-side EOF. Other provider
+                        // failures take the terminal path below.
                         route_input_eof_ = true;
                         eof = true;
                     } else {

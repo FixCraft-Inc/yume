@@ -1363,6 +1363,51 @@ uint32_t yume_config_role(const yume_config* config) noexcept {
     return config->server ? YUME_ROLE_SERVER : YUME_ROLE_CLIENT;
 }
 
+yume_status yume_config_validate_client_credentials(
+    yume_config* config, uint8_t* fingerprint,
+    size_t fingerprint_size) noexcept {
+    if (fingerprint)
+        std::memset(fingerprint, 0, std::min(fingerprint_size, size_t{32}));
+    if (!config || !valid_header(&config->header, HandleKind::Config))
+        return YUME_STATUS_INVALID_ARGUMENT;
+    if (g_in_callback)
+        return fail_with_diagnostic(
+            &config->header, YUME_STATUS_INVALID_STATE,
+            "credential validation is forbidden from callbacks");
+    if (!fingerprint && fingerprint_size != 0)
+        return fail_with_diagnostic(&config->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "fingerprint output is required");
+    if (fingerprint_size < 32)
+        return fail_with_diagnostic(&config->header,
+                                    YUME_STATUS_BUFFER_TOO_SMALL,
+                                    "fingerprint output needs 32 bytes");
+    if (config->server)
+        return fail_with_diagnostic(
+            &config->header, YUME_STATUS_INVALID_ARGUMENT,
+            "credential validation requires a client configuration");
+    return guard(&config->header, [&]() -> yume_status {
+        std::string identity;
+        std::string error;
+        const auto outcome = yume::embed::validate_client_credentials(
+            config->config, config->runtime->config_base_dir, identity, error);
+        if (outcome != yume::embed::BackendIo::Ok)
+            return fail_with_diagnostic(&config->header,
+                                        status_from_backend(outcome), error);
+        std::uint8_t derived[32]{};
+        copy_fingerprint(derived, identity);
+        if (identity.size() != 64 ||
+            std::all_of(std::begin(derived), std::end(derived),
+                        [](auto byte) { return byte == 0; }))
+            return fail_with_diagnostic(
+                &config->header, YUME_STATUS_INTERNAL_ERROR,
+                "native credential identity is invalid");
+        std::memcpy(fingerprint, derived, sizeof(derived));
+        clear_diagnostic(&config->header);
+        return YUME_STATUS_OK;
+    });
+}
+
 void yume_config_destroy(yume_config* config) noexcept {
     if (!config || !valid_header(&config->header, HandleKind::Config)) return;
     if (g_in_callback) return;

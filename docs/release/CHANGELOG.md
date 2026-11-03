@@ -7,6 +7,31 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+Native TCP and accepted TCP/UNIX byte channels report socket read errors as
+transport failures instead of directional EOF. Socket failures in either
+direction close the channel before delivery and settle queued operations once.
+Later reads retain the terminal failure. The direct TCP readiness probe
+also preserves errors it consumes. Orderly EOF and immediate cancellation
+keep their existing behavior.
+
+The session engine retains a closing stream until its required peer settlement
+arrives when an abort crosses both directional FINs. A valid crossed settlement
+therefore preserves the authenticated session for later streams.
+
+The experimental C ABI adds `yume_config_validate_client_credentials` to
+validate actual client credential files and composite private/public key
+pairs before application publication. It returns the local composite
+fingerprint without starting an endpoint or authenticating a server.
+
+Native session startup clears its stored one-shot callback before delivery.
+Repeated embedded client starts and stops release their run owners and polling
+descriptors on libc++ as well as libstdc++.
+
+Stopping device-backed ABI startup now settles its session-keeper waiter
+without waiting for the connection deadline. The public start returns
+`YUME_STATUS_CANCELLED` after owned work drains and leaves the endpoint
+`STOPPED`.
+
 The product version moved to `0.3.0-dev1`. `yume` and `yumed` compose native
 YTP/1 with schema-1 configuration, and transport v2 has been removed. The
 YTP/1, relay channel, schema, ABI and evidence-profile versions are

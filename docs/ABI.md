@@ -329,8 +329,36 @@ pointer or message longer than its fixed ABI field is marked by
 `YUME_DIAGNOSTIC_JSON_POINTER_TRUNCATED` or
 `YUME_DIAGNOSTIC_MESSAGE_TRUNCATED`. Config paths remain references;
 permission and trust-material
-checks that require the filesystem occur at endpoint start and in
-`yume-doctor`.
+checks that require the filesystem occur at endpoint start, in `yume-doctor`,
+or through the explicit client credential validation operation below.
+
+`yume_config_validate_client_credentials(config, fingerprint, fingerprint_size)`
+synchronously loads a client's actual credential files through the native
+loader, using the parsing runtime's `config_base_dir`. It validates the access
+and admission secrets, composite private/public key pairs, server identity,
+ML-KEM public key and TLS trust material. It starts no endpoint, resolver,
+application adapter or network connection. A server config returns
+`YUME_STATUS_INVALID_ARGUMENT`. Failures have a diagnostic on the config.
+
+On success it writes the 32 raw SHA-256 bytes of the local composite identity,
+derived from the actual private key. Callers compare this with an independently
+trusted expected local identity before publishing credentials. The result
+establishes neither server authentication nor server admission. It does not
+replace the peer identity reported by an authenticated session.
+
+The output needs at least 32 bytes. A smaller size returns
+`YUME_STATUS_BUFFER_TOO_SMALL`, including a null output with size zero.
+A null output with nonzero size is invalid. At entry, up to 32 supplied bytes
+are zeroed even on failure. Bytes beyond 32 remain untouched. The output must
+not alias a handle or its inputs. Calls obey the ordinary handle lifetime and
+callback restrictions. No private material or provider handle survives the call.
+
+The caller keeps files and ancestor directories private and stable for the
+entire call. The operation retains schema-1 path semantics, including absolute
+references. It does not confine files to the base directory or attest to later
+file contents. An application validating an untrusted kit must independently
+confine its references and materialize only those files in an owned private
+directory before calling it. Protected-file loading is currently POSIX-only.
 
 YTP/1 has exactly one provider composition, reported by
 `yume_get_compatibility`. It is not selected by the application and has no
@@ -399,6 +427,8 @@ a `control` socket, a `cluster` section and reverse-proxy cover report
 `stop` is synchronous, idempotent after a start attempt, and accepts only zero.
 It closes the endpoint's sessions, wakes blocked calls, and joins the backend's
 execution threads before `STOPPED` is published. Registrations remain. A
+stopped run releases its execution context and polling descriptors once its
+caller-owned stream and packet handles have been destroyed. A
 client whose session ends later stays `RUNNING`, and its OPENs report
 `YUME_STATUS_INVALID_STATE` until the application stops and starts it again.
 
@@ -409,6 +439,8 @@ with one `STOPPED` event that carries `YUME_STATUS_CANCELLED`. The stop then
 returns `YUME_STATUS_OK`. An application can therefore give up a start that
 waits on a dead network without waiting out its deadline. A cancelled start
 is not recorded as the endpoint's latest failure.
+This also applies to the first connection of an endpoint with a device: its
+session keeper's startup waiter is cancelled before the owned I/O drains.
 Explicit stop, runtime destruction, or endpoint destruction may take an
 endpoint directly from `CREATED` through `STOPPING` to `STOPPED` without
 starting a backend.

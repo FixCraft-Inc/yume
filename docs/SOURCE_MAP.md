@@ -188,6 +188,11 @@ directional record keys and independent credit accounting.
 `yume_private_files` owns `fs/secret_file.cpp`. The native credential loader
 and the module libraries link it, and it links no BaseFWX.
 
+The embedding backend also links `yume_native_credentials` directly for
+`yume_config_validate_client_credentials`: synchronous client credential
+loading and a private-key-derived local fingerprint without an endpoint.
+The C ABI and JNI adapters contain no independent credential parser.
+
 ### Authentication and cryptographic ownership
 
 TLS server authentication, carrier admission, YTP peer authentication and

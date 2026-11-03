@@ -171,6 +171,7 @@ static int check_opened(yume_runtime* runtime, const yume_kit* kit,
         if (strcmp(name, "yume.json") == 0) {
             yume_config* config = NULL;
             yume_endpoint* endpoint = NULL;
+            unsigned char identity[33];
             has_config = 1;
             /* The kit's own configuration is one this library accepts. */
             if (!expect(yume_config_parse_json(runtime, file.data, file.size,
@@ -179,6 +180,23 @@ static int check_opened(yume_runtime* runtime, const yume_kit* kit,
                 yume_config_role(config) != YUME_ROLE_CLIENT) {
                 yume_config_destroy(config);
                 return 0;
+            }
+            memset(identity, 0xa5, sizeof(identity));
+            if (!expect(yume_config_validate_client_credentials(
+                            config, identity, sizeof(identity)),
+                        YUME_STATUS_OK, "the kit's real credential files") ||
+                identity[32] != 0xa5) {
+                yume_config_destroy(config);
+                return 0;
+            }
+            {
+                size_t byte;
+                int nonzero = 0;
+                for (byte = 0; byte < 32u; ++byte) nonzero |= identity[byte];
+                if (!nonzero) {
+                    yume_config_destroy(config);
+                    return 0;
+                }
             }
             /* Stop emits lifecycle callbacks without starting any network I/O. */
             if (!expect(yume_endpoint_create(runtime, config, &endpoint),

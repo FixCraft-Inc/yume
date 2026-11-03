@@ -43,6 +43,7 @@
 #include "runtime/device_bridge.hpp"
 #endif
 #include "runtime/message_log.hpp"
+#include "runtime/native_credentials.hpp"
 #include "runtime/native_endpoint.hpp"
 #include "runtime/sealed_kit.hpp"
 #include "runtime/session_keeper.hpp"
@@ -204,6 +205,7 @@ struct DeviceOptions final {};
 #endif
 
 class NativeRun;
+class StartOperation;
 
 // Blocking application view of one authenticated engine stream. While the
 // stream can still receive, one engine read stays pending, so a peer abort or
@@ -383,11 +385,9 @@ public:
     std::shared_ptr<engine::SessionEngine> active_session() const noexcept;
     // Opens the device bridge of a client that has a device.
     Status start_bridge();
-    // Receives the keeper's state changes until an empty watcher replaces it.
-    using StatusWatcher =
-        std::function<void(const runtime::NativeClientStatus&)>;
-    void watch_status(StatusWatcher watcher) noexcept {
-        status_watcher_ = std::move(watcher);
+    // Retains the first-attempt waiter until it settles or this run closes.
+    void watch_start(std::shared_ptr<StartOperation> operation) noexcept {
+        start_operation_ = std::move(operation);
     }
 
     // Any thread, once start has reported success.
@@ -441,7 +441,7 @@ private:
     providers::ControlTask close_task_;
     providers::ControlTask retry_task_;
     // Runner only.
-    StatusWatcher status_watcher_;
+    std::shared_ptr<StartOperation> start_operation_;
     // Why a client's one session ended while the endpoint stayed started.
     mutable std::mutex ended_mutex_;
     bool ended_{false};
@@ -595,6 +595,8 @@ public:
     bool wait(Clock::time_point limit, Status& result);
 
 private:
+    friend class NativeRun;
+
     static void on_task(void* value) noexcept {
         static_cast<StartOperation*>(value)->start_on_runner();
     }
@@ -1447,10 +1449,7 @@ void StartOperation::start_on_runner() noexcept {
             }
             // Start reports the first attempt. The keeper makes the later
             // ones for as long as the endpoint stays started.
-            run_->watch_status([self = shared_from_this()](
-                                   const runtime::NativeClientStatus& status) {
-                self->on_kept(status);
-            });
+            run_->watch_start(shared_from_this());
             run_->keeper->start();
             return;
         }
@@ -1498,11 +1497,11 @@ void StartOperation::on_kept(
     const runtime::NativeClientStatus& status) noexcept {
     using State = runtime::NativeClientState;
     if (status.state == State::Connected) {
-        run_->watch_status({});
+        run_->watch_start({});
         settle(Status::success());
     } else if (status.state == State::Waiting ||
                status.state == State::Closed) {
-        run_->watch_status({});
+        run_->watch_start({});
         settle(status.last_failure.ok() ? Status(StatusCode::Internal)
                                         : copy_status(status.last_failure));
     }
@@ -1602,7 +1601,12 @@ void NativeRun::wake_waiters() noexcept {
 }
 
 void NativeRun::close_on_runner() noexcept {
-    status_watcher_ = {};
+    // Keeper close need not deliver a status snapshot (copying its diagnostic
+    // can fail). Settle its startup waiter directly, without allocating, before
+    // releasing the observer. The blocking caller still joins the final drain.
+    if (const auto operation = std::exchange(start_operation_, {})) {
+        operation->settle(Status(StatusCode::Cancelled));
+    }
 #if defined(YUME_HAS_DEVICE_BRIDGE)
     if (bridge) bridge->close();
 #endif
@@ -1772,12 +1776,11 @@ void NativeRun::on_session_ended(const Status& reason) noexcept {
 
 void NativeRun::on_keeper_status(
     const runtime::NativeClientStatus& status) noexcept {
-    try {
-        // The watcher may replace itself, so call a copy.
-        const StatusWatcher watcher = status_watcher_;
-        if (watcher) watcher(status);
-    } catch (...) {
-    }
+    // Settlement clears the retained waiter. Keep it alive through delivery;
+    // copying the shared owner cannot lose the completion to allocation
+    // failure.
+    const auto operation = start_operation_;
+    if (operation) operation->on_kept(status);
 }
 
 void NativeRun::on_keeper_session(
@@ -2788,6 +2791,22 @@ BackendIo check_backend_device(const config::v1::Config& config,
         describe(error, "the device could not be checked");
         return BackendIo::Failed;
     }
+}
+
+BackendIo validate_client_credentials(const config::v1::Config& config,
+                                      std::string_view base_dir,
+                                      std::string& fingerprint,
+                                      std::string& error) {
+    fingerprint.clear();
+    auto result = runtime::validate_client_credentials(
+        config, std::filesystem::path(base_dir));
+    if (!result.ok()) {
+        error = result.status().message();
+        return io_from(result.status().code());
+    }
+    fingerprint = std::move(result).take_value();
+    error.clear();
+    return BackendIo::Ok;
 }
 
 std::unique_ptr<BackendKit> open_sealed_kit(

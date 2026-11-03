@@ -715,6 +715,76 @@ void test_accepted_unix_socket_traffic_and_capacity() {
     replacement.reset();
 }
 
+void test_accepted_socket_reset_is_terminal_read_failure() {
+    for (const bool held_sends : {false, true}) {
+        IoRuntime runtime;
+        AsioTcpChannelLimits limits;
+        limits.max_write_bytes = 1024U * 1024U;
+        limits.max_queued_write_bytes = 2U * limits.max_write_bytes;
+        auto owner = make_accepted_owner(runtime, limits);
+        auto pair = connected_pair(runtime.executor());
+        pair.first.set_option(boost::asio::socket_base::send_buffer_size(1024));
+        auto channel = require(runtime.sync(
+            [&]() { return owner->adopt(std::move(pair.first)); }));
+
+        auto active = start_read(runtime, *channel, 8U);
+        auto queued = start_read(runtime, *channel, 8U);
+        std::optional<AsyncTicket<TransferResult>> held_write;
+        std::optional<AsyncTicket<TransferResult>> queued_write;
+        if (held_sends) {
+            held_write.emplace(start_write(
+                runtime, *channel,
+                make_buffer(std::string(limits.max_write_bytes, 'a'))));
+            queued_write.emplace(
+                start_write(runtime, *channel, make_buffer("queued")));
+        }
+        run_barrier(runtime);
+        if (held_sends) {
+            CHECK(held_write->future.wait_for(0ms) ==
+                  std::future_status::timeout);
+            CHECK(queued_write->future.wait_for(0ms) ==
+                  std::future_status::timeout);
+        }
+
+        struct linger reset{1, 0};
+        CHECK(::setsockopt(pair.second.native_handle(), SOL_SOCKET, SO_LINGER,
+                           &reset, sizeof(reset)) == 0);
+        boost::system::error_code error;
+        pair.second.close(error);
+        CHECK(!error);
+
+        auto active_result = await(active);
+        CHECK(!active_result.ok());
+        CHECK(active_result.status().code() == StatusCode::Internal);
+        auto queued_result = await(queued);
+        CHECK(!queued_result.ok());
+        CHECK(queued_result.status().code() == StatusCode::Internal);
+        CHECK(active.calls->load(std::memory_order_relaxed) == 1U);
+        CHECK(queued.calls->load(std::memory_order_relaxed) == 1U);
+        if (held_sends) {
+            const auto held_result = await(*held_write);
+            const auto queued_write_result = await(*queued_write);
+            CHECK(!held_result.status.ok());
+            CHECK(held_result.transferred < limits.max_write_bytes);
+            CHECK(queued_write_result.status.code() == StatusCode::Closed);
+            CHECK(queued_write_result.transferred == 0U);
+        }
+
+        auto later = start_read(runtime, *channel, 1U);
+        CHECK(await(later).status().code() == StatusCode::Internal);
+        auto write = start_write(runtime, *channel, make_buffer("x"));
+        CHECK(await(write).status.code() == StatusCode::Closed);
+        CHECK(
+            runtime.sync([&]() { return channel->shutdown_write(); }).code() ==
+            StatusCode::Closed);
+
+        channel->close();
+        channel.reset();
+        owner.reset();
+        run_barrier(runtime);
+    }
+}
+
 void test_accepted_socket_allocation_rollback() {
     // Exhaust synchronous adoption allocations on its declared context.
     IoRuntime runtime;
@@ -1690,13 +1760,20 @@ void test_initiation_failure_stays_on_context() {
 }  // namespace
 }  // namespace yume::providers
 
-int main() {
+int main(int argc, char** argv) {
     yume::test::before_allocate_on_any_thread.store(check_test_allocation);
 
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--read-end") {
+            yume::providers::
+                test_accepted_socket_reset_is_terminal_read_failure();
+            std::cout << "native read-end regression passed\n";
+            return 0;
+        }
         yume::providers::test_descriptor_and_validation();
         yume::providers::test_accepted_socket_validation_and_capacity_release();
         yume::providers::test_accepted_socket_traffic_half_close_cancel_and_close();
+        yume::providers::test_accepted_socket_reset_is_terminal_read_failure();
         yume::providers::test_accepted_unix_socket_traffic_and_capacity();
         yume::providers::test_accepted_socket_allocation_rollback();
         yume::providers::test_accepted_socket_owner_lifetime_and_active_close();

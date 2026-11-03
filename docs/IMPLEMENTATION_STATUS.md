@@ -16,6 +16,13 @@ GUI each need evidence for their own environment.
 
 ## Current 0.3 foundation
 
+The experimental ABI implements explicit client credential-file validation
+through `yume_config_validate_client_credentials`, without starting an
+endpoint. It returns the private-key-derived local composite fingerprint
+after native credential and key-pair checks. Its output is distinct from an
+authenticated peer identity and server admission. See [ABI](ABI.md#strict-configuration)
+for caller confinement, file lifetime and buffer requirements.
+
 ### Foundation components
 
 Implemented and covered by focused tests:
@@ -332,6 +339,9 @@ regressions cover closure from another thread, pending-read settlement before
 notification, reentrant slot reuse, callback exceptions, client reconnect
 with SOCKS traffic through the replacement session, and backoff after a session
 that ends right after AUTH.
+Engine regressions retain closing entries through crossed FIN, abort and
+settlement in both roles, reject invalid peer barriers and keep withheld
+settlement within the existing stream bound.
 The established endpoint rekey cases explicitly initiate rotation. The session
 engine also rotates on its own. An epoch ends at the session's epoch size of
 directional payload, one protected record per 2 KiB of it, or 500 ms of
@@ -428,6 +438,12 @@ credentials, peer identity, refused opens, deadlines, half-close, stop, restart
 and stream handles that outlive their endpoint. `yume_native_backend_test` also
 pauses execution to check deadline handling, acceptance rollback, partial-read
 credit lifetime and cleanup after an escaped delivery exception.
+`yume_native_backend_open_integration` also stops device-backed startup against
+a peer that accepts TCP without answering TLS, checks that the startup waiter
+returns `Cancelled` after final drain, and verifies release of its run ownership.
+It repeats authenticated client lifetimes with two runs apiece and checks that
+startup, run, session and context owners expire after close, with stable
+event-loop descriptor counts after warm-up on Linux.
 The standalone programs compose NativeEndpoint directly. This embedding
 backend has no production qualification.
 

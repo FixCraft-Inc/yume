@@ -437,6 +437,9 @@ credentials, peer identity, refused opens, deadlines, half-close, stop, restart
 and stream handles that outlive their endpoint. `yume_native_backend_test` also
 pauses execution to check deadline handling, acceptance rollback, partial-read
 credit lifetime and cleanup after an escaped delivery exception.
+`yume_native_backend_open_integration` also stops device-backed startup against
+a peer that accepts TCP without answering TLS, checks that the startup waiter
+returns `Cancelled` after final drain, and verifies release of its run ownership.
 The standalone programs compose NativeEndpoint directly. This embedding
 backend has no production qualification.
 

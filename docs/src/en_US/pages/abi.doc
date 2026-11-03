@@ -418,6 +418,8 @@ with one `STOPPED` event that carries `YUME_STATUS_CANCELLED`. The stop then
 returns `YUME_STATUS_OK`. An application can therefore give up a start that
 waits on a dead network without waiting out its deadline. A cancelled start
 is not recorded as the endpoint's latest failure.
+This also applies to the first connection of an endpoint with a device: its
+session keeper's startup waiter is cancelled before the owned I/O drains.
 Explicit stop, runtime destruction, or endpoint destruction may take an
 endpoint directly from `CREATED` through `STOPPING` to `STOPPED` without
 starting a backend.

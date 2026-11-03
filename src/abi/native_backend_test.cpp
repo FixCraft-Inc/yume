@@ -25,6 +25,15 @@
 #include <thread>
 
 #include <boost/asio/post.hpp>
+#if defined(YUME_HAS_DEVICE_BRIDGE)
+#include <boost/asio/error.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/address.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/local/connect_pair.hpp>
+#include <boost/asio/local/datagram_protocol.hpp>
+#include <boost/system/error_code.hpp>
+#endif
 
 namespace yume::embed {
 namespace {
@@ -531,6 +540,70 @@ v1::Config read_kit_config(const std::filesystem::path& path) {
     return v1::ParseJson(text);
 }
 
+#if defined(YUME_HAS_DEVICE_BRIDGE)
+void test_device_start_stop_settles(const std::filesystem::path& kit) {
+    const auto base = kit / "client";
+    const auto config = read_kit_config(base / "yume.json");
+    boost::asio::io_context sockets;
+    // Accept TCP but never answer TLS, so only cancellation can finish start.
+    boost::asio::ip::tcp::acceptor listener(
+        sockets, {boost::asio::ip::make_address("127.0.0.1"),
+                  std::get<v1::ClientEndpoint>(config.endpoint()).port()});
+    listener.non_blocking(true);
+    boost::asio::local::datagram_protocol::socket device(sockets),
+        peer(sockets);
+    boost::asio::local::connect_pair(device, peer);
+    DeviceOptions options;
+    options.descriptor = device.native_handle();
+    options.stream_service = "echo";
+    options.ipv4 =
+        runtime::DeviceAddressPair{{127U, 0U, 0U, 1U}, {127U, 0U, 0U, 2U}};
+    auto context =
+        providers::AsioExecutionContext::create(engine::ExecutorAffinity(79U));
+    CHECK(context.ok());
+    auto run = std::make_shared<NativeRun>(
+        std::move(context).take_value(), config, base,
+        std::filesystem::path(YUME_TEST_RESOLVER_PROGRAM),
+        std::vector<BackendService>{}, providers::AsioTcpSocketProtector{},
+        std::make_shared<BackendRecord>(), options);
+    auto startup =
+        std::make_shared<StartOperation>(run, std::chrono::seconds(30));
+    const std::weak_ptr<NativeRun> weak_run = run;
+    const std::weak_ptr<StartOperation> weak_startup = startup;
+    CHECK(run->submit(startup->task, startup));
+    std::jthread runner([run] { run->run_until_drained(); });
+    boost::asio::ip::tcp::socket stalled(sockets);
+    const auto accept_limit = Clock::now() + std::chrono::seconds(5);
+    for (;;) {
+        boost::system::error_code error;
+        listener.accept(stalled, error);
+        if (!error) break;
+        CHECK(error == boost::asio::error::would_block ||
+              error == boost::asio::error::try_again);
+        CHECK(Clock::now() < accept_limit);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    Status result;
+    CHECK(!startup->wait(Clock::now(), result));
+    const auto stopped_at = Clock::now();
+    run->begin_stop();
+    // Closing and draining I/O alone must also wake the blocking start.
+    run->context->finish();
+    runner.join();
+    CHECK(run->drained());
+    CHECK(startup->wait(Clock::now() + std::chrono::seconds(1), result));
+    CHECK(Clock::now() - stopped_at < std::chrono::seconds(2));
+    CHECK(result.code() == StatusCode::Cancelled);
+    run->begin_stop();
+    Status repeated;
+    CHECK(startup->wait(Clock::now(), repeated));
+    CHECK(repeated.code() == StatusCode::Cancelled);
+    startup.reset();
+    run.reset();
+    CHECK(weak_startup.expired() && weak_run.expired());
+}
+#endif
+
 struct PausedClient final {
     PausedClient(const v1::Config& config, const std::filesystem::path& base) {
         auto context = providers::AsioExecutionContext::create(
@@ -763,6 +836,9 @@ void test_open_deadline_admission(const std::filesystem::path& kit,
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     if (std::filesystem::is_directory(argv[1])) {
+#if defined(YUME_HAS_DEVICE_BRIDGE)
+        yume::embed::test_device_start_stop_settles(argv[1]);
+#endif
         for (const auto kind : {yume::engine::ServiceKind::ByteStream,
                                 yume::engine::ServiceKind::PacketChannel}) {
             yume::embed::test_session_end_status_publication(argv[1], kind,

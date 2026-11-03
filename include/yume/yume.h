@@ -490,6 +490,8 @@ YUME_API yume_status yume_endpoint_set_device(
  * only zero because they have no caller-bounded deadline.
  * A stop or destroy on another thread cancels a client start in progress:
  * the start returns YUME_STATUS_CANCELLED and leaves the endpoint STOPPED.
+ * This includes a device-backed first connection and does not wait for the
+ * connection deadline; owned work still drains before start and stop return.
  * Only server endpoints register services. Registrations are made while
  * stopped, must match the immutable configuration, and remain attached across
  * stop and restart.

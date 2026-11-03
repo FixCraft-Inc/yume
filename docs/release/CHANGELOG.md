@@ -7,6 +7,11 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+Stopping device-backed ABI startup now settles its session-keeper waiter
+without waiting for the connection deadline. The public start returns
+`YUME_STATUS_CANCELLED` after owned work drains and leaves the endpoint
+`STOPPED`.
+
 The product version moved to `0.3.0-dev1`. `yume` and `yumed` compose native
 YTP/1 with schema-1 configuration, and transport v2 has been removed. The
 YTP/1, relay channel, schema, ABI and evidence-profile versions are

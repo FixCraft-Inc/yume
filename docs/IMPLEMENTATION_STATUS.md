@@ -339,6 +339,9 @@ regressions cover closure from another thread, pending-read settlement before
 notification, reentrant slot reuse, callback exceptions, client reconnect
 with SOCKS traffic through the replacement session, and backoff after a session
 that ends right after AUTH.
+Engine regressions retain closing entries through crossed FIN, abort and
+settlement in both roles, reject invalid peer barriers and keep withheld
+settlement within the existing stream bound.
 The established endpoint rekey cases explicitly initiate rotation. The session
 engine also rotates on its own. An epoch ends at the session's epoch size of
 directional payload, one protected record per 2 KiB of it, or 500 ms of

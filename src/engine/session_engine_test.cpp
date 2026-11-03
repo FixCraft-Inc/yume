@@ -996,7 +996,7 @@ void test_write_half_close_preserves_reads() {
         0U, 3U, frame(ytp1::RecordType::Close, 1U, normal_close)));
     CHECK(end_of_stream == 1);
     CHECK(session.engine->state() == SessionState::Active);
-    // Both directions are finished, so the engine has retired the entry. The
+    // Both directions are finished and the entry awaits peer settlement. The
     // responder still reports the clean end instead of a closed stream.
     read_end();
     CHECK(end_of_stream == 2);
@@ -3604,6 +3604,376 @@ void test_crossed_abort_data_credit_and_terminal_barrier() {
     CHECK(session.engine->state() == SessionState::Failed);
 }
 
+void test_crossed_fin_abort_keeps_peer_settlement() {
+    enum class InboundData { None, Queued, ApplicationHeld };
+    const std::array<std::byte, 1U> fin{std::byte{0}};
+    const std::array<std::byte, 1U> aborted{std::byte{4}};
+    const std::array<std::byte, 1U> settled{std::byte{5}};
+    const std::array<std::byte, 4U> data{};
+    for (const auto role : {EndpointRole::Server, EndpointRole::Client}) {
+        for (const bool local_fin_first : {true, false}) {
+            for (const bool hold_settlement : {false, true}) {
+                for (const auto inbound :
+                     {InboundData::None, InboundData::Queued,
+                      InboundData::ApplicationHeld}) {
+                    SessionLimits limits;
+                    limits.initial_stream_credit = data.size();
+                    limits.max_stream_credit = data.size();
+                    limits.initial_connection_credit = 2U * data.size();
+                    limits.max_connection_credit = 2U * data.size();
+                    TestSession session(true, false, limits, 0U,
+                                        ServiceKind::ByteStream, role);
+                    session.start_to_active();
+                    std::uint64_t sequence = 1U;
+                    const std::uint32_t id =
+                        role == EndpointRole::Server ? 1U : 2U;
+                    auto responder =
+                        open_competing_stream(session, id, sequence);
+                    const std::weak_ptr<StreamResponder> owner = responder;
+                    std::optional<ReceivedRecord> held;
+                    if (inbound != InboundData::None) {
+                        session.carrier->deliver(protected_wire(
+                            0U, sequence++,
+                            frame(ytp1::RecordType::Data, id, data)));
+                        if (inbound == InboundData::ApplicationHeld) {
+                            responder->async_read({}, [&](auto result) {
+                                if (result.ok())
+                                    held.emplace(
+                                        std::move(result).take_value());
+                            });
+                            CHECK(held.has_value());
+                        }
+                    }
+                    const auto sent_before = session.carrier->sent.size();
+                    if (local_fin_first) {
+                        CHECK(responder->shutdown_write().ok());
+                    } else {
+                        session.carrier->deliver(protected_wire(
+                            0U, sequence++,
+                            frame(ytp1::RecordType::Close, id, fin)));
+                    }
+                    // Exercise ABORT before the local settlement finishes
+                    // sending as well as after its synchronous completion.
+                    session.carrier->hold_sends = hold_settlement;
+                    if (local_fin_first) {
+                        session.carrier->deliver(protected_wire(
+                            0U, sequence++,
+                            frame(ytp1::RecordType::Close, id, fin)));
+                    } else {
+                        CHECK(responder->shutdown_write().ok());
+                    }
+                    // Peer credit may cross the local settlement. It cannot
+                    // reopen the stream or publish another application record.
+                    grant_competing_credit(session, sequence, id, 16U);
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Close, id, aborted)));
+                    CHECK(session.engine->state() == SessionState::Active);
+                    CHECK(responder->terminated());
+                    CHECK(read_code(*responder) == StatusCode::Closed);
+                    responder.reset();
+                    session.handler->responder.reset();
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Close, id, settled)));
+                    if (session.engine->state() != SessionState::Active) {
+                        throw TestFailure(
+                            "crossed settlement ended the session: " +
+                            session.engine->terminal_status().message());
+                    }
+                    if (hold_settlement) {
+                        CHECK(!owner.expired());
+                        session.carrier->hold_sends = false;
+                        session.carrier->complete_send();
+                    }
+                    CHECK(owner.expired());
+                    held.reset();
+                    std::array<std::size_t, 6U> closes{};
+                    std::uint64_t returned_connection = 0U;
+                    for (std::size_t i = sent_before;
+                         i < session.carrier->sent.size(); ++i) {
+                        const auto record =
+                            protected_record(session.carrier->sent[i]);
+                        if (record.header.type == ytp1::RecordType::Close) {
+                            CHECK(record.header.stream_id.value() == id);
+                            CHECK(record.payload.size() == 1U);
+                            CHECK(record.payload[0] < closes.size());
+                            ++closes[record.payload[0]];
+                        } else {
+                            CHECK(record.header.type ==
+                                  ytp1::RecordType::ConnectionCredit);
+                            const auto credit =
+                                ytp1::DecodeCreditUpdate(record.payload);
+                            CHECK(credit.ok());
+                            returned_connection += *credit.value;
+                        }
+                    }
+                    CHECK((closes == std::array<std::size_t, 6U>{1U, 0U, 0U, 0U,
+                                                                 0U, 1U}));
+                    CHECK(returned_connection ==
+                          (inbound == InboundData::None ? 0U : data.size()));
+                    open_competing_stream(session, id + 2U, sequence);
+                    CHECK(session.engine->state() == SessionState::Active);
+                }
+            }
+        }
+    }
+}
+
+void test_ordinary_abort_retires_and_completes_io_once() {
+    const std::array<std::byte, 4U> data{};
+    const std::array<std::byte, 1U> aborted{std::byte{4}};
+    const std::array<std::byte, 1U> settled{std::byte{5}};
+    for (const auto role : {EndpointRole::Server, EndpointRole::Client}) {
+        for (const bool local_abort : {false, true}) {
+            std::array<int, 2U> completions{};
+            std::array<StatusCode, 2U> codes{};
+            std::size_t transferred = data.size();
+            TestSession session(true, false, {}, 0U, ServiceKind::ByteStream,
+                                role);
+            session.start_to_active();
+            std::uint64_t sequence = 1U;
+            const std::uint32_t id = role == EndpointRole::Server ? 1U : 2U;
+            auto responder = open_competing_stream(session, id, sequence);
+            const std::weak_ptr<StreamResponder> owner = responder;
+            responder->async_read({}, [&](auto result) {
+                ++completions[0];
+                codes[0] = result.status().code();
+            });
+            responder->async_write(copy_bytes(data), {},
+                                   [&](Status status, std::size_t bytes) {
+                                       ++completions[1];
+                                       codes[1] = status.code();
+                                       transferred = bytes;
+                                   });
+            CHECK((completions == std::array<int, 2U>{0, 0}));
+            const auto sent_before = session.carrier->sent.size();
+            if (local_abort) {
+                responder->close(Status::diagnostic(StatusCode::Cancelled));
+            } else {
+                session.carrier->deliver(protected_wire(
+                    0U, sequence++,
+                    frame(ytp1::RecordType::Close, id, aborted)));
+            }
+            CHECK((completions == std::array<int, 2U>{1, 1}));
+            CHECK(codes[0] == StatusCode::Cancelled &&
+                  codes[1] == StatusCode::Cancelled && transferred == 0U);
+            CHECK(session.carrier->sent.size() == sent_before + 1U);
+            const auto close = protected_record(session.carrier->sent.back());
+            CHECK(close.header.type == ytp1::RecordType::Close);
+            CHECK(close.payload.size() == 1U &&
+                  close.payload[0] == (local_abort ? 4U : 5U));
+            responder.reset();
+            session.handler->responder.reset();
+            if (local_abort) {
+                CHECK(!owner.expired());
+                session.carrier->deliver(protected_wire(
+                    0U, sequence++,
+                    frame(ytp1::RecordType::Close, id, settled)));
+            }
+            CHECK(owner.expired());
+            open_competing_stream(session, id + 2U, sequence);
+            session.engine->stop();
+            CHECK((completions == std::array<int, 2U>{1, 1}));
+        }
+    }
+}
+
+void test_closing_entry_rejects_invalid_peer_records() {
+    enum class InvalidRecord {
+        UnknownSettlement,
+        UnexpectedSettlement,
+        DuplicateSettlement,
+        RepeatedFin,
+        DataAfterFin,
+        DataAfterAbort,
+        CreditAfterAbort,
+        EmptyClose,
+        LongClose,
+        UnknownCloseCode,
+        WrongCrossedDataKind,
+        ExcessCrossedCredit,
+    };
+    const std::array<std::byte, 1U> fin{std::byte{0}};
+    const std::array<std::byte, 1U> aborted{std::byte{4}};
+    const std::array<std::byte, 1U> settled{std::byte{5}};
+    const std::array<std::byte, 4U> data{};
+    for (const auto role : {EndpointRole::Server, EndpointRole::Client}) {
+        for (const auto invalid :
+             {InvalidRecord::UnknownSettlement,
+              InvalidRecord::UnexpectedSettlement,
+              InvalidRecord::DuplicateSettlement, InvalidRecord::RepeatedFin,
+              InvalidRecord::DataAfterFin, InvalidRecord::DataAfterAbort,
+              InvalidRecord::CreditAfterAbort, InvalidRecord::EmptyClose,
+              InvalidRecord::LongClose, InvalidRecord::UnknownCloseCode,
+              InvalidRecord::WrongCrossedDataKind,
+              InvalidRecord::ExcessCrossedCredit}) {
+            TestSession session(true, false, {}, 0U, ServiceKind::ByteStream,
+                                role);
+            session.start_to_active();
+            std::uint64_t sequence = 1U;
+            const std::uint32_t id = role == EndpointRole::Server ? 1U : 2U;
+            const auto responder = open_competing_stream(session, id, sequence);
+            const bool crossed_local_abort =
+                invalid == InvalidRecord::WrongCrossedDataKind ||
+                invalid == InvalidRecord::ExcessCrossedCredit;
+            if (crossed_local_abort) {
+                responder->close(Status::diagnostic(StatusCode::Cancelled));
+            } else if (invalid != InvalidRecord::UnknownSettlement &&
+                       invalid != InvalidRecord::UnexpectedSettlement) {
+                CHECK(responder->shutdown_write().ok());
+                session.carrier->deliver(protected_wire(
+                    0U, sequence++, frame(ytp1::RecordType::Close, id, fin)));
+                if (invalid != InvalidRecord::RepeatedFin &&
+                    invalid != InvalidRecord::DataAfterFin) {
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Close, id, aborted)));
+                }
+            }
+            CHECK(session.engine->state() == SessionState::Active);
+            switch (invalid) {
+                case InvalidRecord::UnknownSettlement:
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Close, id + 2U, settled)));
+                    break;
+                case InvalidRecord::UnexpectedSettlement:
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Close, id, settled)));
+                    break;
+                case InvalidRecord::DuplicateSettlement:
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Close, id, settled)));
+                    CHECK(session.engine->state() == SessionState::Active);
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Close, id, settled)));
+                    break;
+                case InvalidRecord::RepeatedFin:
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Close, id, fin)));
+                    break;
+                case InvalidRecord::DataAfterFin:
+                case InvalidRecord::DataAfterAbort:
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Data, id, data)));
+                    break;
+                case InvalidRecord::CreditAfterAbort:
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        credit_frame(ytp1::RecordType::StreamCredit, id, 16U)));
+                    break;
+                case InvalidRecord::EmptyClose:
+                    session.carrier->deliver(
+                        protected_wire(0U, sequence++,
+                                       frame(ytp1::RecordType::Close, id, {})));
+                    break;
+                case InvalidRecord::LongClose: {
+                    const std::array<std::byte, 2U> payload{std::byte{5},
+                                                            std::byte{0}};
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Close, id, payload)));
+                    break;
+                }
+                case InvalidRecord::UnknownCloseCode: {
+                    const std::array<std::byte, 1U> payload{std::byte{6}};
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Close, id, payload)));
+                    break;
+                }
+                case InvalidRecord::WrongCrossedDataKind:
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        frame(ytp1::RecordType::Packet, id, data)));
+                    break;
+                case InvalidRecord::ExcessCrossedCredit:
+                    grant_competing_credit(session, sequence, id,
+                                           ytp1::kMaxCreditIncrement);
+                    session.carrier->deliver(protected_wire(
+                        0U, sequence++,
+                        credit_frame(ytp1::RecordType::StreamCredit, id, 1U)));
+                    break;
+            }
+            CHECK(session.engine->state() == SessionState::Failed);
+            CHECK(session.engine->terminal_status().code() ==
+                  StatusCode::FailedPrecondition);
+        }
+    }
+}
+
+void test_withheld_crossed_settlement_keeps_streams_bounded() {
+    const std::array<std::byte, 1U> fin{std::byte{0}};
+    const std::array<std::byte, 1U> aborted{std::byte{4}};
+    const std::array<std::byte, 1U> settled{std::byte{5}};
+    for (const auto role : {EndpointRole::Server, EndpointRole::Client}) {
+        TestSession session(true, false, {}, 0U, ServiceKind::ByteStream, role);
+        session.start_to_active();
+        std::uint64_t sequence = 1U;
+        const std::uint32_t first_id = role == EndpointRole::Server ? 1U : 2U;
+        std::array<std::weak_ptr<StreamResponder>, 4U> owners;
+        for (std::size_t i = 0U; i < owners.size(); ++i) {
+            const auto id = first_id + static_cast<std::uint32_t>(2U * i);
+            auto responder = open_competing_stream(session, id, sequence);
+            owners[i] = responder;
+            CHECK(responder->shutdown_write().ok());
+            session.carrier->deliver(protected_wire(
+                0U, sequence++, frame(ytp1::RecordType::Close, id, fin)));
+            session.carrier->deliver(protected_wire(
+                0U, sequence++, frame(ytp1::RecordType::Close, id, aborted)));
+            responder.reset();
+            session.handler->responder.reset();
+            CHECK(!owners[i].expired());
+        }
+        int completions = 0;
+        StatusCode code = StatusCode::Ok;
+        std::shared_ptr<StreamResponder> opened;
+        const auto capture = [&](auto result) {
+            ++completions;
+            code = result.status().code();
+            if (result.ok()) opened = std::move(result).take_value();
+        };
+        session.engine->async_open("echo", ServiceKind::ByteStream, capture);
+        CHECK(completions == 1 && code == StatusCode::ResourceExhausted);
+        CHECK(session.engine->state() == SessionState::Active);
+        session.carrier->deliver(protected_wire(
+            0U, sequence++, frame(ytp1::RecordType::Close, first_id, settled)));
+        CHECK(owners[0].expired());
+        // One received settlement releases exactly the slot needed for a
+        // subsequent authorized OPEN, without replacing the session.
+        session.engine->async_open("echo", ServiceKind::ByteStream, capture);
+        CHECK(completions == 1);
+        const std::uint32_t local_id = role == EndpointRole::Server ? 2U : 1U;
+        grant_competing_credit(session, sequence, local_id, 16U);
+        CHECK(completions == 2 && code == StatusCode::Ok && opened);
+        opened->close(Status::diagnostic(StatusCode::Cancelled));
+        session.carrier->deliver(protected_wire(
+            0U, sequence++, frame(ytp1::RecordType::Close, local_id, settled)));
+        for (std::size_t i = 1U; i < owners.size(); ++i) {
+            const auto id = first_id + static_cast<std::uint32_t>(2U * i);
+            CHECK(!owners[i].expired());
+            session.carrier->deliver(protected_wire(
+                0U, sequence++, frame(ytp1::RecordType::Close, id, settled)));
+            CHECK(owners[i].expired());
+        }
+        open_competing_stream(session, first_id + 8U, sequence);
+        CHECK(session.engine->state() == SessionState::Active);
+    }
+}
+
+void test_crossed_settlement() {
+    test_crossed_fin_abort_keeps_peer_settlement();
+    test_ordinary_abort_retires_and_completes_io_once();
+    test_closing_entry_rejects_invalid_peer_records();
+    test_withheld_crossed_settlement_keeps_streams_bounded();
+}
+
 void test_graceful_settlement_keeps_crossed_credit_ordered() {
     TestSession session;
     session.start_to_active();
@@ -4848,6 +5218,7 @@ void run_test() {
     test_open_acceptance_refusal_and_pending_cancellation();
     test_receiver_waits_for_handler_acceptance();
     test_crossed_abort_data_credit_and_terminal_barrier();
+    test_crossed_settlement();
     test_graceful_settlement_keeps_crossed_credit_ordered();
     test_unacknowledged_streams_remain_bounded();
     test_cancel_unpublished_open_behind_rekey();
@@ -4877,6 +5248,9 @@ int main(int argc, char** argv) {
         if (argc == 2 &&
             std::string_view(argv[1]) == "--shared-credit-progress") {
             yume::engine::test_shared_credit_progress_with_held_stream();
+        } else if (argc == 2 &&
+                   std::string_view(argv[1]) == "--crossed-settlement") {
+            yume::engine::test_crossed_settlement();
         } else if (argc == 2 &&
                    std::string_view(argv[1]) == "--control-backpressure") {
             yume::engine::test_engine_control_backpressure();

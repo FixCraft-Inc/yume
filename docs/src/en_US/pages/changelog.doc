@@ -12,6 +12,10 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+The session engine retains a closing stream until its required peer settlement
+arrives when an abort crosses both directional FINs. A valid crossed settlement
+therefore preserves the authenticated session for later streams.
+
 The experimental C ABI adds `yume_config_validate_client_credentials` to
 validate actual client credential files and composite private/public key
 pairs before application publication. It returns the local composite

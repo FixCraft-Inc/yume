@@ -684,7 +684,9 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>,
         slot.starting = false;
         --pending_starts;
         auto bootstrap = std::move(slot.bootstrap);
-        auto completion = std::move(slot.completion);
+        // A moved-from std::function may still own its captures on libc++.
+        // Release the slot's startup owner before invoking its one-shot result.
+        auto completion = std::exchange(slot.completion, {});
         // A busy executor can deliver completion before an expired timer's
         // handler. Cancellation of that handler must not turn an overrun into
         // success. Idle server accepts have no armed deadline to inspect.

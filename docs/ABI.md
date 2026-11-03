@@ -399,6 +399,8 @@ a `control` socket, a `cluster` section and reverse-proxy cover report
 `stop` is synchronous, idempotent after a start attempt, and accepts only zero.
 It closes the endpoint's sessions, wakes blocked calls, and joins the backend's
 execution threads before `STOPPED` is published. Registrations remain. A
+stopped run releases its execution context and polling descriptors once its
+caller-owned stream and packet handles have been destroyed. A
 client whose session ends later stays `RUNNING`, and its OPENs report
 `YUME_STATUS_INVALID_STATE` until the application stops and starts it again.
 

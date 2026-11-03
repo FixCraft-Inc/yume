@@ -492,6 +492,8 @@ YUME_API yume_status yume_endpoint_set_device(
  * the start returns YUME_STATUS_CANCELLED and leaves the endpoint STOPPED.
  * This includes a device-backed first connection and does not wait for the
  * connection deadline; owned work still drains before start and stop return.
+ * Once caller-owned stream and packet handles are destroyed, stopped runs
+ * retain no execution context or its polling descriptors.
  * Only server endpoints register services. Registrations are made while
  * stopped, must match the immutable configuration, and remain attached across
  * stop and restart.

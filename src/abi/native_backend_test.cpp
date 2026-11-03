@@ -284,8 +284,8 @@ void test_accept_does_not_wait_for_runner(const v1::Config& config) {
 }
 
 void test_abandoned_opens_release_waiting_capacity(const v1::Config& config) {
+    std::size_t refusals = 0U;  // Outlives the fixture's final OPEN refusals.
     Fixture fixture(config);
-    std::size_t refusals = 0U;
     fixture.on_runner([&] {
         for (std::size_t index = 0U; index <= kMaxWaitingOpens; ++index) {
             const auto responder = std::make_shared<TestResponder>();
@@ -616,6 +616,7 @@ struct PausedClient final {
             std::make_shared<BackendRecord>(), std::nullopt);
         auto startup =
             std::make_shared<StartOperation>(run, std::chrono::seconds(10));
+        startup_owner = startup;
         CHECK(run->submit(startup->task, startup));
         // Stopping this temporary runner pauses delivery without ending the
         // NativeRun. run_until_drained() would instead mark it terminal.
@@ -650,7 +651,68 @@ struct PausedClient final {
     }
 
     std::shared_ptr<NativeRun> run;
+    std::weak_ptr<StartOperation> startup_owner;
 };
+
+std::vector<std::string> reactor_descriptors() {
+    std::vector<std::string> targets;
+#if defined(__linux__)
+    for (const auto& entry :
+         std::filesystem::directory_iterator("/proc/self/fd")) {
+        std::error_code error;
+        const auto target = std::filesystem::read_symlink(entry.path(), error);
+        if (!error && (target == "anon_inode:[eventfd]" ||
+                       target == "anon_inode:[eventpoll]")) {
+            targets.push_back(target.string());
+        }
+    }
+    std::sort(targets.begin(), targets.end());
+#endif
+    return targets;
+}
+
+void test_authenticated_runs_release_owners(const std::filesystem::path& kit) {
+    const auto server_base = kit / "server";
+    const auto client_base = kit / "client";
+    NativeBackend server(read_kit_config(server_base / "yumed.json"),
+                         server_base, {}, {}, {}, std::nullopt);
+    std::string error;
+    CHECK(server.start(0U, nullptr, error) == BackendIo::Ok);
+    const auto config = read_kit_config(client_base / "yume.json");
+    std::vector<std::string> warmed_reactors;
+    // One warm-up client, then sixteen clients with two runs apiece. Check
+    // actual owner release, not eventual process-exit cleanup or a GC hint.
+    for (std::size_t client = 0U; client < 17U; ++client) {
+        for (std::size_t attempt = 0U; attempt < 2U; ++attempt) {
+            std::weak_ptr<NativeRun> weak_run;
+            std::weak_ptr<providers::AsioExecutionContext> weak_context;
+            std::weak_ptr<engine::SessionEngine> weak_session;
+            std::weak_ptr<StartOperation> weak_startup;
+            {
+                PausedClient started(config, client_base);
+                weak_run = started.run;
+                weak_context = started.run->context;
+                weak_session = started.run->session;
+                weak_startup = started.startup_owner;
+            }
+            std::cout << "released client=" << client << " run=" << attempt
+                      << " owners=" << weak_run.expired() << ','
+                      << weak_context.expired() << ',' << weak_session.expired()
+                      << ',' << weak_startup.expired() << std::endl;
+            CHECK(weak_startup.expired());
+            CHECK(weak_run.expired());
+            CHECK(weak_session.expired());
+            CHECK(weak_context.expired());
+        }
+        const auto reactors = reactor_descriptors();
+        std::cout << "closed client=" << client
+                  << " reactor_fds=" << reactors.size() << std::endl;
+        if (client == 0U)
+            warmed_reactors = reactors;
+        else
+            CHECK(reactors == warmed_reactors);
+    }
+}
 
 void test_session_end_status_publication(const std::filesystem::path& kit,
                                          engine::ServiceKind kind,
@@ -836,6 +898,7 @@ void test_open_deadline_admission(const std::filesystem::path& kit,
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     if (std::filesystem::is_directory(argv[1])) {
+        yume::embed::test_authenticated_runs_release_owners(argv[1]);
 #if defined(YUME_HAS_DEVICE_BRIDGE)
         yume::embed::test_device_start_stop_settles(argv[1]);
 #endif

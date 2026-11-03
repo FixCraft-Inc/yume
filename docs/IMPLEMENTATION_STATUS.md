@@ -431,6 +431,9 @@ credit lifetime and cleanup after an escaped delivery exception.
 `yume_native_backend_open_integration` also stops device-backed startup against
 a peer that accepts TCP without answering TLS, checks that the startup waiter
 returns `Cancelled` after final drain, and verifies release of its run ownership.
+It repeats authenticated client lifetimes with two runs apiece and checks that
+startup, run, session and context owners expire after close, with stable
+event-loop descriptor counts after warm-up on Linux.
 The standalone programs compose NativeEndpoint directly. This embedding
 backend has no production qualification.
 

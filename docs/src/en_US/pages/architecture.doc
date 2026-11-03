@@ -208,6 +208,9 @@ session bootstrap.
 files, per-identity service policy, client TCP/TLS/H2 or server FrontDoor, and
 `SessionBootstrap` on one caller-owned `AsioExecutionContext`. Its two roles
 share the same session engine.
+The endpoint clears each stored one-shot startup completion before delivery,
+so a completed callback cannot retain its caller and execution context through
+the session slot.
 Credential parsing uses a private OpenSSL context and passes canonical DER to
 the independent security factory. Admission, traffic access and administrator
 authority remain separate. `yume_private_files` owns the protected-file reader

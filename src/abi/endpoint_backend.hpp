@@ -359,6 +359,12 @@ std::unique_ptr<EndpointBackend> make_native_backend(
 BackendIo check_backend_device(const config::v1::Config& config,
                                const BackendDevice& device, std::string& error);
 
+// Synchronous native credential loading, without endpoint or network activity.
+// Only Ok publishes the private-key-derived local composite fingerprint.
+[[nodiscard]] BackendIo validate_client_credentials(
+    const config::v1::Config& config, std::string_view base_dir,
+    std::string& fingerprint, std::string& error);
+
 // The files of one opened sealed kit. Destruction wipes them.
 struct BackendKitFile {
     std::string_view path;

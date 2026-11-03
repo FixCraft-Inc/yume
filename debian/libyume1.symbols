@@ -5,6 +5,7 @@ libyume.so.1 libyume1 #MINVER#
  yume_config_destroy@Base 1:0.3.0~dev1-1
  yume_config_parse_json@Base 1:0.3.0~dev1-1
  yume_config_role@Base 1:0.3.0~dev1-1
+ yume_config_validate_client_credentials@Base 1:0.3.0~dev1-1
  yume_endpoint_accept_packet@Base 1:0.3.0~dev1-1
  yume_endpoint_accept_stream@Base 1:0.3.0~dev1-1
  yume_endpoint_create@Base 1:0.3.0~dev1-1

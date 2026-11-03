@@ -49,6 +49,7 @@ extern "C" [[noreturn]] void __wrap___cxa_throw(void* exception,
 
 #include <nlohmann/json.hpp>
 #include <openssl/bio.h>
+#include <openssl/core_names.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/provider.h>
@@ -325,6 +326,75 @@ StreamOpenContext open_context(std::string peer, EndpointRole role,
         std::move(service), kind,
         take(PeerEvidence::create(role, std::move(peer), "ytp1-hybrid",
                                   {std::byte{1}}))));
+}
+
+void test_client_validation(Fixture& fixture) {
+    const auto config = yume::config::v1::Parse(fixture.client_config);
+    const auto validate = [&] {
+        return validate_client_credentials(config, fixture.directory.path());
+    };
+    check(take(validate()) == fixture.client.id,
+          "validation did not derive the actual local private-key identity");
+    check(!validate_client_credentials(
+               yume::config::v1::Parse(fixture.server_config),
+               fixture.directory.path())
+               .ok(),
+          "client validation accepted a server");
+    Directory empty;
+    check(!validate_client_credentials(config, empty.path()).ok(),
+          "client validation accepted absent credentials");
+    for (const auto& [name, reference] :
+         fixture.client_config.at("credentials").items()) {
+        const auto relative = reference.at("file").get<std::string>();
+        std::ifstream input(fixture.directory.path() / relative,
+                            std::ios::binary);
+        const std::string original(std::istreambuf_iterator<char>(input), {});
+        fixture.write(relative, "malformed");
+        check(!validate().ok(),
+              "client validation accepted malformed credential material");
+        fixture.write(relative, original);
+    }
+    fixture.write("credentials/client.pem", fixture.admin.private_pem);
+    check(take(validate()) == fixture.admin.id &&
+              fixture.admin.id != fixture.client.id,
+          "substituted private key retained the previous local identity");
+    fixture.write("credentials/client.pem", fixture.client.private_pem);
+    check(take(validate()) == fixture.client.id,
+          "validation retained stale credential material");
+    // The expanded private encoding carries public consistency material. Keep
+    // the PEM and ASN.1 structure valid while corrupting that material.
+    check(EVP_PKEY_set_int_param(fixture.client.pq.get(),
+                                 OSSL_PKEY_PARAM_ML_DSA_PREFER_SEED, 0) == 1,
+          "test expanded private encoding selection failed");
+    const auto expanded = pem(fixture.client.pq.get(), true);
+    BioPtr input(
+        BIO_new_mem_buf(expanded.data(), static_cast<int>(expanded.size())),
+        BIO_free);
+    char* name = nullptr;
+    char* header = nullptr;
+    unsigned char* der = nullptr;
+    long size = 0;
+    check(input &&
+              PEM_read_bio(input.get(), &name, &header, &der, &size) == 1 &&
+              size > 64,
+          "test private DER extraction failed");
+    OPENSSL_free(name);
+    OPENSSL_free(header);
+    der[size - 1] ^= 1;
+    BioPtr output(BIO_new(BIO_s_mem()), BIO_free);
+    const int written =
+        output ? PEM_write_bio(output.get(), "PRIVATE KEY", "", der, size) : 0;
+    OPENSSL_clear_free(der, static_cast<std::size_t>(size));
+    check(written > 0, "test inconsistent PEM encoding failed");
+    char* bytes = nullptr;
+    const auto count = BIO_get_mem_data(output.get(), &bytes);
+    check(count > 0 && bytes, "test inconsistent PEM bytes missing");
+    fixture.write("credentials/client.pem",
+                  pem(fixture.client.classical.get(), true) +
+                      std::string(bytes, static_cast<std::size_t>(count)));
+    check(!validate().ok(),
+          "client validation accepted inconsistent private/public material");
+    fixture.write("credentials/client.pem", fixture.client.private_pem);
 }
 
 void test_load_and_authenticate(Fixture& fixture) {
@@ -1333,6 +1403,7 @@ int main() {
     try {
         test_admission_ownership();
         Fixture fixture;
+        test_client_validation(fixture);
         test_load_and_authenticate(fixture);
         test_invalid_stores(fixture);
         test_session_limits(fixture);

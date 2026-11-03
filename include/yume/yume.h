@@ -461,6 +461,28 @@ YUME_API yume_status yume_config_parse_json(yume_runtime* runtime,
                                             yume_config** out_config)
     YUME_NOEXCEPT;
 YUME_API uint32_t yume_config_role(const yume_config* config) YUME_NOEXCEPT;
+/*
+ * Synchronously loads a client's referenced credential files using its
+ * runtime's config_base_dir and the native protected-file/crypto validators.
+ * Also checks the composite private/public key pairs. No endpoint, network
+ * connection or application adapter is started. Server configs are invalid.
+ *
+ * On success writes the 32 raw SHA-256 bytes of the local composite identity
+ * derived from the private key. This does not authenticate a peer, establish
+ * admission, or bind the identity to an application grant. The caller compares
+ * it to its independently trusted expected identity before publication.
+ *
+ * fingerprint_size < 32 returns BUFFER_TOO_SMALL (a null buffer is allowed
+ * only with size zero). At entry, up to 32 provided output bytes are zeroed,
+ * including on failure. Bytes past 32 are untouched. The output must not alias
+ * a handle or its inputs. Failures are diagnosed on config. Callers keep the
+ * referenced files and all ancestor directories private and stable throughout
+ * the call. Absolute references retain schema-1 semantics, so this operation
+ * does not confine paths to config_base_dir or reserve future file contents.
+ */
+YUME_API yume_status yume_config_validate_client_credentials(
+    yume_config* config, uint8_t* fingerprint,
+    size_t fingerprint_size) YUME_NOEXCEPT;
 YUME_API void yume_config_destroy(yume_config* config) YUME_NOEXCEPT;
 
 YUME_API yume_status yume_endpoint_create(yume_runtime* runtime,

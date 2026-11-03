@@ -199,6 +199,15 @@ engine::Result<LoadedNativeCredentials> load_native_credentials(
     const std::filesystem::path& config_base_directory,
     std::string_view tls_server_name = {}) noexcept;
 
+// Loads all client credentials through the native loader without creating an
+// endpoint. Also checks each composite private/public key pair and returns its
+// private-key-derived local fingerprint (lowercase SHA-256 hex). The caller
+// keeps the referenced files and their ancestor directories private and stable
+// for the call. This establishes neither peer authentication nor admission.
+[[nodiscard]] engine::Result<std::string> validate_client_credentials(
+    const config::v1::Config& config,
+    const std::filesystem::path& config_base_directory) noexcept;
+
 // A server's composite identity as its circuit handshakes sign with it: the
 // configured composite_key, read under the same protected-file contract and
 // parsed in keys, which must outlive the result. InvalidArgument for a

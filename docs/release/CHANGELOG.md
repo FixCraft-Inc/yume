@@ -7,6 +7,11 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+The experimental C ABI adds `yume_config_validate_client_credentials` to
+validate actual client credential files and composite private/public key
+pairs before application publication. It returns the local composite
+fingerprint without starting an endpoint or authenticating a server.
+
 Native session startup clears its stored one-shot callback before delivery.
 Repeated embedded client starts and stops release their run owners and polling
 descriptors on libc++ as well as libstdc++.

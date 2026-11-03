@@ -16,6 +16,13 @@ GUI each need evidence for their own environment.
 
 ## Current 0.3 foundation
 
+The experimental ABI implements explicit client credential-file validation
+through `yume_config_validate_client_credentials`, without starting an
+endpoint. It returns the private-key-derived local composite fingerprint
+after native credential and key-pair checks. Its output is distinct from an
+authenticated peer identity and server admission. See [ABI](ABI.md#strict-configuration)
+for caller confinement, file lifetime and buffer requirements.
+
 ### Foundation components
 
 Implemented and covered by focused tests:

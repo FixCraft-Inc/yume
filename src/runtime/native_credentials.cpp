@@ -226,9 +226,21 @@ struct CompositePrivate final {
 };
 
 CompositePrivate read_private_identity(const CredentialCrypto& crypto,
-                                       const std::filesystem::path& path) {
+                                       const std::filesystem::path& path,
+                                       bool validate_pair = false) {
     auto pem = read_file(path, kMaxPemBytes);
     auto identity = keys::composite_private_from_pem(crypto, pem.text());
+    if (validate_pair) {
+        for (auto* key :
+             {identity.classical.get(), identity.post_quantum.get()}) {
+            std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> context(
+                EVP_PKEY_CTX_new_from_pkey(crypto.context(), key,
+                                           "provider=default"),
+                EVP_PKEY_CTX_free);
+            require(context && EVP_PKEY_pairwise_check(context.get()) == 1,
+                    "credential private/public key pair is invalid");
+        }
+    }
     return {private_der(identity.classical.get()),
             private_der(identity.post_quantum.get()),
             std::move(identity.identity.fingerprint)};
@@ -758,7 +770,8 @@ NativeCircuitCredentials load_circuits(const config::v1::CircuitSettings& refs,
 LoadedNativeCredentials load_client(const config::v1::Config& config,
                                     const std::filesystem::path& base,
                                     std::string_view tls_server_name,
-                                    const CredentialCrypto& crypto) {
+                                    const CredentialCrypto& crypto,
+                                    std::string* validated_identity = nullptr) {
     require(!tls_server_name.empty(), "client TLS server name is required");
     const auto& refs =
         std::get<config::v1::ClientCredentials>(config.credentials());
@@ -768,7 +781,8 @@ LoadedNativeCredentials load_client(const config::v1::Config& config,
     require(CRYPTO_memcmp(psk.data(), admission.data(), 32) != 0,
             "access PSK must differ from admission key");
     auto local = read_private_identity(
-        crypto, resolve_reference(base, refs.composite_key().path()));
+        crypto, resolve_reference(base, refs.composite_key().path()),
+        validated_identity != nullptr);
     auto remote = read_public_identity(
         crypto, resolve_reference(base, refs.server_identity().path()));
     auto kem_pem = read_file(base, refs.server_mlkem());
@@ -802,6 +816,7 @@ LoadedNativeCredentials load_client(const config::v1::Config& config,
         circuits.emplace(
             load_circuits(*settings, base, crypto, remote.fingerprint));
     }
+    if (validated_identity) *validated_identity = std::move(local.fingerprint);
     return {std::move(factory).take_value(),
             std::move(tls).take_value(),
             std::make_shared<const NativeAuthorizationPolicy>(
@@ -934,6 +949,34 @@ Result<LoadedNativeCredentials> load_native_credentials(
             Status::diagnostic(status.code(), status.message()));
     } catch (...) {
         return Result<LoadedNativeCredentials>(Status(StatusCode::Internal));
+    }
+}
+
+Result<std::string> validate_client_credentials(
+    const config::v1::Config& config,
+    const std::filesystem::path& config_base_directory) noexcept {
+    try {
+        if (config.role() != config::v1::Role::Client)
+            return Result<std::string>(Status(StatusCode::InvalidArgument));
+        CredentialCrypto crypto;
+        std::string identity;
+        const auto& endpoint =
+            std::get<config::v1::ClientEndpoint>(config.endpoint());
+        // Keep provider-owned keys alive only for this validation. No endpoint,
+        // execution context, resolver or transport is created.
+        auto credentials = load_client(config, config_base_directory,
+                                       endpoint.host(), crypto, &identity);
+        return Result<std::string>(std::move(identity));
+    } catch (const std::bad_alloc&) {
+        return Result<std::string>(Status(StatusCode::ResourceExhausted));
+    } catch (const CredentialError& error) {
+        return Result<std::string>(
+            Status::diagnostic(error.code(), error.what()));
+    } catch (const Status& status) {
+        return Result<std::string>(
+            Status::diagnostic(status.code(), status.message()));
+    } catch (...) {
+        return Result<std::string>(Status(StatusCode::Internal));
     }
 }
 

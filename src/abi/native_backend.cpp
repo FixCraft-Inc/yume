@@ -43,6 +43,7 @@
 #include "runtime/device_bridge.hpp"
 #endif
 #include "runtime/message_log.hpp"
+#include "runtime/native_credentials.hpp"
 #include "runtime/native_endpoint.hpp"
 #include "runtime/sealed_kit.hpp"
 #include "runtime/session_keeper.hpp"
@@ -2790,6 +2791,22 @@ BackendIo check_backend_device(const config::v1::Config& config,
         describe(error, "the device could not be checked");
         return BackendIo::Failed;
     }
+}
+
+BackendIo validate_client_credentials(const config::v1::Config& config,
+                                      std::string_view base_dir,
+                                      std::string& fingerprint,
+                                      std::string& error) {
+    fingerprint.clear();
+    auto result = runtime::validate_client_credentials(
+        config, std::filesystem::path(base_dir));
+    if (!result.ok()) {
+        error = result.status().message();
+        return io_from(result.status().code());
+    }
+    fingerprint = std::move(result).take_value();
+    error.clear();
+    return BackendIo::Ok;
 }
 
 std::unique_ptr<BackendKit> open_sealed_kit(

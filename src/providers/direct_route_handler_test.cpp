@@ -763,6 +763,12 @@ public:
         completion(Result<Buffer>(Status(
             StatusCode::Closed, "manual byte channel EOF")));
     }
+    void fail_read(Status status) {
+        CHECK(read_);
+        auto completion = std::move(read_);
+        read_ = {};
+        completion(Result<Buffer>(std::move(status)));
+    }
     void complete_write(Status status = Status::success(),
                         std::optional<std::size_t> transferred = std::nullopt) {
         CHECK(write_);
@@ -1099,6 +1105,29 @@ void test_partial_completion_and_cancellation_close_once() {
     }
 }
 
+void test_route_read_failure_closes_both_directions() {
+    auto trace = std::make_shared<ChannelTrace>();
+    ManualByteChannel* channel = nullptr;
+    auto provider = std::make_shared<ManualRouteProvider>([&] {
+        auto owned = std::make_unique<ManualByteChannel>(trace);
+        channel = owned.get();
+        std::unique_ptr<ByteChannel> base = std::move(owned);
+        return RouteConnection::byte_stream(std::move(base));
+    });
+    auto stream = std::make_shared<ManualStream>(ServiceKind::ByteStream);
+    direct_handler(ServiceKind::ByteStream)
+        ->on_route(authorized_request(ServiceKind::ByteStream), provider,
+                   stream);
+    CHECK(channel->read_issues == 1);
+
+    channel->fail_read(Status(StatusCode::Internal, "route read failed"));
+    CHECK(stream->close_calls == 1);
+    CHECK(stream->close_code == StatusCode::Internal);
+    CHECK(trace->cancel_calls == 1);
+    CHECK(trace->close_calls == 1);
+    CHECK(trace->shutdown_calls == 0);
+}
+
 void test_route_to_stream_partial_completion() {
     auto trace = std::make_shared<ChannelTrace>();
     ManualByteChannel* channel = nullptr;
@@ -1336,6 +1365,7 @@ int main() {
         test_byte_bridge_credit_duplex_and_half_close();
         test_stream_record_allocation_failure_is_contained();
         test_partial_completion_and_cancellation_close_once();
+        test_route_read_failure_closes_both_directions();
         test_route_to_stream_partial_completion();
         test_packet_boundaries_and_credit();
         test_oversized_datagram_is_dropped();

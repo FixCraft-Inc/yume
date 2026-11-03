@@ -32,6 +32,9 @@ public:
     // declared executor affinity. Reads and writes preserve issue order.
     // Unknown callbacks are invoked without internal locks and exceptions are
     // contained at the channel boundary.
+    // A live byte-stream provider reports an orderly peer write-side EOF as
+    // StatusCode::Closed. Other native read failures use a non-Closed status,
+    // so adapters can distinguish EOF from a terminal transport failure.
     virtual void async_read(std::size_t max_bytes,
                             CancellationToken cancellation,
                             ReadCompletion completion) = 0;

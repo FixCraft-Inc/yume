@@ -7,6 +7,13 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+Native TCP and accepted TCP/UNIX byte channels report socket read errors as
+transport failures instead of directional EOF. Socket failures in either
+direction close the channel before delivery and settle queued operations once.
+Later reads retain the terminal failure. The direct TCP readiness probe
+also preserves errors it consumes. Orderly EOF and immediate cancellation
+keep their existing behavior.
+
 The session engine retains a closing stream until its required peer settlement
 arrives when an abort crosses both directional FINs. A valid crossed settlement
 therefore preserves the authenticated session for later streams.

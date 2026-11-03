@@ -380,6 +380,13 @@ operation in each direction, retains inbound carrier credit through the exact
 route write completion, preserves packet boundaries, and maps byte-stream EOF
 to directional write shutdown. Provider errors, partial completions, and
 cancellation close both sides once.
+Native byte-channel reads distinguish orderly EOF (`Closed`) from a socket
+read failure (`Internal`). A socket failure in either direction closes the
+native channel before its failing callback runs. Outstanding and later reads
+then report `Internal`, and queued writes settle once with their actual byte
+counts. The
+direct TCP readiness probe preserves a reported socket error because a probe
+can consume it before the subsequent read.
 The dispatcher supplies the graph's validated route provider to `async_route`;
 the bridge retains that instance through asynchronous settlement. Creating a
 handler requires destination authorization but does not select a provider.

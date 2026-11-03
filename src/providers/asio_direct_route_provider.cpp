@@ -434,6 +434,20 @@ Status socket_operation_status(const boost::system::error_code& error,
     return Status::diagnostic(StatusCode::Closed, operation);
 }
 
+Status socket_read_status(const boost::system::error_code& error, bool closing,
+                          bool cancelled, std::string_view operation) noexcept {
+    if (!error) {
+        return Status::success();
+    }
+    if (error == boost::asio::error::eof || closing) {
+        return closed_status();
+    }
+    if (cancelled) {
+        return cancelled_status();
+    }
+    return Status::diagnostic(StatusCode::Internal, operation);
+}
+
 }  // namespace
 
 class AsioDirectRouteProvider::Impl final {
@@ -495,7 +509,7 @@ public:
         const auto owner = shared_from_this();
         if (!completion) return;
         if (close_requested_.load(std::memory_order_acquire)) {
-            complete_read(std::move(completion), closed_status());
+            complete_read(std::move(completion), terminal_read_status());
         } else if (max_bytes == 0U || max_bytes > max_read_size()) {
             complete_read(
                 std::move(completion),
@@ -592,7 +606,7 @@ private:
                     ByteChannel::ReadCompletion completion) noexcept {
         try {
             if (closed_ || read_eof_) {
-                complete_read(std::move(completion), closed_status());
+                complete_read(std::move(completion), terminal_read_status());
                 return;
             }
             if (pending_read_) {
@@ -675,7 +689,12 @@ private:
                     });
                 return;
             }
-            // Data, the end of the stream or a socket error: the read reports it.
+            // A peek can consume a pending socket error. Preserve it instead
+            // of issuing a second read that could report EOF after a reset.
+            if (error) {
+                complete_read_error(error);
+                return;
+            }
             read_now(id);
         } catch (const std::bad_alloc&) {
             settle_read(allocation_status("TCP read wait allocation failed"));
@@ -691,7 +710,7 @@ private:
             return;
         }
         if (close_requested_.load(std::memory_order_acquire)) {
-            settle_read(closed_status());
+            settle_read(terminal_read_status());
             return;
         }
         if (pending_read_->cancelled || id <= cancel_through_.load(std::memory_order_acquire) ||
@@ -700,8 +719,7 @@ private:
             return;
         }
         if (error) {
-            settle_read(socket_operation_status(
-                error, closed_, pending_read_->cancelled, "TCP read failed"));
+            complete_read_error(error);
             return;
         }
         read_now(id);
@@ -738,12 +756,7 @@ private:
                 return;
             }
             if (error) {
-                if (error == boost::asio::error::eof) {
-                    read_eof_ = true;
-                }
-                settle_read(socket_operation_status(
-                    error, closed_, pending_read_->cancelled,
-                    "TCP read failed"));
+                complete_read_error(error);
                 return;
             }
             if (transferred > buffer.size()) {
@@ -769,6 +782,21 @@ private:
             settle_read(Status::diagnostic(StatusCode::Internal,
                                            "TCP read failed"));
         }
+    }
+
+    void complete_read_error(const boost::system::error_code& error) noexcept {
+        Status status =
+            socket_failed_
+                ? terminal_read_status()
+                : socket_read_status(error, closed_, pending_read_->cancelled,
+                                     "TCP read failed");
+        if (status.code() == StatusCode::Internal) {
+            close_failed_socket();
+            if (!socket_failed_) status = closed_status();
+        } else if (error == boost::asio::error::eof) {
+            read_eof_ = true;
+        }
+        settle_read(std::move(status));
     }
 
     void start_write(Buffer buffer,
@@ -918,8 +946,8 @@ private:
         } else if (cancelled) {
             settle_write(cancelled_status(), total);
         } else if (error || transferred == 0U) {
-            settle_write(error ? socket_operation_status(error, closed_, false, "TCP write failed")
-                               : closed_status(), total);
+            close_failed_socket();
+            settle_write(closed_status(), total);
         } else if (total == operation.buffer.size()) {
             settle_write(Status::success(), total);
         } else {
@@ -983,6 +1011,23 @@ private:
         socket_.cancel(ignored);
     }
 
+    Status terminal_read_status() const noexcept {
+        return socket_failed_ ? Status::diagnostic(StatusCode::Internal,
+                                                   "TCP socket channel failed")
+                              : closed_status();
+    }
+
+    void close_failed_socket() noexcept {
+        {
+            std::lock_guard<std::mutex> lock(publication_mutex_);
+            if (!close_requested_.load(std::memory_order_acquire)) {
+                socket_failed_ = true;
+                close_requested_.store(true, std::memory_order_release);
+            }
+        }
+        close_on_context();
+    }
+
     void close_on_context() noexcept {
         if (closed_) {
             return;
@@ -1008,6 +1053,7 @@ private:
     std::optional<PendingRead> pending_read_;
     std::optional<PendingWrite> pending_write_;
     bool read_eof_{false};
+    bool socket_failed_{false};
     bool write_shutdown_{false};
     bool shutdown_after_write_{false};
     bool closed_{false};

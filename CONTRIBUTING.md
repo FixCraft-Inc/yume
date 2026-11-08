@@ -240,10 +240,20 @@ clang-tidy -p <build-dir> src/path/to/file.cpp
   versioned cryptographic domains and wire labels, and add new domains for
   intentional protocol migrations.
 
-The following predeployment rule applies while YUME has no deployed users.
-Before the first deployment to real users, replace this exception with an
-explicit policy naming the supported interfaces and their migration obligations.
-Do not infer deployment status from an old instruction, memory or version label.
+Invited preview deployments support the documented YTP/1 wire protocol,
+schema-1 configuration, native CLI provisioning and sealed kits used by the
+registered preview consumers. Consumer-owned provider contract 1 is versioned
+separately. The experimental embedding ABI remains a build-tree candidate;
+preview deployment does not freeze that interface.
+
+An incompatible change must name the affected interface and verified consumers,
+update their writers, readers and tests together, and provide an explicit
+migration or re-enrollment procedure before rollout. Tell preview users when
+an update or fresh enrollment is required. Preserve application-local identity,
+keys and encrypted content through service migrations; never silently replace
+them. Retain a temporary compatibility path only for a named deployed consumer,
+with a tested retirement condition. Security revocation may deliberately end
+old authority, with recovery guidance that does not restore revoked credentials.
 
 Do not add aliases, fallback dialects, silent
 defaults or no-op options for hypothetical callers. Update controlled readers,

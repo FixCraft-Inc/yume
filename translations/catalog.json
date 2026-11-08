@@ -9369,6 +9369,1019 @@
         "zh-Hans": "Yume 停止后，Android 会在隧道之外发送流量。"
       },
       "maintainer_review": true
+    },
+    {
+      "id": "provider.add.service",
+      "source": "Add service",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Добавить сервис",
+        "ja": "サービスを追加",
+        "uk": "Додати сервіс",
+        "zh-Hans": "添加服务"
+      }
+    },
+    {
+      "id": "provider.origin",
+      "source": "Provider HTTPS origin",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "HTTPS-источник провайдера",
+        "ja": "プロバイダーの HTTPS オリジン",
+        "uk": "HTTPS-джерело постачальника",
+        "zh-Hans": "服务提供商的 HTTPS 来源"
+      }
+    },
+    {
+      "id": "provider.issuer",
+      "source": "Accepted issuer HTTPS origin (optional)",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Разрешённый HTTPS-источник авторизации (необязательно)",
+        "ja": "承認する認可サーバーの HTTPS オリジン（省略可）",
+        "uk": "Дозволене HTTPS-джерело авторизації (необов’язково)",
+        "zh-Hans": "接受的授权服务器 HTTPS 来源（可选）"
+      }
+    },
+    {
+      "id": "provider.consent",
+      "source": "I accept this provider and issuer for VPN access.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Я разрешаю этому провайдеру и источнику авторизации предоставлять доступ к VPN.",
+        "ja": "このプロバイダーと認可サーバーを VPN アクセスに使用することを承認します。",
+        "uk": "Я дозволяю цьому постачальнику та джерелу авторизації надавати доступ до VPN.",
+        "zh-Hans": "我同意使用此服务提供商和授权服务器获取 VPN 访问权限。"
+      },
+      "maintainer_review": true
+    },
+    {
+      "id": "provider.services",
+      "source": "Services",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Сервисы",
+        "ja": "サービス",
+        "uk": "Сервіси",
+        "zh-Hans": "服务"
+      }
+    },
+    {
+      "id": "provider.sign.in",
+      "source": "Sign in with browser",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Войти через браузер",
+        "ja": "ブラウザでログイン",
+        "uk": "Увійти через браузер",
+        "zh-Hans": "通过浏览器登录"
+      }
+    },
+    {
+      "id": "provider.servers",
+      "source": "Load servers",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Загрузить серверы",
+        "ja": "サーバーを読み込む",
+        "uk": "Завантажити сервери",
+        "zh-Hans": "加载服务器"
+      }
+    },
+    {
+      "id": "provider.select",
+      "source": "Use this server",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Использовать этот сервер",
+        "ja": "このサーバーを使用",
+        "uk": "Використовувати цей сервер",
+        "zh-Hans": "使用此服务器"
+      }
+    },
+    {
+      "id": "provider.opening.code",
+      "source": "Enter the opening code from your operator's separate trusted channel.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Введите код открытия, полученный от оператора по отдельному доверенному каналу.",
+        "ja": "運営者から別の信頼できる経路で受け取った開封コードを入力してください。",
+        "uk": "Введіть код відкриття, отриманий від оператора окремим довіреним каналом.",
+        "zh-Hans": "请输入通过独立的可信渠道从运营者处获取的打开代码。"
+      },
+      "maintainer_review": true
+    },
+    {
+      "id": "provider.await.code",
+      "source": "Waiting for the opening code",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Ожидание кода открытия",
+        "ja": "開封コードの入力待ち",
+        "uk": "Очікування коду відкриття",
+        "zh-Hans": "等待打开代码"
+      }
+    },
+    {
+      "id": "provider.cancel.sign.in",
+      "source": "Cancel sign-in",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Отменить вход",
+        "ja": "ログインをキャンセル",
+        "uk": "Скасувати вхід",
+        "zh-Hans": "取消登录"
+      }
+    },
+    {
+      "id": "provider.remove",
+      "source": "Remove service",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Удалить сервис",
+        "ja": "サービスを削除",
+        "uk": "Видалити сервіс",
+        "zh-Hans": "移除服务"
+      }
+    },
+    {
+      "id": "provider.removed",
+      "source": "Service removed. Remote revocation may be unknown.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Сервис удалён. Отзыв доступа на сервере может быть не подтверждён.",
+        "ja": "サービスを削除しました。サーバー側でのアクセス失効は確認できていない場合があります。",
+        "uk": "Сервіс видалено. Відкликання доступу на сервері може бути не підтверджено.",
+        "zh-Hans": "服务已移除。可能无法确认服务器端是否已撤销访问权限。"
+      },
+      "maintainer_review": true
+    },
+    {
+      "id": "provider.empty",
+      "source": "No servers are available yet. Ask the provider for access.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Серверов пока нет. Запросите доступ у провайдера.",
+        "ja": "利用できるサーバーはまだありません。プロバイダーにアクセスを依頼してください。",
+        "uk": "Серверів ще немає. Запитайте доступ у постачальника.",
+        "zh-Hans": "暂无可用服务器。请向服务提供商申请访问权限。"
+      }
+    },
+    {
+      "id": "provider.refresh",
+      "source": "Refresh services",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Обновить сервисы",
+        "ja": "サービスを再読み込み",
+        "uk": "Оновити сервіси",
+        "zh-Hans": "刷新服务"
+      }
+    },
+    {
+      "id": "provider.manual",
+      "source": "Manual kits",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Наборы вручную",
+        "ja": "手動キット",
+        "uk": "Набори вручну",
+        "zh-Hans": "手动套件"
+      }
+    },
+    {
+      "id": "provider.selected",
+      "source": "Selected service",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Выбранный сервис",
+        "ja": "選択中のサービス",
+        "uk": "Вибраний сервіс",
+        "zh-Hans": "选定的服务"
+      }
+    },
+    {
+      "id": "provider.no.selection",
+      "source": "Choose a service or import a manual kit.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Выберите сервис или импортируйте набор вручную.",
+        "ja": "サービスを選択するか、手動キットをインポートしてください。",
+        "uk": "Виберіть сервіс або імпортуйте набір вручну.",
+        "zh-Hans": "请选择服务或导入手动套件。"
+      }
+    },
+    {
+      "id": "provider.registration",
+      "source": "Browser sign-in is unavailable in this build. A verified application registration is required.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "В этой сборке вход через браузер недоступен. Требуется подтверждённая регистрация приложения.",
+        "ja": "このビルドではブラウザでログインできません。検証済みのアプリ登録が必要です。",
+        "uk": "У цій збірці вхід через браузер недоступний. Потрібна підтверджена реєстрація застосунку.",
+        "zh-Hans": "此构建无法通过浏览器登录。需要经过验证的应用注册。"
+      },
+      "maintainer_review": true
+    },
+    {
+      "id": "provider.ready",
+      "source": "Provisioned",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Доступ настроен",
+        "ja": "設定済み",
+        "uk": "Доступ налаштовано",
+        "zh-Hans": "已配置"
+      }
+    },
+    {
+      "id": "provider.suspended",
+      "source": "Access paused. Choose your server again to continue.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Доступ приостановлен. Чтобы продолжить, снова выберите сервер.",
+        "ja": "アクセスが一時停止されています。続けるにはサーバーを選び直してください。",
+        "uk": "Доступ призупинено. Щоб продовжити, знову виберіть сервер.",
+        "zh-Hans": "访问权限已暂停。请重新选择服务器以继续。"
+      },
+      "maintainer_review": true
+    },
+    {
+      "id": "provider.authorization",
+      "source": "Complete sign-in in your browser, or cancel and start again.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Завершите вход в браузере или отмените его и начните заново.",
+        "ja": "ブラウザでログインを完了するか、キャンセルしてやり直してください。",
+        "uk": "Завершіть вхід у браузері або скасуйте його та почніть знову.",
+        "zh-Hans": "请在浏览器中完成登录，或取消后重新开始。"
+      }
+    },
+    {
+      "id": "provider.error.stale",
+      "source": "The server list is out of date or this phone's time could not be confirmed. Check the date and time, then try again.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Name the Load servers action using its exact translated label. Refresh services reloads local state only and does not obtain a fresh catalog. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Список серверов устарел, или не удалось подтвердить время на телефоне. Проверьте дату и время и повторите попытку.",
+        "ja": "サーバー一覧が古いか、この端末の時刻を確認できませんでした。日付と時刻を確認して、もう一度お試しください。",
+        "uk": "Список серверів застарів, або не вдалося підтвердити час на телефоні. Перевірте дату й час і спробуйте ще раз.",
+        "zh-Hans": "服务器列表已过期，或无法确认此手机的时间。请检查日期和时间后重试。"
+      }
+    },
+    {
+      "id": "provider.error.unauthorized",
+      "source": "Sign in again to continue.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "This refusal applies to browser-authorized and anonymous device enrollments, including lack of entitlement. Do not imply every provider has a sign-in action. Keep service API access and transport access deadlines separate.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Чтобы продолжить, войдите снова.",
+        "ja": "続けるには、もう一度ログインしてください。",
+        "uk": "Щоб продовжити, увійдіть знову.",
+        "zh-Hans": "请重新登录以继续。"
+      },
+      "maintainer_review": true
+    },
+    {
+      "id": "provider.error.storage",
+      "source": "Service data is locked or unreadable. Unlock the app or remove this service.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Данные сервиса заблокированы или не читаются. Разблокируйте приложение или удалите этот сервис.",
+        "ja": "サービスのデータがロックされているか、読み取れません。アプリのロックを解除するか、このサービスを削除してください。",
+        "uk": "Дані сервісу заблоковані або не читаються. Розблокуйте застосунок або видаліть цей сервіс.",
+        "zh-Hans": "服务数据已锁定或无法读取。请解锁应用或移除此服务。"
+      }
+    },
+    {
+      "id": "provider.error.binding",
+      "source": "The provider, issuer, or server binding did not match. Review the service details.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Привязка к провайдеру, источнику авторизации или серверу не совпала. Проверьте данные сервиса.",
+        "ja": "プロバイダー、認可サーバー、またはサーバーの紐付けが一致しません。サービスの詳細を確認してください。",
+        "uk": "Прив’язка до постачальника, джерела авторизації або сервера не збіглася. Перевірте дані сервісу.",
+        "zh-Hans": "服务提供商、授权服务器或服务器的绑定不匹配。请检查服务详情。"
+      },
+      "maintainer_review": true
+    },
+    {
+      "id": "provider.error.generic",
+      "source": "The service request failed. Try again or use a manual kit.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Запрос к сервису не выполнен. Повторите попытку или используйте набор.",
+        "ja": "サービスへのリクエストに失敗しました。もう一度試すか、手動キットを使用してください。",
+        "uk": "Запит до сервісу не виконано. Спробуйте ще раз або скористайтеся набором.",
+        "zh-Hans": "服务请求失败。请重试或使用手动套件。"
+      }
+    },
+    {
+      "id": "provider.busy",
+      "source": "Working on the selected service…",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Работа с выбранным сервисом…",
+        "ja": "選択中のサービスを処理中…",
+        "uk": "Робота з вибраним сервісом…",
+        "zh-Hans": "正在处理选定的服务…"
+      }
+    },
+    {
+      "id": "provider.expiry",
+      "source": "Transport access expires at",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Срок доступа к транспорту",
+        "ja": "トランスポートアクセスの有効期限",
+        "uk": "Строк доступу до транспорту",
+        "zh-Hans": "传输访问权限到期时间"
+      }
+    },
+    {
+      "id": "provider.grant",
+      "source": "Grant",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Выданный доступ",
+        "ja": "アクセス許可",
+        "uk": "Наданий доступ",
+        "zh-Hans": "访问授权"
+      }
+    },
+    {
+      "id": "provider.identity",
+      "source": "Native client identity",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Нативный идентификатор клиента",
+        "ja": "ネイティブクライアントの識別子",
+        "uk": "Нативний ідентифікатор клієнта",
+        "zh-Hans": "原生客户端身份"
+      }
+    },
+    {
+      "id": "provider.server.trust",
+      "source": "Expected server key",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Ожидаемый ключ сервера",
+        "ja": "照合するサーバーの鍵",
+        "uk": "Очікуваний ключ сервера",
+        "zh-Hans": "预期的服务器密钥"
+      }
+    },
+    {
+      "id": "provider.code.refused",
+      "source": "The kit or opening code was refused. Request the code again and retry once.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Набор или код открытия не принят. Запросите код снова и повторите попытку один раз.",
+        "ja": "キットまたは開封コードが拒否されました。コードを再度入手し、一度だけ再試行してください。",
+        "uk": "Набір або код відкриття не прийнято. Запросіть код знову та повторіть спробу один раз.",
+        "zh-Hans": "套件或打开代码被拒绝。请重新获取代码，然后重试一次。"
+      },
+      "maintainer_review": true
+    },
+    {
+      "id": "provider.change.server",
+      "source": "To use another server from this service, remove it and add it again.",
+      "context": "Android provider server selection",
+      "owner": "android.app.consumer",
+      "notes": "Contract 1 refresh keeps the same service and server. Changing the server requires explicit removal and enrollment again.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Чтобы использовать другой сервер этого сервиса, удалите сервис и добавьте его снова.",
+        "ja": "このサービスの別のサーバーを使用するには、サービスを削除して再度追加してください。",
+        "uk": "Щоб скористатися іншим сервером цього сервісу, видаліть сервіс і додайте його знову.",
+        "zh-Hans": "要使用此服务的其他服务器，请先移除服务，再重新添加。"
+      }
+    },
+    {
+      "id": "provider.signed.in",
+      "source": "Signed in",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Вход выполнен",
+        "ja": "ログイン済み",
+        "uk": "Вхід виконано",
+        "zh-Hans": "已登录"
+      }
+    },
+    {
+      "id": "provider.signed.out",
+      "source": "Signed out",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Вход не выполнен",
+        "ja": "未ログイン",
+        "uk": "Вхід не виконано",
+        "zh-Hans": "未登录"
+      }
+    },
+    {
+      "id": "provider.no.account",
+      "source": "No account needed",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Учётная запись не нужна",
+        "ja": "アカウントは不要です",
+        "uk": "Обліковий запис не потрібен",
+        "zh-Hans": "无需账户"
+      }
+    },
+    {
+      "id": "provider.vpn.access",
+      "source": "VPN access",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Доступ к VPN",
+        "ja": "VPN アクセス",
+        "uk": "Доступ до VPN",
+        "zh-Hans": "VPN 访问"
+      }
+    },
+    {
+      "id": "provider.label.provider",
+      "source": "Provider",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Провайдер",
+        "ja": "プロバイダー",
+        "uk": "Постачальник",
+        "zh-Hans": "服务提供商"
+      }
+    },
+    {
+      "id": "provider.label.sign.in",
+      "source": "Sign-in",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Вход",
+        "ja": "ログイン",
+        "uk": "Вхід",
+        "zh-Hans": "登录"
+      }
+    },
+    {
+      "id": "provider.details",
+      "source": "Service details",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Сведения о сервисе",
+        "ja": "サービスの詳細",
+        "uk": "Відомості про сервіс",
+        "zh-Hans": "服务详情"
+      }
+    },
+    {
+      "id": "provider.more",
+      "source": "More options for %1$s",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": [
+          "%1$s"
+        ]
+      },
+      "translations": {
+        "ru": "Другие действия: %1$s",
+        "ja": "%1$s のその他の操作",
+        "uk": "Інші дії: %1$s",
+        "zh-Hans": "%1$s 的更多操作"
+      }
+    },
+    {
+      "id": "provider.refresh.servers",
+      "source": "Refresh servers",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Обновить серверы",
+        "ja": "サーバーを更新",
+        "uk": "Оновити сервери",
+        "zh-Hans": "刷新服务器"
+      }
+    },
+    {
+      "id": "provider.location.unknown",
+      "source": "Location not given",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Местоположение не указано",
+        "ja": "場所の情報なし",
+        "uk": "Розташування не вказано",
+        "zh-Hans": "未提供位置"
+      }
+    },
+    {
+      "id": "provider.choose.server",
+      "source": "Choose a server",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Выбрать сервер",
+        "ja": "サーバーを選択",
+        "uk": "Вибрати сервер",
+        "zh-Hans": "选择服务器"
+      }
+    },
+    {
+      "id": "provider.access.until",
+      "source": "Access until %1$s.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": [
+          "%1$s"
+        ]
+      },
+      "translations": {
+        "ru": "Доступ до %1$s.",
+        "ja": "%1$s までアクセスできます。",
+        "uk": "Доступ до %1$s.",
+        "zh-Hans": "访问权限有效至 %1$s。"
+      }
+    },
+    {
+      "id": "provider.access.renew",
+      "source": "Access until %1$s. Yume renews it automatically.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": [
+          "%1$s"
+        ]
+      },
+      "translations": {
+        "ru": "Доступ до %1$s. Yume продлит его автоматически.",
+        "ja": "%1$s までアクセスできます。Yume が自動で更新します。",
+        "uk": "Доступ до %1$s. Yume продовжить його автоматично.",
+        "zh-Hans": "访问权限有效至 %1$s。Yume 会自动续期。"
+      }
+    },
+    {
+      "id": "provider.access.ended",
+      "source": "Access ended. It renews when you connect.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Доступ закончился. Он продлится при подключении.",
+        "ja": "アクセス期間が終了しました。接続すると更新されます。",
+        "uk": "Доступ закінчився. Він продовжиться під час підключення.",
+        "zh-Hans": "访问权限已结束。连接时会自动续期。"
+      }
+    },
+    {
+      "id": "provider.sign.in.note",
+      "source": "Opens %1$s in your browser. Your password stays there.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": [
+          "%1$s"
+        ]
+      },
+      "translations": {
+        "ru": "Откроется %1$s в браузере. Ваш пароль останется там.",
+        "ja": "ブラウザで %1$s を開きます。パスワードはブラウザ内でのみ使用されます。",
+        "uk": "Відкриється %1$s у браузері. Ваш пароль залишиться там.",
+        "zh-Hans": "将在浏览器中打开 %1$s。您的密码只留在那里。"
+      }
+    },
+    {
+      "id": "provider.suggested.title",
+      "source": "Sign in to get a server",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Войдите, чтобы получить сервер",
+        "ja": "ログインしてサーバーを利用",
+        "uk": "Увійдіть, щоб отримати сервер",
+        "zh-Hans": "登录以获取服务器"
+      }
+    },
+    {
+      "id": "provider.suggested.body",
+      "source": "This app suggests %1$s. You sign in at %2$s in your browser, so Yume never sees your password.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": [
+          "%1$s",
+          "%2$s"
+        ]
+      },
+      "translations": {
+        "ru": "Это приложение предлагает %1$s. Вы входите на %2$s в браузере, поэтому Yume не видит ваш пароль.",
+        "ja": "このアプリは %1$s を提案しています。ログインはブラウザで %2$s に対して行うため、Yume がパスワードを見ることはありません。",
+        "uk": "Цей застосунок пропонує %1$s. Ви входите на %2$s у браузері, тому Yume не бачить ваш пароль.",
+        "zh-Hans": "此应用建议使用 %1$s。您在浏览器中登录 %2$s，因此 Yume 不会看到您的密码。"
+      }
+    },
+    {
+      "id": "provider.continue",
+      "source": "Continue",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Продолжить",
+        "ja": "続行",
+        "uk": "Продовжити",
+        "zh-Hans": "继续"
+      }
+    },
+    {
+      "id": "provider.other",
+      "source": "Use another service",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Использовать другой сервис",
+        "ja": "別のサービスを使用",
+        "uk": "Використати інший сервіс",
+        "zh-Hans": "使用其他服务"
+      }
+    },
+    {
+      "id": "provider.remove.notice",
+      "source": "Remove local access for %1$s, even when offline. This stops its active connection. Account deletion and remote revocation are separate.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": [
+          "%1$s"
+        ]
+      },
+      "translations": {
+        "ru": "Удалить локальный доступ к %1$s, даже без сети. Активное подключение через него будет остановлено. Удаление учётной записи и отзыв доступа у провайдера выполняются отдельно.",
+        "ja": "%1$s へのローカルアクセスを、オフラインでも削除します。この接続は停止します。アカウントの削除とプロバイダー側での取り消しは別の操作です。",
+        "uk": "Видалити локальний доступ до %1$s, навіть без мережі. Активне підключення через нього буде зупинено. Видалення облікового запису та відкликання доступу в постачальника виконуються окремо.",
+        "zh-Hans": "移除本机对 %1$s 的访问权限，离线时也可以移除。这会停止它的活动连接。删除账户和在服务提供商处撤销访问是单独的操作。"
+      }
+    },
+    {
+      "id": "provider.server.address.note",
+      "source": "This is the server address, not proof of where traffic leaves.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Это адрес сервера, а не доказательство того, откуда выходит трафик.",
+        "ja": "これはサーバーのアドレスであり、通信の出口を証明するものではありません。",
+        "uk": "Це адреса сервера, а не доказ того, звідки виходить трафік.",
+        "zh-Hans": "这是服务器地址，并不能证明流量从何处离开。"
+      }
+    },
+    {
+      "id": "provider.error.not.entitled",
+      "source": "Your account does not include this server.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Ваша учётная запись не включает этот сервер.",
+        "ja": "お使いのアカウントではこのサーバーを利用できません。",
+        "uk": "Ваш обліковий запис не включає цей сервер.",
+        "zh-Hans": "您的账户不包含此服务器。"
+      }
+    },
+    {
+      "id": "provider.error.unavailable",
+      "source": "The provider is unavailable. Try again later.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Провайдер недоступен. Повторите попытку позже.",
+        "ja": "プロバイダーを利用できません。後でもう一度お試しください。",
+        "uk": "Постачальник недоступний. Спробуйте ще раз пізніше.",
+        "zh-Hans": "服务提供商不可用。请稍后重试。"
+      }
+    },
+    {
+      "id": "provider.error.rate.limited",
+      "source": "Too many attempts. Wait a few minutes, then try again.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Слишком много попыток. Подождите несколько минут и повторите попытку.",
+        "ja": "試行回数が多すぎます。数分待ってからもう一度お試しください。",
+        "uk": "Забагато спроб. Зачекайте кілька хвилин і спробуйте ще раз.",
+        "zh-Hans": "尝试次数过多。请等待几分钟后重试。"
+      }
+    },
+    {
+      "id": "provider.error.cancelled",
+      "source": "Cancelled.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Отменено.",
+        "ja": "キャンセルしました。",
+        "uk": "Скасовано.",
+        "zh-Hans": "已取消。"
+      }
+    },
+    {
+      "id": "provider.error.timeout",
+      "source": "Sign-in took too long. Try again.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Вход занял слишком много времени. Повторите попытку.",
+        "ja": "ログインに時間がかかりすぎました。もう一度お試しください。",
+        "uk": "Вхід тривав занадто довго. Спробуйте ще раз.",
+        "zh-Hans": "登录耗时过长。请重试。"
+      }
+    },
+    {
+      "id": "provider.error.conflict",
+      "source": "Another change is still in progress. Try again shortly.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Другое изменение ещё выполняется. Вскоре повторите попытку.",
+        "ja": "別の変更を処理中です。しばらくしてからもう一度お試しください。",
+        "uk": "Інша зміна ще виконується. Незабаром спробуйте ще раз.",
+        "zh-Hans": "另一项更改仍在进行中。请稍后重试。"
+      }
+    },
+    {
+      "id": "provider.error.unsupported",
+      "source": "This provider uses a sign-in that this version of Yume does not support.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Этот провайдер использует вход, который эта версия Yume не поддерживает.",
+        "ja": "このプロバイダーのログイン方式は、このバージョンの Yume では利用できません。",
+        "uk": "Цей постачальник використовує вхід, який ця версія Yume не підтримує.",
+        "zh-Hans": "此服务提供商使用的登录方式不受此版本 Yume 支持。"
+      }
     }
   ],
   "terminology": [

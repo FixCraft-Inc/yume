@@ -3310,5 +3310,377 @@
       <extracomment>source: When Yume stops, Android sends traffic outside the tunnel.; context: Posture card summary; owner: android.app.i18n; Safety statement, always visible above the button to Android's VPN settings.</extracomment>
       <translation>Когда Yume остановлен, Android отправляет трафик мимо туннеля.</translation>
     </message>
+    <message id="provider.add.service">
+      <location filename="catalog:provider.add.service" line="1"/>
+      <source></source>
+      <extracomment>source: Add service; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Добавить сервис</translation>
+    </message>
+    <message id="provider.origin">
+      <location filename="catalog:provider.origin" line="1"/>
+      <source></source>
+      <extracomment>source: Provider HTTPS origin; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>HTTPS-источник провайдера</translation>
+    </message>
+    <message id="provider.issuer">
+      <location filename="catalog:provider.issuer" line="1"/>
+      <source></source>
+      <extracomment>source: Accepted issuer HTTPS origin (optional); context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Разрешённый HTTPS-источник авторизации (необязательно)</translation>
+    </message>
+    <message id="provider.consent">
+      <location filename="catalog:provider.consent" line="1"/>
+      <source></source>
+      <extracomment>source: I accept this provider and issuer for VPN access.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Я разрешаю этому провайдеру и источнику авторизации предоставлять доступ к VPN.</translation>
+    </message>
+    <message id="provider.services">
+      <location filename="catalog:provider.services" line="1"/>
+      <source></source>
+      <extracomment>source: Services; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Сервисы</translation>
+    </message>
+    <message id="provider.sign.in">
+      <location filename="catalog:provider.sign.in" line="1"/>
+      <source></source>
+      <extracomment>source: Sign in with browser; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Войти через браузер</translation>
+    </message>
+    <message id="provider.servers">
+      <location filename="catalog:provider.servers" line="1"/>
+      <source></source>
+      <extracomment>source: Load servers; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Загрузить серверы</translation>
+    </message>
+    <message id="provider.select">
+      <location filename="catalog:provider.select" line="1"/>
+      <source></source>
+      <extracomment>source: Use this server; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Использовать этот сервер</translation>
+    </message>
+    <message id="provider.opening.code">
+      <location filename="catalog:provider.opening.code" line="1"/>
+      <source></source>
+      <extracomment>source: Enter the opening code from your operator's separate trusted channel.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Введите код открытия, полученный от оператора по отдельному доверенному каналу.</translation>
+    </message>
+    <message id="provider.await.code">
+      <location filename="catalog:provider.await.code" line="1"/>
+      <source></source>
+      <extracomment>source: Waiting for the opening code; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Ожидание кода открытия</translation>
+    </message>
+    <message id="provider.cancel.sign.in">
+      <location filename="catalog:provider.cancel.sign.in" line="1"/>
+      <source></source>
+      <extracomment>source: Cancel sign-in; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Отменить вход</translation>
+    </message>
+    <message id="provider.remove">
+      <location filename="catalog:provider.remove" line="1"/>
+      <source></source>
+      <extracomment>source: Remove service; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Удалить сервис</translation>
+    </message>
+    <message id="provider.removed">
+      <location filename="catalog:provider.removed" line="1"/>
+      <source></source>
+      <extracomment>source: Service removed. Remote revocation may be unknown.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Сервис удалён. Отзыв доступа на сервере может быть не подтверждён.</translation>
+    </message>
+    <message id="provider.empty">
+      <location filename="catalog:provider.empty" line="1"/>
+      <source></source>
+      <extracomment>source: No servers are available yet. Ask the provider for access.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Серверов пока нет. Запросите доступ у провайдера.</translation>
+    </message>
+    <message id="provider.refresh">
+      <location filename="catalog:provider.refresh" line="1"/>
+      <source></source>
+      <extracomment>source: Refresh services; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Обновить сервисы</translation>
+    </message>
+    <message id="provider.manual">
+      <location filename="catalog:provider.manual" line="1"/>
+      <source></source>
+      <extracomment>source: Manual kits; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Наборы вручную</translation>
+    </message>
+    <message id="provider.selected">
+      <location filename="catalog:provider.selected" line="1"/>
+      <source></source>
+      <extracomment>source: Selected service; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Выбранный сервис</translation>
+    </message>
+    <message id="provider.no.selection">
+      <location filename="catalog:provider.no.selection" line="1"/>
+      <source></source>
+      <extracomment>source: Choose a service or import a manual kit.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Выберите сервис или импортируйте набор вручную.</translation>
+    </message>
+    <message id="provider.registration">
+      <location filename="catalog:provider.registration" line="1"/>
+      <source></source>
+      <extracomment>source: Browser sign-in is unavailable in this build. A verified application registration is required.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>В этой сборке вход через браузер недоступен. Требуется подтверждённая регистрация приложения.</translation>
+    </message>
+    <message id="provider.ready">
+      <location filename="catalog:provider.ready" line="1"/>
+      <source></source>
+      <extracomment>source: Provisioned; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Доступ настроен</translation>
+    </message>
+    <message id="provider.suspended">
+      <location filename="catalog:provider.suspended" line="1"/>
+      <source></source>
+      <extracomment>source: Access paused. Choose your server again to continue.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Доступ приостановлен. Чтобы продолжить, снова выберите сервер.</translation>
+    </message>
+    <message id="provider.authorization">
+      <location filename="catalog:provider.authorization" line="1"/>
+      <source></source>
+      <extracomment>source: Complete sign-in in your browser, or cancel and start again.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Завершите вход в браузере или отмените его и начните заново.</translation>
+    </message>
+    <message id="provider.error.stale">
+      <location filename="catalog:provider.error.stale" line="1"/>
+      <source></source>
+      <extracomment>source: The server list is out of date or this phone's time could not be confirmed. Check the date and time, then try again.; context: Android optional provider presentation; owner: android.app.consumer; Name the Load servers action using its exact translated label. Refresh services reloads local state only and does not obtain a fresh catalog. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Список серверов устарел, или не удалось подтвердить время на телефоне. Проверьте дату и время и повторите попытку.</translation>
+    </message>
+    <message id="provider.error.unauthorized">
+      <location filename="catalog:provider.error.unauthorized" line="1"/>
+      <source></source>
+      <extracomment>source: Sign in again to continue.; context: Android optional provider presentation; owner: android.app.consumer; This refusal applies to browser-authorized and anonymous device enrollments, including lack of entitlement. Do not imply every provider has a sign-in action. Keep service API access and transport access deadlines separate.</extracomment>
+      <translation>Чтобы продолжить, войдите снова.</translation>
+    </message>
+    <message id="provider.error.storage">
+      <location filename="catalog:provider.error.storage" line="1"/>
+      <source></source>
+      <extracomment>source: Service data is locked or unreadable. Unlock the app or remove this service.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Данные сервиса заблокированы или не читаются. Разблокируйте приложение или удалите этот сервис.</translation>
+    </message>
+    <message id="provider.error.binding">
+      <location filename="catalog:provider.error.binding" line="1"/>
+      <source></source>
+      <extracomment>source: The provider, issuer, or server binding did not match. Review the service details.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Привязка к провайдеру, источнику авторизации или серверу не совпала. Проверьте данные сервиса.</translation>
+    </message>
+    <message id="provider.error.generic">
+      <location filename="catalog:provider.error.generic" line="1"/>
+      <source></source>
+      <extracomment>source: The service request failed. Try again or use a manual kit.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Запрос к сервису не выполнен. Повторите попытку или используйте набор.</translation>
+    </message>
+    <message id="provider.busy">
+      <location filename="catalog:provider.busy" line="1"/>
+      <source></source>
+      <extracomment>source: Working on the selected service…; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Работа с выбранным сервисом…</translation>
+    </message>
+    <message id="provider.expiry">
+      <location filename="catalog:provider.expiry" line="1"/>
+      <source></source>
+      <extracomment>source: Transport access expires at; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Срок доступа к транспорту</translation>
+    </message>
+    <message id="provider.grant">
+      <location filename="catalog:provider.grant" line="1"/>
+      <source></source>
+      <extracomment>source: Grant; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Выданный доступ</translation>
+    </message>
+    <message id="provider.identity">
+      <location filename="catalog:provider.identity" line="1"/>
+      <source></source>
+      <extracomment>source: Native client identity; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Нативный идентификатор клиента</translation>
+    </message>
+    <message id="provider.server.trust">
+      <location filename="catalog:provider.server.trust" line="1"/>
+      <source></source>
+      <extracomment>source: Expected server key; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Ожидаемый ключ сервера</translation>
+    </message>
+    <message id="provider.code.refused">
+      <location filename="catalog:provider.code.refused" line="1"/>
+      <source></source>
+      <extracomment>source: The kit or opening code was refused. Request the code again and retry once.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Набор или код открытия не принят. Запросите код снова и повторите попытку один раз.</translation>
+    </message>
+    <message id="provider.change.server">
+      <location filename="catalog:provider.change.server" line="1"/>
+      <source></source>
+      <extracomment>source: To use another server from this service, remove it and add it again.; context: Android provider server selection; owner: android.app.consumer; Contract 1 refresh keeps the same service and server. Changing the server requires explicit removal and enrollment again.</extracomment>
+      <translation>Чтобы использовать другой сервер этого сервиса, удалите сервис и добавьте его снова.</translation>
+    </message>
+    <message id="provider.signed.in">
+      <location filename="catalog:provider.signed.in" line="1"/>
+      <source></source>
+      <extracomment>source: Signed in; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Вход выполнен</translation>
+    </message>
+    <message id="provider.signed.out">
+      <location filename="catalog:provider.signed.out" line="1"/>
+      <source></source>
+      <extracomment>source: Signed out; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Вход не выполнен</translation>
+    </message>
+    <message id="provider.no.account">
+      <location filename="catalog:provider.no.account" line="1"/>
+      <source></source>
+      <extracomment>source: No account needed; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Учётная запись не нужна</translation>
+    </message>
+    <message id="provider.vpn.access">
+      <location filename="catalog:provider.vpn.access" line="1"/>
+      <source></source>
+      <extracomment>source: VPN access; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Доступ к VPN</translation>
+    </message>
+    <message id="provider.label.provider">
+      <location filename="catalog:provider.label.provider" line="1"/>
+      <source></source>
+      <extracomment>source: Provider; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Провайдер</translation>
+    </message>
+    <message id="provider.label.sign.in">
+      <location filename="catalog:provider.label.sign.in" line="1"/>
+      <source></source>
+      <extracomment>source: Sign-in; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Вход</translation>
+    </message>
+    <message id="provider.details">
+      <location filename="catalog:provider.details" line="1"/>
+      <source></source>
+      <extracomment>source: Service details; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Сведения о сервисе</translation>
+    </message>
+    <message id="provider.more">
+      <location filename="catalog:provider.more" line="1"/>
+      <source></source>
+      <extracomment>source: More options for %1$s; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Другие действия: %1</translation>
+    </message>
+    <message id="provider.refresh.servers">
+      <location filename="catalog:provider.refresh.servers" line="1"/>
+      <source></source>
+      <extracomment>source: Refresh servers; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Обновить серверы</translation>
+    </message>
+    <message id="provider.location.unknown">
+      <location filename="catalog:provider.location.unknown" line="1"/>
+      <source></source>
+      <extracomment>source: Location not given; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Местоположение не указано</translation>
+    </message>
+    <message id="provider.choose.server">
+      <location filename="catalog:provider.choose.server" line="1"/>
+      <source></source>
+      <extracomment>source: Choose a server; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Выбрать сервер</translation>
+    </message>
+    <message id="provider.access.until">
+      <location filename="catalog:provider.access.until" line="1"/>
+      <source></source>
+      <extracomment>source: Access until %1$s.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Доступ до %1.</translation>
+    </message>
+    <message id="provider.access.renew">
+      <location filename="catalog:provider.access.renew" line="1"/>
+      <source></source>
+      <extracomment>source: Access until %1$s. Yume renews it automatically.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Доступ до %1. Yume продлит его автоматически.</translation>
+    </message>
+    <message id="provider.access.ended">
+      <location filename="catalog:provider.access.ended" line="1"/>
+      <source></source>
+      <extracomment>source: Access ended. It renews when you connect.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Доступ закончился. Он продлится при подключении.</translation>
+    </message>
+    <message id="provider.sign.in.note">
+      <location filename="catalog:provider.sign.in.note" line="1"/>
+      <source></source>
+      <extracomment>source: Opens %1$s in your browser. Your password stays there.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Откроется %1 в браузере. Ваш пароль останется там.</translation>
+    </message>
+    <message id="provider.suggested.title">
+      <location filename="catalog:provider.suggested.title" line="1"/>
+      <source></source>
+      <extracomment>source: Sign in to get a server; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Войдите, чтобы получить сервер</translation>
+    </message>
+    <message id="provider.suggested.body">
+      <location filename="catalog:provider.suggested.body" line="1"/>
+      <source></source>
+      <extracomment>source: This app suggests %1$s. You sign in at %2$s in your browser, so Yume never sees your password.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Это приложение предлагает %1. Вы входите на %2 в браузере, поэтому Yume не видит ваш пароль.</translation>
+    </message>
+    <message id="provider.continue">
+      <location filename="catalog:provider.continue" line="1"/>
+      <source></source>
+      <extracomment>source: Continue; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Продолжить</translation>
+    </message>
+    <message id="provider.other">
+      <location filename="catalog:provider.other" line="1"/>
+      <source></source>
+      <extracomment>source: Use another service; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Использовать другой сервис</translation>
+    </message>
+    <message id="provider.remove.notice">
+      <location filename="catalog:provider.remove.notice" line="1"/>
+      <source></source>
+      <extracomment>source: Remove local access for %1$s, even when offline. This stops its active connection. Account deletion and remote revocation are separate.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Удалить локальный доступ к %1, даже без сети. Активное подключение через него будет остановлено. Удаление учётной записи и отзыв доступа у провайдера выполняются отдельно.</translation>
+    </message>
+    <message id="provider.server.address.note">
+      <location filename="catalog:provider.server.address.note" line="1"/>
+      <source></source>
+      <extracomment>source: This is the server address, not proof of where traffic leaves.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Это адрес сервера, а не доказательство того, откуда выходит трафик.</translation>
+    </message>
+    <message id="provider.error.not.entitled">
+      <location filename="catalog:provider.error.not.entitled" line="1"/>
+      <source></source>
+      <extracomment>source: Your account does not include this server.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Ваша учётная запись не включает этот сервер.</translation>
+    </message>
+    <message id="provider.error.unavailable">
+      <location filename="catalog:provider.error.unavailable" line="1"/>
+      <source></source>
+      <extracomment>source: The provider is unavailable. Try again later.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Провайдер недоступен. Повторите попытку позже.</translation>
+    </message>
+    <message id="provider.error.rate.limited">
+      <location filename="catalog:provider.error.rate.limited" line="1"/>
+      <source></source>
+      <extracomment>source: Too many attempts. Wait a few minutes, then try again.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Слишком много попыток. Подождите несколько минут и повторите попытку.</translation>
+    </message>
+    <message id="provider.error.cancelled">
+      <location filename="catalog:provider.error.cancelled" line="1"/>
+      <source></source>
+      <extracomment>source: Cancelled.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Отменено.</translation>
+    </message>
+    <message id="provider.error.timeout">
+      <location filename="catalog:provider.error.timeout" line="1"/>
+      <source></source>
+      <extracomment>source: Sign-in took too long. Try again.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Вход занял слишком много времени. Повторите попытку.</translation>
+    </message>
+    <message id="provider.error.conflict">
+      <location filename="catalog:provider.error.conflict" line="1"/>
+      <source></source>
+      <extracomment>source: Another change is still in progress. Try again shortly.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Другое изменение ещё выполняется. Вскоре повторите попытку.</translation>
+    </message>
+    <message id="provider.error.unsupported">
+      <location filename="catalog:provider.error.unsupported" line="1"/>
+      <source></source>
+      <extracomment>source: This provider uses a sign-in that this version of Yume does not support.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Этот провайдер использует вход, который эта версия Yume не поддерживает.</translation>
+    </message>
   </context>
 </TS>

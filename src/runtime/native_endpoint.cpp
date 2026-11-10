@@ -292,6 +292,7 @@ SessionLimits session_limits(const config::v1::ResourceLimits& config) {
     limits.max_packet_size = config.max_packet_bytes();
     limits.max_concurrent_rekeys = config.max_rekey_jobs();
     limits.max_epoch_bytes = config.max_epoch_bytes();
+    limits.min_epoch_bytes = config.min_epoch_bytes();
     limits.credit_returns_per_window = config.credit_returns_per_window();
     // Receive windows start small and grow while the application keeps up.
     // The connection window may reach the whole byte budget. A stream may

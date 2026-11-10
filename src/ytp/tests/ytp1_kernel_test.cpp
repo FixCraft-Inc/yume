@@ -41,7 +41,18 @@ void CheckEqual(const T& actual,
                 int line) {
     if (!(actual == expected)) {
         std::cerr << __FILE__ << ':' << line << ": equality failed: "
-                  << expression << '\n';
+                  << expression;
+        // Printable values are shown, so a justified vector change can be
+        // reviewed against the value the encoder now produces.
+        if constexpr (requires(std::ostream& stream) {
+                          stream << actual;
+                          stream << expected;
+                      }) {
+            std::cerr << " (actual " << std::hex << std::showbase << actual
+                      << ", expected " << expected << std::dec
+                      << std::noshowbase << ')';
+        }
+        std::cerr << '\n';
         ++g_failures;
     }
 }
@@ -341,11 +352,12 @@ void TestCapabilitiesAndCredit() {
     const auto encoded = EncodeCapabilityManifest(ExampleCapabilities());
     CHECK(encoded);
     CHECK_HEX(*encoded.value,
-              "0200000200100000"
+              "030000020010000000100000"
               "01000004000000086563686f0200000300000004756470");
     const auto decoded = DecodeCapabilityManifest(*encoded.value);
     CHECK(decoded);
     CHECK_EQ(decoded.value->max_epoch_bytes, kMinEpochPayloadBytes);
+    CHECK_EQ(decoded.value->min_epoch_bytes, kMinEpochPayloadBytes);
     CHECK_EQ(decoded.value->entries.size(), 2U);
     CHECK_EQ(decoded.value->entries[0].service_name, "echo");
     CHECK_EQ(decoded.value->entries[1].service_name, "udp");
@@ -384,7 +396,7 @@ void TestCapabilitiesAndCredit() {
     auto malformed = *encoded.value;
     // Change the first canonical name from "echo" to "zcho", placing it after
     // the following "udp" entry.
-    malformed[16] = 'z';
+    malformed[20] = 'z';
     CHECK_EQ(ValidateCapabilityManifestEncoding(malformed).code,
              ErrorCode::OutOfOrderField);
     malformed = *encoded.value;
@@ -395,18 +407,29 @@ void TestCapabilitiesAndCredit() {
     malformed[1] = 1;
     CHECK_EQ(ValidateCapabilityManifestEncoding(malformed).code,
              ErrorCode::InvalidFlags);
-    malformed = *encoded.value;
-    malformed[0] = 1;
-    CHECK_EQ(ValidateCapabilityManifestEncoding(malformed).code,
-             ErrorCode::UnsupportedVersion);
+    // Schemas 1 and 2 lacked the epoch fields.
+    for (const std::uint8_t schema : {1U, 2U}) {
+        malformed = *encoded.value;
+        malformed[0] = schema;
+        CHECK_EQ(ValidateCapabilityManifestEncoding(malformed).code,
+                 ErrorCode::UnsupportedVersion);
+    }
 
-    // Each side advertises a power-of-two epoch from 1 MiB through 64 MiB.
+    // Each side advertises power-of-two epochs from 1 MiB through 64 MiB,
+    // its minimum no larger than its maximum.
     CapabilityManifest largest{{}, kMaxEpochPayloadBytes};
     const auto largest_encoded = EncodeCapabilityManifest(largest);
     CHECK(largest_encoded);
-    CHECK_HEX(*largest_encoded.value, "0200000004000000");
+    CHECK_HEX(*largest_encoded.value, "030000000400000000100000");
     CHECK_EQ(
         DecodeCapabilityManifest(*largest_encoded.value).value->max_epoch_bytes,
+        kMaxEpochPayloadBytes);
+    CapabilityManifest pinned{{}, kMaxEpochPayloadBytes, kMaxEpochPayloadBytes};
+    const auto pinned_encoded = EncodeCapabilityManifest(pinned);
+    CHECK(pinned_encoded);
+    CHECK_HEX(*pinned_encoded.value, "030000000400000004000000");
+    CHECK_EQ(
+        DecodeCapabilityManifest(*pinned_encoded.value).value->min_epoch_bytes,
         kMaxEpochPayloadBytes);
     for (const std::uint32_t invalid :
          {0U, kMinEpochPayloadBytes / 2U, 3U * kMinEpochPayloadBytes,
@@ -419,7 +442,27 @@ void TestCapabilitiesAndCredit() {
         CHECK_EQ(ValidateCapabilityManifestEncoding(bytes).code,
                  ErrorCode::InvalidField);
         CHECK_EQ(ValidateCapabilityManifestEncoding(bytes).offset, 4U);
+
+        CapabilityManifest wrong_minimum{{}, kMaxEpochPayloadBytes, invalid};
+        CHECK_EQ(EncodeCapabilityManifest(wrong_minimum).status.code,
+                 ErrorCode::InvalidField);
+        bytes = *largest_encoded.value;
+        WriteU32(bytes, 8, invalid);
+        CHECK_EQ(ValidateCapabilityManifestEncoding(bytes).code,
+                 ErrorCode::InvalidField);
+        CHECK_EQ(ValidateCapabilityManifestEncoding(bytes).offset, 8U);
     }
+    // A minimum above the same manifest's maximum can never be met.
+    CapabilityManifest inverted{
+        {}, kMinEpochPayloadBytes, 2U * kMinEpochPayloadBytes};
+    CHECK_EQ(EncodeCapabilityManifest(inverted).status.code,
+             ErrorCode::InvalidField);
+    auto inverted_bytes = *largest_encoded.value;
+    WriteU32(inverted_bytes, 4, kMinEpochPayloadBytes);
+    WriteU32(inverted_bytes, 8, 2U * kMinEpochPayloadBytes);
+    CHECK_EQ(ValidateCapabilityManifestEncoding(inverted_bytes).code,
+             ErrorCode::InvalidField);
+    CHECK_EQ(ValidateCapabilityManifestEncoding(inverted_bytes).offset, 8U);
 
     const auto credit = EncodeCreditUpdate(65'536);
     CHECK(credit);
@@ -661,8 +704,8 @@ void TestKeyScheduleInput() {
     const std::vector<std::uint8_t> baseline = EncodeKeyInput(input);
     CHECK(!baseline.empty());
     CHECK_EQ(ReadU16(baseline, 2), 18U);
-    CHECK_EQ(baseline.size(), 3665U);
-    CHECK_EQ(Fnv1a64(baseline), 0xe5f96821b0256972ULL);
+    CHECK_EQ(baseline.size(), 3673U);
+    CHECK_EQ(Fnv1a64(baseline), 0x739cd7fa3979a8f8ULL);
 
     const auto size = KeyScheduleInputEncodedSize(input);
     CHECK(size);

@@ -613,8 +613,11 @@ the device's address is not usable for the bridge's listener.
 An endpoint with a device keeps its session up. Its start still returns when
 the first session has authenticated, or fails with that attempt. After that
 the endpoint stays `RUNNING` and replaces a lost session itself, as `yume`
-does: at once after a session that lasted 30 seconds, otherwise after a wait
-that doubles from 1 to 30 seconds. While it has no session the bridge still
+does, except after `YUME_STATUS_INCOMPATIBLE`: limits the server announced
+are the same on every attempt, so the endpoint stops with that status as its
+last failure. Otherwise it reconnects at once after a session that lasted 30
+seconds, and after a wait that doubles from 1 to 30 seconds after a shorter
+one. While it has no session the bridge still
 answers, so an application's new connection is reset at once instead of
 waiting. `yume_endpoint_retry_now` starts a waiting endpoint's next attempt
 without the rest of its wait, for an application that learns the network is
@@ -870,7 +873,10 @@ OpenSSL version, such as `openssl-3.5.7`, in both the manifest and
 `yume_get_build_info`.
 
 Provider/suite mismatch is a hard `YUME_STATUS_INCOMPATIBLE`. YTP/1 never
-negotiates a weaker suite and never retries through another provider.
+negotiates a weaker suite and never retries through another provider. So is a
+peer whose key-epoch limits leave no session epoch both sides accept
+(`limits.max_epoch_bytes` and `limits.min_epoch_bytes`), decided during AUTH
+from the two capability manifests.
 
 ## Export and freeze gates
 

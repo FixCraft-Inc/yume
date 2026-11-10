@@ -226,6 +226,7 @@ engine::Result<std::shared_ptr<NativeClientRuntime>> NativeClientRuntime::create
                 if (const auto self = weak.lock())
                     self->on_authenticated(session);
             };
+        keeping.stop_when_incompatible = true;
         state->keeper = std::make_shared<SessionKeeper>(
             context, std::move(keeping),
             [weak = std::weak_ptr<State>(state)](Status status) noexcept {

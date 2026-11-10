@@ -164,6 +164,8 @@ std::string code_name(const Status& status) {
             return "permission-denied";
         case StatusCode::AddressInUse:
             return "address-in-use";
+        case StatusCode::Incompatible:
+            return "incompatible";
     }
     return "unknown";
 }

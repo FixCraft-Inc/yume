@@ -1598,6 +1598,32 @@ void TestResourceLimits() {
         ExpectError(epochs, "/limits/max_epoch_bytes");
     }
 
+    // min_epoch_bytes is optional, 1 MiB by default, a power of two in the
+    // same range, and at most max_epoch_bytes.
+    Check(Parse(ClientDocument()).limits().min_epoch_bytes() == kMinEpochBytes,
+          "the default minimum epoch is not 1 MiB");
+    {
+        Json pinned = ClientDocument();
+        pinned["limits"]["max_epoch_bytes"] = kMaxEpochBytes;
+        pinned["limits"]["min_epoch_bytes"] = kMaxEpochBytes;
+        Check(Parse(pinned).limits().min_epoch_bytes() == kMaxEpochBytes,
+              "a minimum equal to the maximum was rejected");
+    }
+    for (const std::uint64_t epoch :
+         {std::uint64_t{kMinEpochBytes} / 2U, std::uint64_t{3U << 20},
+          std::uint64_t{kMaxEpochBytes} * 2U}) {
+        Json epochs = ClientDocument();
+        epochs["limits"]["max_epoch_bytes"] = kMaxEpochBytes;
+        epochs["limits"]["min_epoch_bytes"] = epoch;
+        ExpectError(epochs, "/limits/min_epoch_bytes");
+    }
+    {
+        // Absent, the maximum is 1 MiB, so any larger minimum exceeds it.
+        Json inverted = ClientDocument();
+        inverted["limits"]["min_epoch_bytes"] = 2U << 20;
+        ExpectError(inverted, "/limits/min_epoch_bytes");
+    }
+
     // credit_returns_per_window is optional, 2 by default, and 2, 4 or 8.
     Check(Parse(ClientDocument()).limits().credit_returns_per_window() ==
               kDefaultCreditReturns,

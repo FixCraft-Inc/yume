@@ -350,7 +350,10 @@ carrying records while REKEY_ACK is outstanding until a limit is reached. The
 receiver keeps the old inbound root only until the peer's first record of the
 new epoch. The epoch size is the smaller `limits.max_epoch_bytes` of the two
 capability manifests, 1 MiB by default and at most 64 MiB, and engine and
-endpoint tests cover a pair of sides that advertise different sizes.
+endpoint tests cover a pair of sides that advertise different sizes. Each
+manifest also carries the side's `limits.min_epoch_bytes`. When the session
+epoch would fall below either minimum, both sides end the session during AUTH
+with an incompatible status, and the client stops instead of reconnecting.
 With `limits.idle_epoch_rotation`, which the `fast` and `max` presets set,
 the native endpoint's rekey timer also starts the rotation of a used epoch
 once it is 250 ms old, so a request after an idle moment does not wait for

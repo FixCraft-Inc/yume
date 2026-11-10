@@ -1206,7 +1206,8 @@ ResourceLimits ParseLimits(const Json& limits) {
     CheckClosedObject(limits, "/limits",
                       {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5],
                        keys[6], keys[7], "max_egress_mbps", "max_epoch_bytes",
-                       "credit_returns_per_window", "idle_epoch_rotation"},
+                       "min_epoch_bytes", "credit_returns_per_window",
+                       "idle_epoch_rotation"},
                       {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5],
                        keys[6], keys[7]});
 
@@ -1256,6 +1257,18 @@ ResourceLimits ParseLimits(const Json& limits) {
             Fail("/limits/max_epoch_bytes", "must be a power of two");
         }
     }
+    std::uint32_t min_epoch_bytes = kMinEpochBytes;
+    if (limits.contains("min_epoch_bytes")) {
+        min_epoch_bytes =
+            read("min_epoch_bytes", kMinEpochBytes, kMaxEpochBytes);
+        if ((min_epoch_bytes & (min_epoch_bytes - 1U)) != 0U) {
+            Fail("/limits/min_epoch_bytes", "must be a power of two");
+        }
+        if (min_epoch_bytes > max_epoch_bytes) {
+            Fail("/limits/min_epoch_bytes",
+                 "must not exceed max_epoch_bytes");
+        }
+    }
     std::uint32_t credit_returns = kDefaultCreditReturns;
     if (limits.contains("credit_returns_per_window")) {
         credit_returns = read("credit_returns_per_window",
@@ -1273,7 +1286,8 @@ ResourceLimits ParseLimits(const Json& limits) {
                           max_pending_opens, max_rekey_jobs,
                           max_control_messages, max_packet_bytes,
                           max_packet_batch, max_egress_mbps, max_epoch_bytes,
-                          credit_returns, idle_epoch_rotation);
+                          credit_returns, idle_epoch_rotation,
+                          min_epoch_bytes);
 }
 
 std::optional<ClusterSettings> ParseCluster(const Json& document, Role role) {

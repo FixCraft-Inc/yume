@@ -7,6 +7,15 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+The YTP/1 capability manifest moves to schema 3, which adds the sender's
+`min_epoch_bytes`, set by the new `limits.min_epoch_bytes`. A server can now
+refuse key rotation more frequent than it allows. When the smaller maximum is
+below either side's minimum, both sides end the session during AUTH with the
+new `Incompatible` status (`YUME_STATUS_INCOMPATIBLE` in the C ABI). A client
+then stops instead of reconnecting, while a cluster link keeps retrying.
+Schema 2 manifests are rejected, so clients and servers update together. The
+manifest, key-schedule and cryptographic construction vectors follow.
+
 Native TCP and accepted TCP/UNIX byte channels report socket read errors as
 transport failures instead of directional EOF. Socket failures in either
 direction close the channel before delivery and settle queued operations once.

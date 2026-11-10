@@ -172,9 +172,10 @@ Buffer copy_bytes(std::span<const std::byte> bytes,
 
 std::vector<std::byte> capability_bytes(
     std::uint32_t max_epoch_bytes = ytp1::kMinEpochPayloadBytes,
-    ytp1::ServiceKind echo_kind = ytp1::ServiceKind::ByteStream) {
+    ytp1::ServiceKind echo_kind = ytp1::ServiceKind::ByteStream,
+    std::uint32_t min_epoch_bytes = ytp1::kMinEpochPayloadBytes) {
     ytp1::CapabilityManifest manifest{{{"echo", echo_kind, 4U}},
-                                      max_epoch_bytes};
+                                      max_epoch_bytes, min_epoch_bytes};
     auto encoded = ytp1::EncodeCapabilityManifest(manifest);
     CHECK(encoded.ok());
     std::vector<std::byte> bytes(encoded.value->size());
@@ -388,8 +389,9 @@ struct SecurityTrace final {
     std::vector<std::uint32_t> rekey_begun;
     std::vector<std::uint32_t> rekey_accepted;
     std::vector<std::uint32_t> rekey_finished;
-    // The epoch the fake peer advertises in its AUTH manifest.
+    // The epochs the fake peer advertises in its AUTH manifest.
     std::uint32_t peer_epoch_bytes{ytp1::kMinEpochPayloadBytes};
+    std::uint32_t peer_min_epoch_bytes{ytp1::kMinEpochPayloadBytes};
     std::size_t init_message_size{1U};
     std::size_t ack_message_size{1U};
     std::chrono::milliseconds begin_rekey_delay{0};
@@ -462,7 +464,8 @@ public:
             "device-1", "composite-ed25519-mldsa87",
             std::vector<std::byte>{std::byte{1}}));
         output.authenticated_peer_capability_manifest =
-            capability_bytes(trace_->peer_epoch_bytes, trace_->echo_kind);
+            capability_bytes(trace_->peer_epoch_bytes, trace_->echo_kind,
+                             trace_->peer_min_epoch_bytes);
         return Result<AuthenticationOutput>(std::move(output));
     }
     Result<Buffer> seal_record(RecordKeyToken token,
@@ -5146,6 +5149,54 @@ void test_session_uses_the_smaller_advertised_epoch() {
     }
 }
 
+// Neither side can raise the other's maximum. Limits that leave no common
+// epoch end the session after AUTH as Incompatible, before it goes active,
+// whichever side's minimum is unmet. A minimum the session epoch meets exactly
+// is accepted.
+void test_session_refuses_epochs_below_either_minimum() {
+    constexpr std::uint32_t kMiB = 1024U * 1024U;
+    struct Case final {
+        std::uint32_t local_max;
+        std::uint32_t local_min;
+        std::uint32_t peer_max;
+        std::uint32_t peer_min;
+        bool compatible;
+    };
+    for (const Case limits_case :
+         {Case{16U * kMiB, 16U * kMiB, 1U * kMiB, 1U * kMiB, false},
+          Case{1U * kMiB, 1U * kMiB, 16U * kMiB, 16U * kMiB, false},
+          Case{16U * kMiB, 4U * kMiB, 4U * kMiB, 1U * kMiB, true},
+          Case{4U * kMiB, 1U * kMiB, 16U * kMiB, 4U * kMiB, true}}) {
+        SessionLimits limits;
+        limits.max_epoch_bytes = limits_case.local_max;
+        limits.min_epoch_bytes = limits_case.local_min;
+        TestSession session(true, false, limits);
+        session.trace->peer_epoch_bytes = limits_case.peer_max;
+        session.trace->peer_min_epoch_bytes = limits_case.peer_min;
+        std::optional<StatusCode> started;
+        session.engine->async_start(
+            [&](Status status) { started = status.code(); });
+        const Buffer response = auth_message(ytp1::AuthMessageType::Response,
+                                             ytp1::EndpointRole::Client);
+        session.carrier->deliver(
+            frame(ytp1::RecordType::Auth, 0U, response.bytes()));
+        if (limits_case.compatible) {
+            CHECK(session.engine->epoch_bytes() == 4U * kMiB);
+            CHECK(!started.has_value() || *started == StatusCode::Ok);
+        } else {
+            CHECK(started == StatusCode::Incompatible);
+            CHECK(!session.engine->epoch_bytes().has_value());
+            CHECK(session.engine->state() != SessionState::Active);
+        }
+    }
+
+    SessionLimits inverted;
+    inverted.max_epoch_bytes = 1U * kMiB;
+    inverted.min_epoch_bytes = 2U * kMiB;
+    CHECK(validate_session_limits(inverted).code() ==
+          StatusCode::InvalidArgument);
+}
+
 void test_receive_windows_fit_the_queue_budget() {
     SessionLimits limits;
     CHECK(validate_session_limits(limits).ok());
@@ -5236,6 +5287,7 @@ void run_test() {
     test_aged_epoch_rotates_without_a_send();
     test_peer_rekey_starts_an_aged_rotation();
     test_session_uses_the_smaller_advertised_epoch();
+    test_session_refuses_epochs_below_either_minimum();
 }
 
 }  // namespace

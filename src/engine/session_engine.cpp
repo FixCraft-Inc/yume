@@ -281,6 +281,43 @@ Status protocol_failure(std::string_view message) {
     return Status(StatusCode::FailedPrecondition, message);
 }
 
+// Neither side can raise the other's maximum, so limits that leave no common
+// key epoch end the session. Both sides reach the same decision from the same
+// two manifests, so neither needs a refusal message.
+Status epoch_overlap(const ytp1::CapabilityManifest& local,
+                     const ytp1::CapabilityManifest& peer) {
+    const std::uint32_t session_epoch =
+        std::min(local.max_epoch_bytes, peer.max_epoch_bytes);
+    if (session_epoch < local.min_epoch_bytes) {
+        return Status(StatusCode::Incompatible,
+                      "the peer accepts only key epochs smaller than this "
+                      "side's minimum");
+    }
+    if (session_epoch < peer.min_epoch_bytes) {
+        return Status(StatusCode::Incompatible,
+                      "the peer requires key epochs larger than this side "
+                      "accepts");
+    }
+    return Status::success();
+}
+
+// The capability manifest in a canonical AUTH message, if it carries one.
+std::optional<ytp1::CapabilityManifest> auth_capability_manifest(
+    std::span<const std::byte> message) {
+    const auto decoded = ytp1::DecodeAuthRecord(as_u8(message));
+    if (!decoded.ok()) return std::nullopt;
+    for (const ytp1::AuthField& field : decoded.value->fields) {
+        if (field.id !=
+            static_cast<std::uint16_t>(ytp1::AuthFieldId::CapabilityManifest)) {
+            continue;
+        }
+        auto manifest = ytp1::DecodeCapabilityManifest(field.value);
+        if (!manifest.ok()) return std::nullopt;
+        return std::move(*manifest.value);
+    }
+    return std::nullopt;
+}
+
 Status validate_limits(const SessionLimits& limits) {
     if (limits.max_frame_payload <
             kRekeyEpochBytes + ytp1::kRekeyInitMessageBytes ||
@@ -322,10 +359,15 @@ Status validate_limits(const SessionLimits& limits) {
         return Status(StatusCode::InvalidArgument,
                       "session flow-credit limits are invalid");
     }
-    if (!ytp1::IsValidEpochPayloadBytes(limits.max_epoch_bytes)) {
+    if (!ytp1::IsValidEpochPayloadBytes(limits.max_epoch_bytes) ||
+        !ytp1::IsValidEpochPayloadBytes(limits.min_epoch_bytes)) {
         return Status(StatusCode::InvalidArgument,
                       "session epoch size is not a power of two from 1 MiB "
                       "through 64 MiB");
+    }
+    if (limits.min_epoch_bytes > limits.max_epoch_bytes) {
+        return Status(StatusCode::InvalidArgument,
+                      "session minimum epoch exceeds its maximum");
     }
     if (limits.max_concurrent_rekeys < 2U ||
         limits.max_concurrent_rekeys > kMaxSessionConcurrentRekeys ||
@@ -1027,6 +1069,7 @@ Result<std::shared_ptr<SessionEngine>> SessionEngine::create(
     try {
         ytp1::CapabilityManifest local_manifest;
         local_manifest.max_epoch_bytes = limits.max_epoch_bytes;
+        local_manifest.min_epoch_bytes = limits.min_epoch_bytes;
         local_manifest.entries.reserve(graph->suite().services().size());
         for (const ServiceRequirement& service :
              graph->suite().services()) {
@@ -1502,6 +1545,17 @@ Status SessionEngine::Impl::handle_authentication_record(
         if (!outgoing.ok()) {
             return outgoing;
         }
+        // The server's manifest is in its signed CHALLENGE, which the provider
+        // has just verified. A client whose limits leave no common epoch stops
+        // here, before RESPONSE sends its identity. The server would refuse
+        // the RESPONSE anyway, but closing before ACCEPTED would leave this
+        // client unable to tell a refusal from a lost connection.
+        if (const auto server_manifest = auth_capability_manifest(payload)) {
+            const Status epochs = epoch_overlap(local_manifest_, *server_manifest);
+            if (!epochs.ok()) {
+                return epochs;
+            }
+        }
         const Status send = enqueue_record(
             ytp1::RecordType::Auth, StreamId::control(),
             output.outbound_message->bytes(), false, true);
@@ -1570,6 +1624,15 @@ Status SessionEngine::Impl::accept_established_output(
         return protocol_failure(
             "authenticated peer capability manifest is not canonical");
     }
+    // Limits that leave no common epoch end the session here, before any
+    // protected record. A server decides at this point. A client has already
+    // decided on the server's CHALLENGE.
+    const Status epochs = epoch_overlap(local_manifest_, *decoded.value);
+    if (!epochs.ok()) {
+        return epochs;
+    }
+    const std::uint32_t session_epoch = std::min(
+        local_manifest_.max_epoch_bytes, decoded.value->max_epoch_bytes);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_ != SessionState::Authenticating) {
@@ -1581,8 +1644,7 @@ Status SessionEngine::Impl::accept_established_output(
         peer_manifest_ = *decoded.value;
         // Both directions use the smaller advertised epoch, set before the
         // first protected record either side sends.
-        epoch_payload_bytes_ = std::min(local_manifest_.max_epoch_bytes,
-                                        peer_manifest_.max_epoch_bytes);
+        epoch_payload_bytes_ = session_epoch;
         epoch_record_limit_ = ytp1::EpochRecordLimit(epoch_payload_bytes_);
         epoch_negotiated_ = true;
         expected_auth_kind_.reset();

@@ -15,7 +15,7 @@ namespace yume::ytp1 {
 namespace {
 
 constexpr std::size_t kOpenPrefixSize = 8;
-constexpr std::size_t kCapabilityPrefixSize = 8;
+constexpr std::size_t kCapabilityPrefixSize = 12;
 constexpr std::size_t kCapabilityEntryPrefixSize = 8;
 
 [[nodiscard]] constexpr bool IsKnownRecordType(RecordType type) noexcept {
@@ -479,8 +479,13 @@ Status ValidateCapabilityManifestEncoding(
     if (count > kMaxCapabilities) {
         return {ErrorCode::TooManyFields, 2};
     }
-    if (!IsValidEpochPayloadBytes(detail::read_u32_be(payload, 4))) {
+    const std::uint32_t max_epoch = detail::read_u32_be(payload, 4);
+    if (!IsValidEpochPayloadBytes(max_epoch)) {
         return {ErrorCode::InvalidField, 4};
+    }
+    const std::uint32_t min_epoch = detail::read_u32_be(payload, 8);
+    if (!IsValidEpochPayloadBytes(min_epoch) || min_epoch > max_epoch) {
+        return {ErrorCode::InvalidField, 8};
     }
     std::size_t offset = kCapabilityPrefixSize;
     std::string_view previous_name;
@@ -545,7 +550,9 @@ Result<std::vector<std::uint8_t>> EncodeCapabilityManifest(
         return Result<std::vector<std::uint8_t>>::Failure(
             ErrorCode::TooManyFields);
     }
-    if (!IsValidEpochPayloadBytes(manifest.max_epoch_bytes)) {
+    if (!IsValidEpochPayloadBytes(manifest.max_epoch_bytes) ||
+        !IsValidEpochPayloadBytes(manifest.min_epoch_bytes) ||
+        manifest.min_epoch_bytes > manifest.max_epoch_bytes) {
         return Result<std::vector<std::uint8_t>>::Failure(
             ErrorCode::InvalidField);
     }
@@ -601,6 +608,7 @@ Result<std::vector<std::uint8_t>> EncodeCapabilityManifest(
     output[1] = 0;
     detail::write_u16_be(output, 2, static_cast<std::uint16_t>(entries.size()));
     detail::write_u32_be(output, 4, manifest.max_epoch_bytes);
+    detail::write_u32_be(output, 8, manifest.min_epoch_bytes);
     std::size_t offset = kCapabilityPrefixSize;
     for (const Capability& entry : entries) {
         output[offset] = static_cast<std::uint8_t>(entry.service_kind);
@@ -628,6 +636,7 @@ Result<CapabilityManifest> DecodeCapabilityManifest(
     CapabilityManifest manifest;
     const std::size_t count = detail::read_u16_be(payload, 2);
     manifest.max_epoch_bytes = detail::read_u32_be(payload, 4);
+    manifest.min_epoch_bytes = detail::read_u32_be(payload, 8);
     manifest.entries.reserve(count);
     std::size_t offset = kCapabilityPrefixSize;
     for (std::size_t i = 0; i < count; ++i) {

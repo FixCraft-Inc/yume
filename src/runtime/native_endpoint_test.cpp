@@ -6,6 +6,7 @@
 #include "runtime/native_endpoint.hpp"
 #include "runtime/native_credentials.hpp"
 #include "runtime/native_egress_policy.hpp"
+#include "runtime/session_keeper.hpp"
 #include "fs/bounded_file.hpp"
 #include "providers/h2_duplex_carrier.hpp"
 #include "providers/h2_web_front_door.hpp"
@@ -564,6 +565,145 @@ void test_session_epoch_is_the_smaller_limit(const std::filesystem::path& kit) {
             server->close();
             accepted.reset();
         });
+        runner.finish_and_join();
+        CHECK(runner.exceptions.load() == 0U);
+    }
+}
+
+// Limits that leave no common epoch end the session after AUTH as
+// Incompatible, whichever side's minimum is unmet. The client's start fails
+// with that status, so its owner can stop instead of retrying the same limits.
+void test_epoch_limits_without_overlap_are_incompatible(
+    const std::filesystem::path& kit) {
+    namespace v1 = yume::config::v1;
+    struct Side final {
+        std::uint32_t max;
+        std::uint32_t min;
+    };
+    const auto document = [](const std::filesystem::path& path, Side limits) {
+        std::string text;
+        CHECK(read_text_file_bounded(path, v1::kMaxDocumentBytes, &text));
+        auto parsed = nlohmann::json::parse(text);
+        parsed["limits"]["max_epoch_bytes"] = limits.max;
+        parsed["limits"]["min_epoch_bytes"] = limits.min;
+        return v1::Parse(parsed);
+    };
+    constexpr std::uint32_t kMiB = 1U << 20;
+    struct Case final {
+        Side client;
+        Side server;
+    };
+    // A server that rotates no more often than every 16 MiB, then a client
+    // that does not accept the server's 4 MiB maximum.
+    for (const Case limits :
+         {Case{{1U * kMiB, 1U * kMiB}, {16U * kMiB, 16U * kMiB}},
+          Case{{16U * kMiB, 16U * kMiB}, {4U * kMiB, 1U * kMiB}}}) {
+        Runner runner;
+        auto handler = std::make_shared<Handler>();
+        NativeEndpointOptions server_options;
+        server_options.max_sessions = 1U;
+        server_options.max_pending_starts = 1U;
+        auto server = runner.sync([&] {
+            return take(NativeEndpoint::create(
+                runner.context, document(kit / "server/yumed.json", limits.server),
+                kit / "server", bindings(handler), server_options));
+        });
+        NativeEndpointOptions client_options;
+        client_options.max_sessions = client_options.max_pending_starts = 1U;
+        client_options.connection_address = "127.0.0.1";
+        auto client = runner.sync([&] {
+            return take(NativeEndpoint::create(
+                runner.context, document(kit / "client/yume.json", limits.client),
+                kit / "client", bindings(handler), client_options));
+        });
+        auto accepting = start(runner, server);
+        auto connecting = start(runner, client);
+        const auto refused = await(connecting);
+        CHECK(!refused.ok());
+        CHECK(refused.status().code() == StatusCode::Incompatible);
+        runner.sync([&] {
+            client->close();
+            server->close();
+        });
+        CHECK(!await(accepting).ok());
+        runner.finish_and_join();
+        CHECK(runner.exceptions.load() == 0U);
+    }
+}
+
+// A client's keeper stops on Incompatible, because the limits its server
+// announced are the same on every attempt. A keeper without
+// stop_when_incompatible, as a cluster link uses, waits to retry instead, so
+// one node's changed limits never stop another node.
+void test_keeper_stops_on_incompatible_only_when_asked(
+    const std::filesystem::path& kit) {
+    namespace v1 = yume::config::v1;
+    const auto document = [](const std::filesystem::path& path,
+                             std::uint32_t epoch) {
+        std::string text;
+        CHECK(read_text_file_bounded(path, v1::kMaxDocumentBytes, &text));
+        auto parsed = nlohmann::json::parse(text);
+        parsed["limits"]["max_epoch_bytes"] = epoch;
+        parsed["limits"]["min_epoch_bytes"] = epoch;
+        return v1::Parse(parsed);
+    };
+    constexpr std::uint32_t kMiB = 1U << 20;
+    for (const bool stop : {true, false}) {
+        Runner runner;
+        auto handler = std::make_shared<Handler>();
+        NativeEndpointOptions server_options;
+        server_options.max_sessions = 1U;
+        server_options.max_pending_starts = 1U;
+        auto server = runner.sync([&] {
+            return take(NativeEndpoint::create(
+                runner.context, document(kit / "server/yumed.json", 16U * kMiB),
+                kit / "server", bindings(handler), server_options));
+        });
+        SessionKeeperOptions keeping;
+        keeping.stop_when_incompatible = stop;
+        // Long enough that no second attempt starts during the test.
+        keeping.reconnect_initial = 60s;
+        keeping.reconnect_max = 60s;
+        auto failed = std::make_shared<std::promise<Status>>();
+        auto failure = failed->get_future();
+        auto keeper = std::make_shared<SessionKeeper>(
+            runner.context, std::move(keeping),
+            [failed](Status status) { failed->set_value(std::move(status)); });
+        NativeEndpointOptions client_options;
+        client_options.max_sessions = client_options.max_pending_starts = 1U;
+        client_options.connection_address = "127.0.0.1";
+        client_options.session_ended = keeper->session_ended();
+        auto client = runner.sync([&] {
+            return take(NativeEndpoint::create(
+                runner.context, document(kit / "client/yume.json", 1U * kMiB),
+                kit / "client", bindings(handler), client_options));
+        });
+        auto accepting = start(runner, server);
+        runner.sync([&] {
+            keeper->attach(client);
+            keeper->start();
+        });
+        if (stop) {
+            CHECK(await(failure).code() == StatusCode::Incompatible);
+        } else {
+            const auto deadline = std::chrono::steady_clock::now() + 10s;
+            NativeClientStatus status = keeper->status();
+            while (status.state != NativeClientState::Waiting &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(20ms);
+                status = keeper->status();
+            }
+            CHECK(status.state == NativeClientState::Waiting);
+            CHECK(status.failed_attempts == 1U);
+            CHECK(status.last_failure.code() == StatusCode::Incompatible);
+            CHECK(failure.wait_for(0s) != std::future_status::ready);
+        }
+        runner.sync([&] {
+            keeper->close();
+            client->close();
+            server->close();
+        });
+        CHECK(!await(accepting).ok());
         runner.finish_and_join();
         CHECK(runner.exceptions.load() == 0U);
     }
@@ -3547,6 +3687,8 @@ int main(int argc, char** argv) {
         test_idle_epochs_rotate(argv[1], true);
         test_idle_epochs_rotate(argv[1], false);
         test_session_epoch_is_the_smaller_limit(argv[1]);
+        test_epoch_limits_without_overlap_are_incompatible(argv[1]);
+        test_keeper_stops_on_incompatible_only_when_asked(argv[1]);
         test_credential_reload(argv[1]);
         test_reload_reaches_armed_starts(argv[1]);
         test_promoted_server_auth_deadline(argv[1]);

@@ -232,6 +232,18 @@
       <extracomment>source: Protected; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
       <translation>Protected</translation>
     </message>
+    <message id="notification.protected.in">
+      <location filename="catalog:notification.protected.in" line="1"/>
+      <source></source>
+      <extracomment>source: Protected in %1$s; context: Android VPN notification; owner: android.app.i18n; %1$s is the country the provider declares for the connected server, in words. It is never guessed from an address.</extracomment>
+      <translation>Protected in %1</translation>
+    </message>
+    <message id="notification.rates">
+      <location filename="catalog:notification.rates" line="1"/>
+      <source></source>
+      <extracomment>source: Download %1$s · Upload %2$s; context: Android VPN notification; owner: android.app.i18n; Current smoothed payload rates, for example 1.2 MiB/s. Use the same words as the Traffic card's Download and Upload.</extracomment>
+      <translation>Download %1 · Upload %2</translation>
+    </message>
     <message id="reconnecting">
       <location filename="catalog:reconnecting" line="1"/>
       <source></source>
@@ -373,8 +385,8 @@
     <message id="this.kit.s.configuration.is.not.one.this.version.of.yum">
       <location filename="catalog:this.kit.s.configuration.is.not.one.this.version.of.yum" line="1"/>
       <source></source>
-      <extracomment>source: This kit's configuration is not one this version of Yume runs.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>This kit's configuration is not one this version of Yume runs.</translation>
+      <extracomment>source: This kit's settings are not ones this version of Yume or the server accepts. If you changed its tuning, reset it. Otherwise ask the server's owner for a new kit.; context: Android AppStrings; owner: android.app.i18n; Shown when this library cannot run the kit, or when the server refuses the kit's limits, such as how often keys rotate. Preserve technical terms and formatting placeholders.</extracomment>
+      <translation>This kit's settings are not ones this version of Yume or the server accepts. If you changed its tuning, reset it. Otherwise ask the server's owner for a new kit.</translation>
     </message>
     <message id="vpn.interface.failed">
       <location filename="catalog:vpn.interface.failed" line="1"/>
@@ -3508,12 +3520,6 @@
       <extracomment>source: The kit or opening code was refused. Request the code again and retry once.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
       <translation>The kit or opening code was refused. Request the code again and retry once.</translation>
     </message>
-    <message id="provider.change.server">
-      <location filename="catalog:provider.change.server" line="1"/>
-      <source></source>
-      <extracomment>source: To use another server from this service, remove it and add it again.; context: Android provider server selection; owner: android.app.consumer; Contract 1 refresh keeps the same service and server. Changing the server requires explicit removal and enrollment again.</extracomment>
-      <translation>To use another server from this service, remove it and add it again.</translation>
-    </message>
     <message id="provider.signed.in">
       <location filename="catalog:provider.signed.in" line="1"/>
       <source></source>
@@ -3568,6 +3574,18 @@
       <extracomment>source: Refresh servers; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
       <translation>Refresh servers</translation>
     </message>
+    <message id="provider.servers.show">
+      <location filename="catalog:provider.servers.show" line="1"/>
+      <source></source>
+      <extracomment>source: Show servers in %1$s; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Show servers in %1</translation>
+    </message>
+    <message id="provider.servers.hide">
+      <location filename="catalog:provider.servers.hide" line="1"/>
+      <source></source>
+      <extracomment>source: Hide servers in %1$s; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Hide servers in %1</translation>
+    </message>
     <message id="provider.location.unknown">
       <location filename="catalog:provider.location.unknown" line="1"/>
       <source></source>
@@ -3579,24 +3597,6 @@
       <source></source>
       <extracomment>source: Choose a server; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
       <translation>Choose a server</translation>
-    </message>
-    <message id="provider.access.until">
-      <location filename="catalog:provider.access.until" line="1"/>
-      <source></source>
-      <extracomment>source: Access until %1$s.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
-      <translation>Access until %1.</translation>
-    </message>
-    <message id="provider.access.renew">
-      <location filename="catalog:provider.access.renew" line="1"/>
-      <source></source>
-      <extracomment>source: Access until %1$s. Yume renews it automatically.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
-      <translation>Access until %1. Yume renews it automatically.</translation>
-    </message>
-    <message id="provider.access.ended">
-      <location filename="catalog:provider.access.ended" line="1"/>
-      <source></source>
-      <extracomment>source: Access ended. It renews when you connect.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
-      <translation>Access ended. It renews when you connect.</translation>
     </message>
     <message id="provider.sign.in.note">
       <location filename="catalog:provider.sign.in.note" line="1"/>
@@ -3651,6 +3651,18 @@
       <source></source>
       <extracomment>source: The provider is unavailable. Try again later.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
       <translation>The provider is unavailable. Try again later.</translation>
+    </message>
+    <message id="provider.error.link.unverified">
+      <location filename="catalog:provider.error.link.unverified" line="1"/>
+      <source></source>
+      <extracomment>source: Android has not confirmed this app's sign-in link yet. Make sure “Open supported links” is on for this app, then try again in a few minutes. If it keeps failing, reinstall the app.; context: Android optional provider presentation; owner: android.app.consumer; Shown when Android has not verified the app's own sign-in callback link, or link handling is off for the app. The quoted label names Android's own switch on the app's Open by default page. Use the platform's wording for that switch in each language.</extracomment>
+      <translation>Android has not confirmed this app's sign-in link yet. Make sure “Open supported links” is on for this app, then try again in a few minutes. If it keeps failing, reinstall the app.</translation>
+    </message>
+    <message id="provider.link.settings">
+      <location filename="catalog:provider.link.settings" line="1"/>
+      <source></source>
+      <extracomment>source: Open link settings; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>Open link settings</translation>
     </message>
     <message id="provider.error.rate.limited">
       <location filename="catalog:provider.error.rate.limited" line="1"/>

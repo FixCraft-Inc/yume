@@ -350,10 +350,11 @@ A canonical capability manifest is at most 64 KiB and contains at most 256
 entries:
 
 @code text
-u8  schema = 2
+u8  schema = 3
 u8  flags = 0
 u16 entry_count
 u32 max_epoch_bytes
+u32 min_epoch_bytes
 repeat entry_count:
     u8  service_kind
     u8  flags = 0
@@ -369,14 +370,27 @@ Entries are ordered first by unsigned service-name octets and then by numeric
 service kind. The encoder sorts entries into that order. The decoder rejects
 out-of-order entries and duplicate `(service_name, service_kind)` keys. The
 same name MAY appear once for each distinct service kind. An empty manifest
-that accepts 1 MiB epochs is the eight-octet value `02 00 00 00 00 10 00 00`.
+that accepts exactly 1 MiB epochs is the twelve-octet value
+`03 00 00 00 00 10 00 00 00 10 00 00`.
 
 `max_epoch_bytes` is the most protected payload the sender accepts in one
-directional epoch, in either direction. It MUST be a power of two from 1 MiB
-(`1048576`) through 64 MiB (`67108864`). Each side advertises its own value in
-its AUTH flight, and both directions of the session use the smaller of the two
-values, so neither side sends or accepts a larger epoch than the other allows.
-Schema 1, which had no epoch field, is rejected.
+directional epoch, in either direction. `min_epoch_bytes` is the smallest
+session epoch the sender agrees to, which bounds how often it must rotate keys.
+Both MUST be powers of two from 1 MiB (`1048576`) through 64 MiB (`67108864`),
+and `min_epoch_bytes` MUST NOT exceed `max_epoch_bytes`. Each side advertises
+its own values in its AUTH flight, and both directions of the session use the
+smaller of the two `max_epoch_bytes`, so neither side sends or accepts a larger
+epoch than the other allows. A peer cannot raise the other side's maximum, so
+a side that wants fewer rotations can only decline the session. When the
+session epoch is below either side's `min_epoch_bytes`, each side ends the
+session as incompatible once AUTH has verified the peer's manifest, before any
+protected record. A client decides on the server's signed CHALLENGE and sends
+no RESPONSE, so it never identifies itself to a server whose limits it cannot
+meet, and it can tell this refusal from a lost connection. A server decides
+on the client's RESPONSE. Both sides reach the same decision from the same two
+manifests, so neither needs a refusal message, and a retry with unchanged
+limits cannot succeed. Schemas 1 and 2, which lacked these fields, are
+rejected.
 
 A capability is authenticated advertisement, not authorization. A runtime
 MUST still apply its resource and per-OPEN authorization policy.
@@ -744,10 +758,10 @@ test checks:
 - TCP/DNS OPEN
   `01010103000a000e6469726563742e74637001bb0b6578616d706c652e636f6d`;
 - capability manifest
-  `020000020010000001000004000000086563686f0200000300000004756470`;
+  `03000002001000000010000001000004000000086563686f0200000300000004756470`;
 - the mandatory-only accepted AUTH encoding recorded in the vector file; and
-- a 3665-octet synthetic key-schedule input whose FNV-1a-64 encoding checksum
-  is `e5f96821b0256972`.
+- a 3673-octet synthetic key-schedule input whose FNV-1a-64 encoding checksum
+  is `739cd7fa3979a8f8`.
 
 FNV-1a is used only as an encoding-regression checksum and makes no
 cryptographic claim.

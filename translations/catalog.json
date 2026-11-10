@@ -676,6 +676,43 @@
       }
     },
     {
+      "id": "notification.protected.in",
+      "source": "Protected in %1$s",
+      "context": "Android VPN notification",
+      "owner": "android.app.i18n",
+      "notes": "%1$s is the country the provider declares for the connected server, in words. It is never guessed from an address.",
+      "requirements": {
+        "placeholders": [
+          "%1$s"
+        ]
+      },
+      "translations": {
+        "ru": "Защищено через %1$s",
+        "ja": "%1$s に接続中",
+        "uk": "Захищено через %1$s",
+        "zh-Hans": "已受保护：%1$s"
+      }
+    },
+    {
+      "id": "notification.rates",
+      "source": "Download %1$s · Upload %2$s",
+      "context": "Android VPN notification",
+      "owner": "android.app.i18n",
+      "notes": "Current smoothed payload rates, for example 1.2 MiB/s. Use the same words as the Traffic card's Download and Upload.",
+      "requirements": {
+        "placeholders": [
+          "%1$s",
+          "%2$s"
+        ]
+      },
+      "translations": {
+        "ru": "Загрузка %1$s · Отправка %2$s",
+        "ja": "受信 %1$s · 送信 %2$s",
+        "uk": "Завантаження %1$s · Надсилання %2$s",
+        "zh-Hans": "下载 %1$s · 上传 %2$s"
+      }
+    },
+    {
       "id": "reconnecting",
       "source": "Reconnecting",
       "context": "Android AppStrings",
@@ -1047,15 +1084,15 @@
     },
     {
       "id": "this.kit.s.configuration.is.not.one.this.version.of.yum",
-      "source": "This kit's configuration is not one this version of Yume runs.",
+      "source": "This kit's settings are not ones this version of Yume or the server accepts. If you changed its tuning, reset it. Otherwise ask the server's owner for a new kit.",
       "context": "Android AppStrings",
       "owner": "android.app.i18n",
-      "notes": "Preserve technical terms and formatting placeholders.",
+      "notes": "Shown when this library cannot run the kit, or when the server refuses the kit's limits, such as how often keys rotate. Preserve technical terms and formatting placeholders.",
       "translations": {
-        "ru": "Эта версия Yume не работает с конфигурацией этого набора.",
-        "ja": "このバージョンの Yume は、このキットの設定では動作しません。",
-        "uk": "Ця версія Yume не працює з конфігурацією цього набору.",
-        "zh-Hans": "此版本的 Yume 无法运行该套件的配置。"
+        "ru": "Эта версия Yume или сервер не принимают настройки этого набора. Если вы меняли его настройку, сбросьте её. Иначе попросите у владельца сервера новый набор.",
+        "ja": "このキットの設定は、このバージョンの Yume またはサーバーで受け付けられません。チューニングを変更した場合は元に戻してください。それ以外の場合は、サーバーの管理者に新しいキットを依頼してください。",
+        "uk": "Ця версія Yume або сервер не приймають налаштування цього набору. Якщо ви змінювали його налаштування, скиньте їх. Інакше попросіть у власника сервера новий набір.",
+        "zh-Hans": "此版本的 Yume 或服务器不接受该套件的设置。如果你更改过它的调优，请重置。否则请向服务器所有者索取新的套件。"
       },
       "requirements": {
         "placeholders": []
@@ -9907,22 +9944,6 @@
       "maintainer_review": true
     },
     {
-      "id": "provider.change.server",
-      "source": "To use another server from this service, remove it and add it again.",
-      "context": "Android provider server selection",
-      "owner": "android.app.consumer",
-      "notes": "Contract 1 refresh keeps the same service and server. Changing the server requires explicit removal and enrollment again.",
-      "requirements": {
-        "placeholders": []
-      },
-      "translations": {
-        "ru": "Чтобы использовать другой сервер этого сервиса, удалите сервис и добавьте его снова.",
-        "ja": "このサービスの別のサーバーを使用するには、サービスを削除して再度追加してください。",
-        "uk": "Щоб скористатися іншим сервером цього сервісу, видаліть сервіс і додайте його знову.",
-        "zh-Hans": "要使用此服务的其他服务器，请先移除服务，再重新添加。"
-      }
-    },
-    {
       "id": "provider.signed.in",
       "source": "Signed in",
       "context": "Android optional provider presentation",
@@ -10069,6 +10090,42 @@
       }
     },
     {
+      "id": "provider.servers.show",
+      "source": "Show servers in %1$s",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": [
+          "%1$s"
+        ]
+      },
+      "translations": {
+        "ru": "Показать серверы: %1$s",
+        "ja": "%1$s のサーバーを表示",
+        "uk": "Показати сервери: %1$s",
+        "zh-Hans": "显示%1$s的服务器"
+      }
+    },
+    {
+      "id": "provider.servers.hide",
+      "source": "Hide servers in %1$s",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": [
+          "%1$s"
+        ]
+      },
+      "translations": {
+        "ru": "Скрыть серверы: %1$s",
+        "ja": "%1$s のサーバーを非表示",
+        "uk": "Сховати сервери: %1$s",
+        "zh-Hans": "隐藏%1$s的服务器"
+      }
+    },
+    {
       "id": "provider.location.unknown",
       "source": "Location not given",
       "context": "Android optional provider presentation",
@@ -10098,58 +10155,6 @@
         "ja": "サーバーを選択",
         "uk": "Вибрати сервер",
         "zh-Hans": "选择服务器"
-      }
-    },
-    {
-      "id": "provider.access.until",
-      "source": "Access until %1$s.",
-      "context": "Android optional provider presentation",
-      "owner": "android.app.consumer",
-      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
-      "requirements": {
-        "placeholders": [
-          "%1$s"
-        ]
-      },
-      "translations": {
-        "ru": "Доступ до %1$s.",
-        "ja": "%1$s までアクセスできます。",
-        "uk": "Доступ до %1$s.",
-        "zh-Hans": "访问权限有效至 %1$s。"
-      }
-    },
-    {
-      "id": "provider.access.renew",
-      "source": "Access until %1$s. Yume renews it automatically.",
-      "context": "Android optional provider presentation",
-      "owner": "android.app.consumer",
-      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
-      "requirements": {
-        "placeholders": [
-          "%1$s"
-        ]
-      },
-      "translations": {
-        "ru": "Доступ до %1$s. Yume продлит его автоматически.",
-        "ja": "%1$s までアクセスできます。Yume が自動で更新します。",
-        "uk": "Доступ до %1$s. Yume продовжить його автоматично.",
-        "zh-Hans": "访问权限有效至 %1$s。Yume 会自动续期。"
-      }
-    },
-    {
-      "id": "provider.access.ended",
-      "source": "Access ended. It renews when you connect.",
-      "context": "Android optional provider presentation",
-      "owner": "android.app.consumer",
-      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
-      "requirements": {
-        "placeholders": []
-      },
-      "translations": {
-        "ru": "Доступ закончился. Он продлится при подключении.",
-        "ja": "アクセス期間が終了しました。接続すると更新されます。",
-        "uk": "Доступ закінчився. Він продовжиться під час підключення.",
-        "zh-Hans": "访问权限已结束。连接时会自动续期。"
       }
     },
     {
@@ -10301,6 +10306,38 @@
         "ja": "プロバイダーを利用できません。後でもう一度お試しください。",
         "uk": "Постачальник недоступний. Спробуйте ще раз пізніше.",
         "zh-Hans": "服务提供商不可用。请稍后重试。"
+      }
+    },
+    {
+      "id": "provider.error.link.unverified",
+      "source": "Android has not confirmed this app's sign-in link yet. Make sure “Open supported links” is on for this app, then try again in a few minutes. If it keeps failing, reinstall the app.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Shown when Android has not verified the app's own sign-in callback link, or link handling is off for the app. The quoted label names Android's own switch on the app's Open by default page. Use the platform's wording for that switch in each language.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Android ещё не подтвердил ссылку для входа этого приложения. Убедитесь, что для приложения включён параметр «Открывать поддерживаемые ссылки», и повторите попытку через несколько минут. Если ошибка повторяется, переустановите приложение.",
+        "ja": "このアプリのサインイン用リンクを Android がまだ確認していません。このアプリで「対応リンクを開く」がオンになっていることを確認し、数分後にもう一度お試しください。解決しない場合は、アプリを再インストールしてください。",
+        "uk": "Android ще не підтвердив посилання для входу цього застосунку. Переконайтеся, що для застосунку ввімкнено параметр «Відкривати підтримувані посилання», і спробуйте ще раз за кілька хвилин. Якщо помилка повторюється, перевстановіть застосунок.",
+        "zh-Hans": "Android 尚未确认此应用的登录链接。请确认已为此应用开启“打开支持的链接”，几分钟后再试。如果仍然失败，请重新安装应用。"
+      }
+    },
+    {
+      "id": "provider.link.settings",
+      "source": "Open link settings",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Открыть настройки ссылок",
+        "ja": "リンクの設定を開く",
+        "uk": "Відкрити налаштування посилань",
+        "zh-Hans": "打开链接设置"
       }
     },
     {

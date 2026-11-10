@@ -44,8 +44,9 @@ inline constexpr std::uint32_t kMaxQueuedBytes = 64U * 1024U * 1024U;
 inline constexpr std::uint32_t kMaxEgressMbps = 1'000'000U;
 // limits.max_epoch_bytes, a power of two: the most traffic one key epoch
 // carries in one direction. A session uses the smaller of the two sides'
-// values. YTP/1 fixes the range, and the runtime checks at compile time that
-// these bounds match it.
+// values. limits.min_epoch_bytes, in the same range and at most the maximum,
+// is the smallest session epoch this side accepts. YTP/1 fixes the range, and
+// the runtime checks at compile time that these bounds match it.
 inline constexpr std::uint32_t kMinEpochBytes = 1U << 20;
 inline constexpr std::uint32_t kMaxEpochBytes = 1U << 26;
 // limits.credit_returns_per_window, 2, 4 or 8: how many credit updates a
@@ -614,7 +615,8 @@ public:
         std::optional<std::uint32_t> max_egress_mbps = std::nullopt,
         std::uint32_t max_epoch_bytes = kMinEpochBytes,
         std::uint32_t credit_returns_per_window = kDefaultCreditReturns,
-        bool idle_epoch_rotation = false)
+        bool idle_epoch_rotation = false,
+        std::uint32_t min_epoch_bytes = kMinEpochBytes)
         : max_frame_bytes_(max_frame_bytes),
           max_streams_(max_streams),
           max_queued_bytes_(max_queued_bytes),
@@ -626,7 +628,8 @@ public:
           max_egress_mbps_(max_egress_mbps),
           max_epoch_bytes_(max_epoch_bytes),
           credit_returns_per_window_(credit_returns_per_window),
-          idle_epoch_rotation_(idle_epoch_rotation) {}
+          idle_epoch_rotation_(idle_epoch_rotation),
+          min_epoch_bytes_(min_epoch_bytes) {}
 
     std::uint32_t max_frame_bytes() const noexcept {
         return max_frame_bytes_;
@@ -657,6 +660,9 @@ public:
         return max_egress_mbps_;
     }
     std::uint32_t max_epoch_bytes() const noexcept { return max_epoch_bytes_; }
+    // The smallest session epoch this side accepts. A peer that accepts only
+    // smaller ones is refused after AUTH as incompatible.
+    std::uint32_t min_epoch_bytes() const noexcept { return min_epoch_bytes_; }
     std::uint32_t credit_returns_per_window() const noexcept {
         return credit_returns_per_window_;
     }
@@ -675,6 +681,7 @@ private:
     std::uint32_t max_epoch_bytes_;
     std::uint32_t credit_returns_per_window_;
     bool idle_epoch_rotation_;
+    std::uint32_t min_epoch_bytes_;
 };
 
 // cluster: a server's membership in its operator's cluster. The list names

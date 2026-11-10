@@ -267,7 +267,7 @@ struct Capability {
 
 // The most protected payload one directional epoch may carry. Each side
 // advertises its own value in its manifest, and the session uses the smaller.
-inline constexpr std::uint8_t kCapabilityManifestSchema = 2;
+inline constexpr std::uint8_t kCapabilityManifestSchema = 3;
 inline constexpr std::uint32_t kMinEpochPayloadBytes = 1U << 20;
 inline constexpr std::uint32_t kMaxEpochPayloadBytes = 1U << 26;
 
@@ -279,7 +279,10 @@ inline constexpr std::uint32_t kMaxEpochPayloadBytes = 1U << 26;
 
 struct CapabilityManifest {
     std::vector<Capability> entries;
+    // The largest directional epoch the sender accepts, and the smallest
+    // session epoch it agrees to. Both are valid epoch sizes, min <= max.
     std::uint32_t max_epoch_bytes{kMinEpochPayloadBytes};
+    std::uint32_t min_epoch_bytes{kMinEpochPayloadBytes};
 
     friend bool operator==(const CapabilityManifest&,
                            const CapabilityManifest&) = default;

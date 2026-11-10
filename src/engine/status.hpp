@@ -38,6 +38,10 @@ enum class StatusCode : std::uint8_t {
     // Local provider outcomes, never serialized as protocol status values.
     PermissionDenied,
     AddressInUse,
+    // The authenticated peer announced limits this side cannot meet, such
+    // as key epochs. Retrying with the same configuration cannot succeed.
+    // Never serialized: both sides reach it from the same AUTH data.
+    Incompatible,
 };
 
 class Status final {

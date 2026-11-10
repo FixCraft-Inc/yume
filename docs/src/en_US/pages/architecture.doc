@@ -326,7 +326,9 @@ outside engine locks after teardown, or inline if registered afterward, and
 contains callback exceptions. Callers dispatch onto their own executor when
 needed. The native client uses the endpoint notification to reconnect when its
 session ends. Failed attempts, and sessions shorter than the longest backoff,
-wait for exponential backoff.
+wait for exponential backoff. An `Incompatible` attempt, a server whose
+announced key-epoch limits this client cannot meet, stops the client instead,
+because every retry would meet the same limits. Cluster links keep retrying.
 
 A server `NativeEndpoint` can reload its credentials on its context. The
 engine graph stays immutable. Reload publishes the new session security

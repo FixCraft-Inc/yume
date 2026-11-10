@@ -91,6 +91,10 @@ struct SessionLimits final {
     // rotate keys less often, so one round trip per rekey limits far paths
     // less, and a compromised root exposes more traffic.
     std::uint32_t max_epoch_bytes{1U << 20};
+    // The smallest session epoch this side accepts, at most max_epoch_bytes.
+    // It bounds how often this side rotates keys. A peer that accepts only
+    // smaller epochs ends the session after AUTH as Incompatible.
+    std::uint32_t min_epoch_bytes{1U << 20};
     std::uint32_t max_concurrent_rekeys{2U};
     std::size_t max_rekey_payload{kMaxSessionRekeyPayloadBytes};
     std::size_t max_security_overhead{256U};

@@ -105,6 +105,7 @@ BackendIo io_from(StatusCode code) noexcept {
     case StatusCode::NotFound:
         return BackendIo::NotFound;
     case StatusCode::ProviderMismatch:
+    case StatusCode::Incompatible:
         return BackendIo::Incompatible;
     case StatusCode::Cancelled:
     case StatusCode::Closed:
@@ -1702,6 +1703,7 @@ Status NativeRun::create_endpoint(
                         self->on_keeper_session(active);
                     }
                 };
+            keeping.stop_when_incompatible = true;
             keeper = std::make_shared<runtime::SessionKeeper>(
                 context, std::move(keeping), [weak](Status status) {
                     if (const auto self = weak.lock()) {

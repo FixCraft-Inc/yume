@@ -29,6 +29,12 @@ struct SessionKeeperOptions final {
     // Also how long a session must stay up before its end resets the backoff
     // and reconnects at once. A shorter session counts as a failed attempt.
     std::chrono::milliseconds reconnect_max{30'000};
+    // Whether an Incompatible session failure goes to on_failure instead of
+    // being retried. A client sets it, because its server's announced limits
+    // are the same on every attempt. A cluster link leaves it off, so one
+    // peer's changed limits do not stop the whole node, and the link recovers
+    // once the two nodes agree again.
+    bool stop_when_incompatible{false};
     // Progress lines such as "session authenticated". Exceptions are contained.
     std::function<void(std::string_view)> report;
     // Runs on the context after each state change, with the new status.
@@ -49,8 +55,9 @@ struct SessionKeeperOptions final {
 //
 // The endpoint's NativeEndpointOptions::session_ended must be session_ended()
 // of this keeper, set before the endpoint is created. on_failure runs at most
-// once, for a failure the keeper cannot retry, and the owner then stops
-// everything, closing this keeper among the rest.
+// once, for a failure the keeper cannot retry or, with stop_when_incompatible,
+// an Incompatible one. The owner then stops everything, closing this keeper
+// among the rest.
 class SessionKeeper final : public std::enable_shared_from_this<SessionKeeper> {
 public:
     using Failure = std::function<void(engine::Status)>;

@@ -1892,7 +1892,7 @@ if(YUME_BUILD_TESTING)
         target_link_libraries(yume_native_endpoint_test PRIVATE
             yume_native_endpoint yume_asio_execution_context yume_cover_site
             yume_native_credentials yume_h2_duplex_carrier yume_h2_web_front_door
-            yume_tls13_secure_channel yume_system_resolver)
+            yume_tls13_secure_channel yume_system_resolver yume_session_keeper)
         target_compile_definitions(yume_native_endpoint_test PRIVATE ${YUME_TEST_RESOLVER_DEFINITIONS})
         add_dependencies(yume_native_endpoint_test yume-resolver yume_resolver_stall_helper)
         if(TARGET yume_asio_direct_route_provider)

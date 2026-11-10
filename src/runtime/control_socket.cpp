@@ -103,6 +103,8 @@ std::string_view code_name(StatusCode code) noexcept {
             return "permission-denied";
         case StatusCode::AddressInUse:
             return "address-in-use";
+        case StatusCode::Incompatible:
+            return "incompatible";
     }
     return "unknown";
 }

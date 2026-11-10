@@ -168,7 +168,9 @@ list gives none, and `port`. TLS authenticates `host` against `tls_trust`,
 admission uses the peer's admission key, and AUTH uses the server's own
 composite key, the peer's composite and ML-KEM keys from the list and the
 outbound PSK. The link offers no service. A link that ends or fails is
-started again with the client's backoff: one second, doubling to thirty.
+started again with the client's backoff: one second, doubling to thirty. A
+link whose peer's key-epoch limits leave no common epoch keeps retrying too,
+unlike a client, so one node's changed limits never stop another node.
 
 A server accepts a peer's link as it accepts a client, by verified identity
 and inbound PSK. The peer is granted `yume.circuit` and nothing else, and it

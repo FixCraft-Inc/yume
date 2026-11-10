@@ -144,6 +144,7 @@
     "max_packet_bytes": 65535,
     "max_packet_batch": 64,
     "max_epoch_bytes": 4194304,
+    "min_epoch_bytes": 2097152,
     "credit_returns_per_window": 4,
     "idle_epoch_rotation": true,
     "max_egress_mbps": 1000

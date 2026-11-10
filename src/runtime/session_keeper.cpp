@@ -182,6 +182,13 @@ void SessionKeeper::on_session(
             say(describe("session failed", result.status()));
         } catch (...) {
         }
+        // Limits the peer announced and this side cannot meet stay the same
+        // on every attempt, so an owner that asked for it stops here.
+        if (options_.stop_when_incompatible &&
+            result.status().code() == StatusCode::Incompatible) {
+            fail(result.status());
+            return;
+        }
         schedule_reconnect(&result.status());
         return;
     }

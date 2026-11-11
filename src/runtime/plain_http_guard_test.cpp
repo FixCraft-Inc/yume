@@ -6,6 +6,7 @@
 
 #include "runtime/plain_http_guard.hpp"
 
+#include <cstddef>
 #include <cstdlib>
 #include <iostream>
 #include <optional>
@@ -39,7 +40,9 @@ Cleartext classify(std::string_view text) {
         reinterpret_cast<const std::byte*>(text.data()), text.size()));
 }
 
-// Records what reaches it and completes every write at once.
+// Records what reaches it and completes every write at once. It can refuse
+// one write, as a stream does when it cannot allocate, and refuses every
+// write once closed.
 class Recorder final : public yume::engine::StreamResponder {
 public:
     yume::engine::ExecutorAffinity executor_affinity() const noexcept override {
@@ -53,16 +56,29 @@ public:
     void async_read(CancellationToken, ReadCompletion) override {}
     void async_write(Buffer payload, CancellationToken,
                      WriteCompletion completion) override {
+        ++asked;
+        if (closed) {
+            completion(Status(StatusCode::Closed), 0U);
+            return;
+        }
+        if (asked == refused) {
+            completion(Status(StatusCode::ResourceExhausted), 0U);
+            return;
+        }
         const auto bytes = payload.bytes();
         writes.emplace_back(reinterpret_cast<const char*>(bytes.data()),
                             bytes.size());
         completion(Status::success(), payload.size());
     }
     Status shutdown_write() noexcept override {
+        if (closed) return Status(StatusCode::Closed);
         shut = true;
         return Status::success();
     }
-    void close(Status reason) noexcept override { closed = reason.code(); }
+    // The first close decides the reason, as on a real stream.
+    void close(Status reason) noexcept override {
+        if (!closed) closed = reason.code();
+    }
 
     std::string sent() const {
         std::string all;
@@ -71,6 +87,9 @@ public:
     }
 
     std::vector<std::string> writes;
+    // Counts the writes asked for, and names the one to refuse, from 1.
+    std::size_t asked{0U};
+    std::size_t refused{0U};
     bool shut{false};
     std::optional<StatusCode> closed;
 };
@@ -152,11 +171,47 @@ void test_guard() {
     }
 }
 
+// The guard reports held bytes as written before they leave. When the
+// stream then refuses one of their pieces, nothing behind that piece may
+// follow it, and the caller must learn that the stream ended.
+void test_refused_piece() {
+    {
+        // Two pieces of four bytes: the second must not leave alone.
+        auto inner = std::make_shared<Recorder>();
+        inner->refused = 1U;
+        auto guard = yume::runtime::guard_plain_http(inner);
+        CHECK(write(*guard, "EH").ok());
+        CHECK(!write(*guard, "LO x\r\n").ok());
+        CHECK(inner->writes.empty() &&
+              inner->closed == StatusCode::ResourceExhausted);
+    }
+    {
+        // The same when the write direction ends while undecided.
+        auto inner = std::make_shared<Recorder>();
+        inner->refused = 1U;
+        auto guard = yume::runtime::guard_plain_http(inner);
+        CHECK(write(*guard, "GET /").ok());
+        CHECK(!guard->shutdown_write().ok());
+        CHECK(inner->writes.empty() && !inner->shut &&
+              inner->closed == StatusCode::ResourceExhausted);
+    }
+    {
+        // A single held piece that is refused is not a clean end either.
+        auto inner = std::make_shared<Recorder>();
+        inner->refused = 1U;
+        auto guard = yume::runtime::guard_plain_http(inner);
+        CHECK(write(*guard, "GE").ok());
+        CHECK(!guard->shutdown_write().ok());
+        CHECK(inner->writes.empty() && !inner->shut && inner->closed);
+    }
+}
+
 }  // namespace
 
 int main() {
     test_classifier();
     test_guard();
+    test_refused_piece();
     if (g_failures != 0) {
         std::cerr << g_failures << " plain HTTP guard check(s) failed\n";
         return EXIT_FAILURE;

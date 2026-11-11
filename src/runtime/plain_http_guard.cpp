@@ -7,6 +7,7 @@
 #include "runtime/plain_http_guard.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <new>
 #include <string_view>
 #include <utility>
@@ -51,7 +52,7 @@ public:
         return inner_->max_write_size();
     }
     bool terminated() const noexcept override {
-        return decided_ == Cleartext::Http || inner_->terminated();
+        return decided_.load() == Cleartext::Http || inner_->terminated();
     }
     void async_read(CancellationToken cancellation,
                     ReadCompletion completion) override {
@@ -61,12 +62,13 @@ public:
     void async_write(Buffer payload, CancellationToken cancellation,
                      WriteCompletion completion) override {
         const std::size_t size = payload.size();
-        if (decided_ == Cleartext::Other) {
+        const Cleartext before = decided_.load();
+        if (before == Cleartext::Other) {
             inner_->async_write(std::move(payload), std::move(cancellation),
                                 std::move(completion));
             return;
         }
-        if (decided_ == Cleartext::Http) {
+        if (before == Cleartext::Http) {
             completion(Status(StatusCode::PermissionDenied), 0U);
             return;
         }
@@ -77,35 +79,45 @@ public:
             completion(Status(StatusCode::ResourceExhausted), 0U);
             return;
         }
-        decided_ = classify_cleartext(held_);
-        if (decided_ == Cleartext::Undecided) {
+        const Cleartext decided = classify_cleartext(held_);
+        decided_.store(decided);
+        if (decided == Cleartext::Undecided) {
             completion(Status::success(), size);
             return;
         }
-        if (decided_ == Cleartext::Http) {
+        if (decided == Cleartext::Http) {
             held_.clear();
             inner_->close(Status(StatusCode::PermissionDenied));
             completion(Status(StatusCode::PermissionDenied), 0U);
             return;
         }
-        flush(std::move(cancellation), [completion = std::move(completion),
-                                        size](Status status, std::size_t) {
-            completion(std::move(status), status.ok() ? size : 0U);
-        });
+        try {
+            flush(std::move(cancellation), [completion = std::move(completion),
+                                            size](Status status, std::size_t) {
+                const std::size_t written = status.ok() ? size : 0U;
+                completion(std::move(status), written);
+            });
+        } catch (...) {
+            // Some held pieces may have left, and the completion went with
+            // the rest.
+            inner_->close(Status(StatusCode::ResourceExhausted));
+            throw;
+        }
     }
 
     Status shutdown_write() noexcept override {
-        if (decided_ == Cleartext::Undecided) {
-            // An unfinished line is not a request.
-            decided_ = Cleartext::Other;
+        if (decided_.load() == Cleartext::Undecided) {
+            // An unfinished line is not a request. A held byte that cannot
+            // be sent closes the stream, so the shutdown below then fails.
+            decided_.store(Cleartext::Other);
             try {
-                flush({}, [](Status, std::size_t) {});
+                flush({}, {});
             } catch (...) {
                 inner_->close(Status(StatusCode::ResourceExhausted));
                 return Status(StatusCode::ResourceExhausted);
             }
         }
-        if (decided_ == Cleartext::Http)
+        if (decided_.load() == Cleartext::Http)
             return Status(StatusCode::PermissionDenied);
         return inner_->shutdown_write();
     }
@@ -116,12 +128,15 @@ public:
 
 private:
     // Sends what was held in pieces the stream accepts, the last one
-    // completing through done.
+    // completing through done when there is one. The guard has already
+    // reported the held bytes as written, and a piece that fails would
+    // leave a gap before the pieces behind it, so a failed piece closes the
+    // stream and those pieces fail too.
     void flush(CancellationToken cancellation, WriteCompletion done) {
         auto held = std::move(held_);
         held_.clear();
         if (held.empty()) {
-            done(Status::success(), 0U);
+            if (done) done(Status::success(), 0U);
             return;
         }
         const std::size_t piece =
@@ -132,19 +147,28 @@ private:
                 Buffer::copy_from(std::span(held).subspan(offset, size), size);
             if (!buffer.ok()) {
                 inner_->close(Status(buffer.status().code()));
-                done(Status(buffer.status().code()), 0U);
+                if (done) done(Status(buffer.status().code()), 0U);
                 return;
             }
             const bool last = offset + size == held.size();
             inner_->async_write(
                 std::move(buffer).take_value(), cancellation,
-                last ? std::move(done)
-                     : WriteCompletion([](Status, std::size_t) {}));
+                [inner = std::weak_ptr<StreamResponder>(inner_),
+                 done = last ? std::move(done) : WriteCompletion()](
+                    Status status, std::size_t written) {
+                    if (!status.ok()) {
+                        if (const auto stream = inner.lock())
+                            stream->close(Status(status.code()));
+                    }
+                    if (done) done(std::move(status), written);
+                });
         }
     }
 
     std::shared_ptr<StreamResponder> inner_;
-    Cleartext decided_{Cleartext::Undecided};
+    // Written on the stream's executor. terminated() may read it from
+    // another thread.
+    std::atomic<Cleartext> decided_{Cleartext::Undecided};
     std::vector<std::byte> held_;
 };
 

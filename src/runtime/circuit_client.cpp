@@ -210,6 +210,9 @@ struct ClientCircuit::State final : std::enable_shared_from_this<State> {
     void add_layer(std::span<const std::uint8_t> answer);
     void extend();
     void become_ready() noexcept;
+    void queue_message(std::size_t target, c1::RelayType type,
+                       std::uint32_t stream,
+                       std::span<const std::uint8_t> payload);
     void send_message(std::size_t target, c1::RelayType type,
                       std::uint32_t stream,
                       std::span<const std::uint8_t> payload);
@@ -431,13 +434,18 @@ public:
         if (!state || terminated()) return false;
         std::size_t sent = 0U;
         try {
-            while (sent < cells && !writes_.empty() && send_window_ > 0U &&
-                   state->forward_room()) {
+            // State::write can close the circuit, which ends this stream and
+            // empties writes_, and an entry stream that completes inline
+            // pumps this stream again from resume_writers. So each cell's
+            // accounting is settled before write runs, and every pass reads
+            // the queue afresh.
+            while (!terminated() && sent < cells && !writes_.empty() &&
+                   send_window_ > 0U && state->forward_room()) {
                 auto& write = writes_.front();
                 const auto chunk = std::min<std::size_t>(
                     {write.data.size() - write.offset,
                      static_cast<std::size_t>(send_window_), kDataPerCell});
-                state->send_message(
+                state->queue_message(
                     state->route.size(), c1::RelayType::Data, id_,
                     bytes_of(write.data).subspan(write.offset, chunk));
                 send_window_ -= chunk;
@@ -449,8 +457,9 @@ public:
                     writes_.pop_front();
                     done->finish(Status::success(), size);
                 }
+                state->write();
             }
-            if (writes_.empty() && shutdown_ && !end_sent_) {
+            if (!terminated() && writes_.empty() && shutdown_ && !end_sent_) {
                 send_end(c1::StreamReason::Done);
                 if (remote_done_) forget();
             }
@@ -621,6 +630,7 @@ void ClientCircuit::State::start_build(
         sent_at = Clock::now();
         queue_cell(c1::EncodeCell(c1::Direction::Forward, c1::Command::Create,
                                   c1::kCreateBucket, *body.value));
+        write();
         read();
     } catch (...) {
         close(Status(StatusCode::Internal));
@@ -823,11 +833,12 @@ void ClientCircuit::State::become_ready() noexcept {
     }
 }
 
-// Pads a relay message and seals it with every layer from the target hop
-// back to the entry, the target's innermost.
-void ClientCircuit::State::send_message(std::size_t target, c1::RelayType type,
-                                        std::uint32_t stream,
-                                        std::span<const std::uint8_t> payload) {
+// Pads a relay message, seals it with every layer from the target hop back to
+// the entry, the target's innermost, and queues its cell. It starts no write,
+// so a caller can settle its own state before write runs.
+void ClientCircuit::State::queue_message(
+    std::size_t target, c1::RelayType type, std::uint32_t stream,
+    std::span<const std::uint8_t> payload) {
     const auto bucket =
         c1::BucketForPayload(c1::Direction::Forward, payload.size());
     if (!bucket || target == 0U || target > layers.size()) {
@@ -851,15 +862,25 @@ void ClientCircuit::State::send_message(std::size_t target, c1::RelayType type,
                               *bucket, body));
 }
 
+void ClientCircuit::State::send_message(std::size_t target, c1::RelayType type,
+                                        std::uint32_t stream,
+                                        std::span<const std::uint8_t> payload) {
+    queue_message(target, type, stream, payload);
+    write();
+}
+
 void ClientCircuit::State::queue_cell(
     c1::Result<std::vector<std::uint8_t>> cell) {
     if (!cell.ok()) throw Status(StatusCode::Internal);
     auto buffer = buffer_of(*cell.value);
     if (!buffer.ok()) throw buffer.status();
     forward_queue.push_back(std::move(buffer).take_value());
-    write();
 }
 
+// Starts the entry write when none is pending. A failed write closes the
+// circuit before this returns, and an entry stream that completes inline
+// runs resume_writers here. A caller keeps no view into a stream's queue
+// across it.
 void ClientCircuit::State::write() noexcept {
     if (phase == Phase::Closed || writing || forward_queue.empty()) return;
     writing = true;

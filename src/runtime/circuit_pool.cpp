@@ -224,6 +224,15 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
             building_now->close();
     }
 
+    // Takes the first waiter out of the queue, then settles it. Its
+    // completion may open again, which pumps the queue.
+    void refuse_first(Status status) noexcept {
+        std::list<Waiter> refused;
+        refused.splice(refused.end(), waiters, waiters.begin());
+        settle(refused.front().done,
+               Result<std::shared_ptr<StreamResponder>>(std::move(status)));
+    }
+
     void fail_waiters(const Status& status) noexcept {
         // Detach before invoking callbacks: they may open again. Splicing
         // also works under sustained allocation failure.
@@ -456,6 +465,9 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         for (auto& waiter : cancelled)
             settle(waiter.done, Result<std::shared_ptr<StreamResponder>>(
                                     Status(StatusCode::Cancelled)));
+        // A completion may close the pool, here and in the loop below. A
+        // closed pool fetches no view and builds nothing.
+        if (closed) return;
         // A new session fetches its view and builds a circuit before the
         // first stream asks for one. A view that failed its checks is asked
         // for again only when a stream waits.
@@ -474,9 +486,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         while (!waiters.empty()) {
             auto& waiter = waiters.front();
             if (waiter.cancellation.is_cancelled()) {
-                settle(waiter.done, Result<std::shared_ptr<StreamResponder>>(
-                                        Status(StatusCode::Cancelled)));
-                waiters.pop_front();
+                refuse_first(Status(StatusCode::Cancelled));
                 continue;
             }
             if (current_hops == 0U) {
@@ -495,12 +505,9 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
             }
             if (!options.plain_http_allowed &&
                 waiter.destination.port() == 80U) {
-                settle(
-                    waiter.done,
-                    Result<std::shared_ptr<StreamResponder>>(Status::diagnostic(
-                        StatusCode::PermissionDenied,
-                        "plain HTTP is refused on circuits")));
-                waiters.pop_front();
+                refuse_first(
+                    Status::diagnostic(StatusCode::PermissionDenied,
+                                       "plain HTTP is refused on circuits"));
                 continue;
             }
             const auto found = std::find_if(
@@ -512,6 +519,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
             waiters.pop_front();
             open_on(*found, std::move(next));
         }
+        if (closed) return;
         // Build when a stream waits, or keep one spare circuit ready, from
         // the start of the session.
         const bool spare = std::any_of(

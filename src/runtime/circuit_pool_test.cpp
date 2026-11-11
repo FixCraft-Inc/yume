@@ -338,14 +338,18 @@ struct Harness {
         auto promise = std::make_shared<std::promise<OpenResult>>();
         auto future = promise->get_future();
         runtime.sync([&] {
-            pool->open(take(engine::RouteDestination::ipv4(
-                           engine::NetworkProtocol::Tcp, {192, 0, 2, 9}, port)),
-                       "internet", std::move(cancellation),
+            pool->open(destination(port), "internet", std::move(cancellation),
                        [promise](OpenResult opened) {
                            promise->set_value(std::move(opened));
                        });
         });
         return future;
+    }
+
+    // Where every test stream goes.
+    static engine::RouteDestination destination(std::uint16_t port) {
+        return take(engine::RouteDestination::ipv4(engine::NetworkProtocol::Tcp,
+                                                   {192, 0, 2, 9}, port));
     }
 
     OpenResult open(std::uint16_t port = 443U) {
@@ -1103,6 +1107,59 @@ void test_close_inside_loops(IoRuntime& io) {
     CHECK(harness.open().status().code() == StatusCode::Closed);
 }
 
+// A refused open's completion may open again, which pumps the queue the
+// refusal came from. The open it makes there must still be served.
+void test_refusal_opens_again(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    auto refusal = std::make_shared<std::promise<OpenResult>>();
+    auto reopened = std::make_shared<std::promise<OpenResult>>();
+    auto refused = refusal->get_future();
+    auto opened = reopened->get_future();
+    harness.runtime.sync([&] {
+        // A new session has no view yet, so the plain HTTP open waits and
+        // is refused from the pump that receives the view.
+        harness.new_session();
+        harness.pool->open(
+            Harness::destination(80U), "internet", {},
+            [pool = harness.pool, refusal, reopened](OpenResult result) {
+                refusal->set_value(std::move(result));
+                pool->open(Harness::destination(443U), "internet", {},
+                           [reopened](OpenResult next) {
+                               reopened->set_value(std::move(next));
+                           });
+            });
+    });
+    CHECK(refused.wait_for(20s) == std::future_status::ready &&
+          refused.get().status().code() == StatusCode::PermissionDenied);
+    const bool served = opened.wait_for(20s) == std::future_status::ready;
+    CHECK(served);
+    if (!served) return;
+    auto stream = opened.get();
+    CHECK(stream.ok() && harness.echoes(stream.value()));
+    if (stream.ok()) harness.close(stream.value());
+}
+
+// A refused open's completion may close the pool instead. The pump that
+// refused it then builds no circuit on the closed pool.
+void test_refusal_closes_pool(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    auto refusal = std::make_shared<std::promise<OpenResult>>();
+    auto refused = refusal->get_future();
+    harness.runtime.sync([&] {
+        harness.new_session();
+        harness.pool->open(Harness::destination(80U), "internet", {},
+                           [pool = harness.pool, refusal](OpenResult result) {
+                               pool->close();
+                               refusal->set_value(std::move(result));
+                           });
+    });
+    CHECK(refused.wait_for(20s) == std::future_status::ready &&
+          refused.get().status().code() == StatusCode::PermissionDenied);
+    // The pump that ran the completion returned before this reads the count.
+    CHECK(harness.circuit_opens() == 0U);
+    CHECK(harness.open().status().code() == StatusCode::Closed);
+}
+
 }  // namespace
 
 int main() {
@@ -1129,6 +1186,8 @@ int main() {
         test_node_return(io);
         test_route_returns_without_consent(io);
         test_close_inside_loops(io);
+        test_refusal_opens_again(io);
+        test_refusal_closes_pool(io);
     } catch (const std::exception& error) {
         std::cerr << "circuit pool test aborted: " << error.what() << '\n';
         return 1;

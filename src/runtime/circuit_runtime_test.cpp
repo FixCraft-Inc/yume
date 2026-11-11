@@ -8,9 +8,12 @@
 // exits, flow control and every refusal the node or client must make, on one
 // execution thread with no network.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <future>
@@ -133,13 +136,18 @@ ytp1::Destination named(std::uint16_t port) {
     return result;
 }
 
-// Inject inside one incoming client callback, after the fixture has built
-// the record. This exercises the production decode/delivery/abort path
-// without failing unrelated in-memory transport bookkeeping.
-class ReadProbe final : public StreamResponder,
-                        public std::enable_shared_from_this<ReadProbe> {
+// The client's entry stream, with two ways to disturb it. A read can arm an
+// allocation failure inside one incoming client callback, after the fixture
+// has built the record, which exercises the production decode/delivery/abort
+// path without failing unrelated in-memory transport bookkeeping. A write
+// can complete before async_write returns, as the session's stream does for
+// a write it refuses.
+class EntryProbe final : public StreamResponder,
+                         public std::enable_shared_from_this<EntryProbe> {
 public:
-    explicit ReadProbe(std::shared_ptr<StreamResponder> inner)
+    enum class Writes : std::uint8_t { Forwarded, InlineSuccess, InlineClosed };
+
+    explicit EntryProbe(std::shared_ptr<StreamResponder> inner)
         : inner_(std::move(inner)) {}
     engine::ExecutorAffinity executor_affinity() const noexcept override {
         return inner_->executor_affinity();
@@ -171,8 +179,24 @@ public:
     }
     void async_write(Buffer data, CancellationToken token,
                      WriteCompletion completion) override {
-        inner_->async_write(std::move(data), std::move(token),
-                            std::move(completion));
+        switch (writes) {
+            case Writes::Forwarded:
+                inner_->async_write(std::move(data), std::move(token),
+                                    std::move(completion));
+                return;
+            case Writes::InlineSuccess: {
+                // The record reaches the node in order before the caller
+                // learns of it.
+                const auto size = data.size();
+                inner_->async_write(std::move(data), std::move(token),
+                                    [](Status, std::size_t) {});
+                completion(Status::success(), size);
+                return;
+            }
+            case Writes::InlineClosed:
+                completion(Status(StatusCode::Closed), 0U);
+                return;
+        }
     }
     Status shutdown_write() noexcept override {
         return inner_->shutdown_write();
@@ -181,6 +205,7 @@ public:
         inner_->close(std::move(reason));
     }
 
+    Writes writes{Writes::Forwarded};
     std::size_t nth{0U};
     bool data_only{true};
     bool fired{false};
@@ -325,7 +350,7 @@ struct Cluster {
     std::shared_ptr<ClientCircuit> circuit(
         const std::vector<std::string>& route, std::string client = {},
         Status* accepted = nullptr, runtime::circuit::ClientLimits limits = {},
-        std::shared_ptr<ReadProbe>* probe = nullptr) {
+        std::shared_ptr<EntryProbe>* probe = nullptr) {
         if (client.empty()) {
             client = std::to_string(++clients);
             client.insert(0, 64U - client.size(), 'e');
@@ -344,7 +369,7 @@ struct Cluster {
                 hops.push_back(identities[name]->identity);
             std::shared_ptr<StreamResponder> entry = mine;
             if (probe) {
-                *probe = std::make_shared<ReadProbe>(mine);
+                *probe = std::make_shared<EntryProbe>(mine);
                 entry = *probe;
             }
             return take(ClientCircuit::create(runtime.context(), crypto, entry,
@@ -968,7 +993,7 @@ void test_open_allocation_failures(Cluster& cluster) {
 void test_read_allocation_failures(Cluster& cluster, bool data) {
     bool covered_all = false;
     for (std::size_t nth = 1U; nth <= 24U; ++nth) {
-        std::shared_ptr<ReadProbe> probe;
+        std::shared_ptr<EntryProbe> probe;
         auto circuit =
             cluster.circuit({"north", "west"}, {}, nullptr, {}, &probe);
         CHECK(cluster.build(circuit).ok());
@@ -1052,6 +1077,78 @@ void test_read_initiation_failures(Cluster& cluster) {
         }
     }
     CHECK(covered_all);
+}
+
+// An entry stream may complete a write before async_write returns. A
+// stream's pump then runs again inside its own send, and must neither repeat
+// a cell nor skip one.
+void test_entry_write_completes_inline(Cluster& cluster) {
+    std::shared_ptr<EntryProbe> probe;
+    auto circuit = cluster.circuit({"north", "west"}, {}, nullptr, {}, &probe);
+    CHECK(cluster.build(circuit).ok());
+    auto stream = cluster.open(circuit, 443);
+    CHECK(stream.ok());
+    if (!stream.ok()) return;
+    cluster.runtime.sync(
+        [&] { probe->writes = EntryProbe::Writes::InlineSuccess; });
+    // More than the stream window, so later cells leave from credit too.
+    const auto data = pattern(600U * 1024U);
+    CHECK(echo(cluster.runtime, stream.value(), data) == data);
+    cluster.runtime.sync([&] { circuit->close(); });
+}
+
+// The session's stream refuses a write inline once it has closed, which
+// closes the circuit and ends its streams inside the send that queued the
+// cell. A cell counts as written once it is queued, as one queued behind a
+// write in flight does, so the stream has settled the refused cell before
+// the circuit closes: a write that fit that cell succeeded, a longer one
+// fails with that cell's bytes, and each write completes once.
+void test_entry_write_refused_inline(Cluster& cluster) {
+    constexpr std::size_t kChunk = 65536U;
+    // One cell, a write that spans cells, and writes queued behind the
+    // first.
+    for (const std::size_t bytes : {4096U, 65536U, 600U * 1024U}) {
+        std::shared_ptr<EntryProbe> probe;
+        auto circuit =
+            cluster.circuit({"north", "west"}, {}, nullptr, {}, &probe);
+        CHECK(cluster.build(circuit).ok());
+        auto stream = take(cluster.open(circuit, 443));
+        const std::size_t writes = (bytes + kChunk - 1U) / kChunk;
+        // The completions run after this sync returns and before the next
+        // one does, so calls outlives them.
+        std::vector<std::size_t> calls(writes + 1U, 0U);
+        cluster.runtime.sync([&] {
+            probe->writes = EntryProbe::Writes::InlineClosed;
+            for (std::size_t index = 0U; index < writes; ++index) {
+                const auto size =
+                    std::min<std::size_t>(bytes - index * kChunk, kChunk);
+                stream->async_write(
+                    take(Buffer::allocate(size, kChunk)), {},
+                    [&calls, index, size](Status status, std::size_t written) {
+                        ++calls[index];
+                        if (index != 0U) {
+                            CHECK(!status.ok() && written == 0U);
+                        } else if (size <=
+                                   c1::MaxDataPayload(c1::Direction::Forward)) {
+                            CHECK(status.ok() && written == size);
+                        } else {
+                            CHECK(!status.ok() && written > 0U &&
+                                  written < size);
+                        }
+                    });
+            }
+            CHECK(circuit->closed() && stream->terminated());
+            stream->async_write(
+                take(Buffer::allocate(1U, 1U)), {},
+                [&calls, writes](Status status, std::size_t written) {
+                    CHECK(status.code() == StatusCode::Closed && written == 0U);
+                    ++calls[writes];
+                });
+        });
+        cluster.runtime.sync([&] {
+            for (const auto count : calls) CHECK(count == 1U);
+        });
+    }
 }
 
 void test_write_allocation_failures(Cluster& cluster) {
@@ -1317,6 +1414,8 @@ int main() {
             test_read_allocation_failures(cluster, true);
             test_read_allocation_failures(cluster, false);
             test_read_initiation_failures(cluster);
+            test_entry_write_completes_inline(cluster);
+            test_entry_write_refused_inline(cluster);
             test_write_allocation_failures(cluster);
             test_download_fairness(cluster);
             test_upload_fairness(cluster);

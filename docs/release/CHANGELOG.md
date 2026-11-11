@@ -7,6 +7,15 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+A circuit client stream settles each cell's accounting before the write to
+its entry starts. When the entry's stream refused that write, as it does once
+its session has closed, the circuit closed inside the stream's own send, and
+the stream went on to use a write it had already completed, which could end
+`yume`. The circuit pool also takes a refused or cancelled open out of its
+queue before it runs the completion, so a completion that opens again cannot
+remove another waiting open, and one that closes the pool no longer leaves
+that pass to open a circuit stream on the closed pool.
+
 The YTP/1 capability manifest moves to schema 3, which adds the sender's
 `min_epoch_bytes`, set by the new `limits.min_epoch_bytes`. A server can now
 refuse key rotation more frequent than it allows. When the smaller maximum is

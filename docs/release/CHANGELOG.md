@@ -7,6 +7,13 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+The plain HTTP refusal on circuits holds a stream's first bytes until it can
+tell whether they begin a request, and reports those writes as done. When the
+stream then refused part of what was held, which takes a failed allocation,
+the rest could follow after the gap, and ending the write direction could
+report a clean end with held bytes unsent. The stream now closes instead, and
+the caller's write or shutdown fails.
+
 A circuit client stream settles each cell's accounting before the write to
 its entry starts. When the entry's stream refused that write, as it does once
 its session has closed, the circuit closed inside the stream's own send, and

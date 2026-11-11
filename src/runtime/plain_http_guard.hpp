@@ -41,8 +41,10 @@ Cleartext classify_cleartext(std::span<const std::byte> start) noexcept;
 // was held and passes every later write through. A write the guard holds
 // completes at once, as if a small buffer had taken it. Ending the write
 // direction while undecided sends what was held, since an unfinished line is
-// not a request. Reads pass through. Calls follow the wrapped stream's
-// executor.
+// not a request. When the stream refuses any of the held bytes, the guard
+// closes it, because their writes have already reported success. Reads pass
+// through. Calls follow the wrapped stream's executor, apart from
+// terminated().
 std::shared_ptr<engine::StreamResponder> guard_plain_http(
     std::shared_ptr<engine::StreamResponder> stream);
 

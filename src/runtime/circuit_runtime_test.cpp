@@ -188,9 +188,12 @@ public:
                 // The record reaches the node in order before the caller
                 // learns of it.
                 const auto size = data.size();
+                ++depth;
+                max_depth = std::max(max_depth, depth);
                 inner_->async_write(std::move(data), std::move(token),
                                     [](Status, std::size_t) {});
                 completion(Status::success(), size);
+                --depth;
                 return;
             }
             case Writes::InlineClosed:
@@ -206,6 +209,9 @@ public:
     }
 
     Writes writes{Writes::Forwarded};
+    // How deeply inline writes nest: 1 when no completion starts a write.
+    std::size_t depth{0U};
+    std::size_t max_depth{0U};
     std::size_t nth{0U};
     bool data_only{true};
     bool fired{false};
@@ -1097,6 +1103,55 @@ void test_entry_write_completes_inline(Cluster& cluster) {
     cluster.runtime.sync([&] { circuit->close(); });
 }
 
+// Two streams share the forward queue while the entry completes each write
+// inline. The circuit continues from the executor, so the entry's write never
+// runs inside its own completion, and the streams take turns for the freed
+// slots: a short write that starts after a long one still finishes first.
+void test_inline_entry_writes_take_turns(Cluster& cluster) {
+    // A data cell carries about 16 KiB, so the long write below needs five
+    // cells and waits for room in a queue of two.
+    runtime::circuit::ClientLimits limits;
+    limits.forward_queue_cells = 2U;
+    std::shared_ptr<EntryProbe> probe;
+    auto circuit =
+        cluster.circuit({"north", "west"}, {}, nullptr, limits, &probe);
+    CHECK(cluster.build(circuit).ok());
+    auto first = cluster.open(circuit, 443);
+    auto second = cluster.open(circuit, 443);
+    CHECK(first.ok() && second.ok());
+    if (!first.ok() || !second.ok()) return;
+    // Within the stream window, so no write waits for credit.
+    static constexpr std::size_t kLong = 64U * 1024U;
+    static constexpr std::size_t kShort = 4096U;
+    auto finished = std::make_shared<std::vector<int>>();
+    cluster.runtime.sync([&] {
+        probe->writes = EntryProbe::Writes::InlineSuccess;
+        first.value()->async_write(
+            take(Buffer::allocate(kLong, kLong)), {},
+            [finished](Status status, std::size_t written) {
+                CHECK(status.ok() && written == kLong);
+                finished->push_back(1);
+            });
+        second.value()->async_write(
+            take(Buffer::allocate(kShort, kLong)), {},
+            [finished](Status status, std::size_t written) {
+                CHECK(status.ok() && written == kShort);
+                finished->push_back(2);
+            });
+    });
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (cluster.runtime.sync([&] { return finished->size(); }) < 2U &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(10ms);
+    cluster.runtime.sync([&] {
+        CHECK((*finished == std::vector<int>{2, 1}));
+        CHECK(probe->max_depth == 1U);
+        first.value()->close(Status(StatusCode::Cancelled));
+        second.value()->close(Status(StatusCode::Cancelled));
+        circuit->close();
+    });
+}
+
 // The session's stream refuses a write inline once it has closed, which
 // closes the circuit and ends its streams inside the send that queued the
 // cell. A cell counts as written once it is queued, as one queued behind a
@@ -1415,6 +1470,7 @@ int main() {
             test_read_allocation_failures(cluster, false);
             test_read_initiation_failures(cluster);
             test_entry_write_completes_inline(cluster);
+            test_inline_entry_writes_take_turns(cluster);
             test_entry_write_refused_inline(cluster);
             test_write_allocation_failures(cluster);
             test_download_fairness(cluster);

@@ -195,6 +195,9 @@ struct ClientCircuit::State final : std::enable_shared_from_this<State> {
     bool reading{false};
     std::deque<Buffer> forward_queue;
     bool writing{false};
+    // True while entry->async_write runs, so its completion can tell that it
+    // ran inline, inside the send that queued the cell.
+    bool starting_write{false};
     std::uint32_t next_stream{1U};
     // The stream that last sent from resume_writers, where its next round
     // starts.
@@ -218,6 +221,7 @@ struct ClientCircuit::State final : std::enable_shared_from_this<State> {
                       std::span<const std::uint8_t> payload);
     void queue_cell(c1::Result<std::vector<std::uint8_t>> cell);
     void write() noexcept;
+    void written(const Status& status) noexcept;
     bool forward_room() const noexcept {
         return forward_queue.size() < limits.forward_queue_cells;
     }
@@ -435,10 +439,8 @@ public:
         std::size_t sent = 0U;
         try {
             // State::write can close the circuit, which ends this stream and
-            // empties writes_, and an entry stream that completes inline
-            // pumps this stream again from resume_writers. So each cell's
-            // accounting is settled before write runs, and every pass reads
-            // the queue afresh.
+            // empties writes_. So each cell's accounting is settled before
+            // write runs, and every pass reads the queue afresh.
             while (!terminated() && sent < cells && !writes_.empty() &&
                    send_window_ > 0U && state->forward_room()) {
                 auto& write = writes_.front();
@@ -878,30 +880,57 @@ void ClientCircuit::State::queue_cell(
 }
 
 // Starts the entry write when none is pending. A failed write closes the
-// circuit before this returns, and an entry stream that completes inline
-// runs resume_writers here. A caller keeps no view into a stream's queue
-// across it.
+// circuit before this returns, even one the entry refuses inline. A caller
+// keeps no view into a stream's queue across it.
+//
+// An entry stream may also complete a write successfully before async_write
+// returns. Its continuation is then posted: run inline, it would start the
+// next write and pump a stream again inside the pump that queued this cell,
+// once more for every cell, and resume_writers would begin each nested round
+// before the outer one moved its cursor, so the first stream's backlog would
+// take every slot.
 void ClientCircuit::State::write() noexcept {
     if (phase == Phase::Closed || writing || forward_queue.empty()) return;
     writing = true;
+    starting_write = true;
     try {
         entry->async_write(
             std::move(forward_queue.front()), cancel.token(),
             [self = shared_from_this()](Status status, std::size_t) {
-                self->writing = false;
-                if (self->phase == Phase::Closed) return;
-                if (!status.ok()) {
-                    self->fail(0U, c1::CircuitReason::Unreachable);
+                if (!self->starting_write || !status.ok()) {
+                    self->written(status);
                     return;
                 }
-                self->forward_queue.pop_front();
-                self->write();
-                self->resume_writers();
+                try {
+                    boost::asio::post(self->context->executor(), [self] {
+                        self->written(Status::success());
+                    });
+                } catch (...) {
+                    self->writing = false;
+                    self->close(Status(StatusCode::ResourceExhausted));
+                }
             });
     } catch (...) {
+        starting_write = false;
         writing = false;
         close(Status(StatusCode::Internal));
+        return;
     }
+    starting_write = false;
+}
+
+// The entry finished the write at the front of the queue. Starts the next
+// one and offers the freed slot to the streams waiting for room.
+void ClientCircuit::State::written(const Status& status) noexcept {
+    writing = false;
+    if (phase == Phase::Closed) return;
+    if (!status.ok()) {
+        fail(0U, c1::CircuitReason::Unreachable);
+        return;
+    }
+    forward_queue.pop_front();
+    write();
+    resume_writers();
 }
 
 // A stream's pump can end its stream, so this walks a copy. The queue frees

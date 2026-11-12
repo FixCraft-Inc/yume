@@ -229,7 +229,14 @@ void sync_contents(int fd, const fs::path& path, int depth) {
         }
     };
     const std::unique_ptr<DIR, CloseDirectory> owned(directory);
-    while (const dirent* entry = ::readdir(directory)) {
+    for (;;) {
+        errno = 0;
+        const dirent* entry = ::readdir(directory);
+        if (entry == nullptr) {
+            const int error = errno;
+            if (error != 0) fail_with("cannot walk", path, error);
+            break;
+        }
         const char* name = entry->d_name;
         if (std::strcmp(name, ".") == 0 || std::strcmp(name, "..") == 0)
             continue;

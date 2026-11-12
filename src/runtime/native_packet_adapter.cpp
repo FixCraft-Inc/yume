@@ -290,7 +290,10 @@ Status NativePacketAdapter::attach(std::shared_ptr<engine::StreamResponder> stre
     }
 }
 
-void NativePacketAdapter::close() noexcept { state_->close(); }
+void NativePacketAdapter::close() noexcept {
+    const auto state = state_;
+    state->close();
+}
 const engine::ProviderDescriptor& NativePacketAdapter::descriptor() const noexcept {
     return state_->descriptor;
 }

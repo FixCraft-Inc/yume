@@ -12,6 +12,19 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+Packet-adapter and paced-stream close operations keep their state alive when
+a completion releases the last public owner. Client ABI OPENs copy their peer
+identity from the authenticated session before admission, so a failed copy
+cannot leave a usable channel reporting an empty identity.
+
+Message logs survive allocation failure while they are constructed and still
+count messages they could not store. Private-file writes reject embedded NULs
+before creating directories. Kit publication fails on a directory scan error.
+Reading a kit code avoids unwiped copies during string growth, restores
+terminal echo through cleanup, and refuses terminal setup or input errors.
+Local listeners remove their own UNIX socket file if creation runs out of
+memory, and report allocation failures while constructing their retry timer.
+
 The plain HTTP refusal on circuits holds a stream's first bytes until it can
 tell whether they begin a request, and reports those writes as done. When the
 stream then refused part of what was held, which takes a failed allocation,

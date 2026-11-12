@@ -67,7 +67,9 @@ public:
 
 private:
     mutable std::mutex mutex_;
-    std::deque<Entry> entries_;
+    // A deque may allocate during construction. Create it inside add's
+    // failure boundary so constructing an empty log cannot exhaust memory.
+    std::optional<std::deque<Entry>> entries_;
     std::uint64_t next_{1U};
     std::array<char, 17> instance_{};
 };

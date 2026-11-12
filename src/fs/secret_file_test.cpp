@@ -123,6 +123,27 @@ void WriterContract() {
     assert(!write_error.empty());
     assert(ReadAll(exclusive_path) == "secret");
 
+    for (const auto policy :
+         {yume::security::PrivateParentPolicy::RequireExisting,
+          yume::security::PrivateParentPolicy::CreateOwnerOnly}) {
+        const auto alias = base / "nul-material.bin";
+        const auto invalid = std::filesystem::path(
+            alias.native() + std::filesystem::path::value_type{} +
+            std::filesystem::path("ignored").native());
+        assert(!yume::security::WriteFileExclusive0600(invalid, first,
+                                                       &write_error, policy));
+        assert(!write_error.empty());
+        assert(!std::filesystem::exists(alias));
+    }
+    const auto missing_parent = base / "invalid-parent";
+    const auto invalid =
+        std::filesystem::path((missing_parent / "nul-material.bin").native() +
+                              std::filesystem::path::value_type{} +
+                              std::filesystem::path("ignored").native());
+    assert(
+        !yume::security::WriteFileExclusive0600(invalid, first, &write_error));
+    assert(!std::filesystem::exists(missing_parent));
+
 #if !defined(_WIN32)
     const auto symlink_path = base / "private-material-link.bin";
     const auto symlink_target = base / "symlink-target.bin";

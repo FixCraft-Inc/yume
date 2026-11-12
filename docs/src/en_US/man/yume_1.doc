@@ -153,6 +153,8 @@ replaced.
 
 Open the sealed kit in *file* with the code read from standard input, echo
 off on a terminal, and write it to the new directory that **--into** names.
+If terminal echo cannot be disabled or standard input reports a read error,
+the import fails without using the partial code.
 Case, dashes and spaces in the code do not matter. A wrong code and a file
 that is not a sealed kit fail the same way. The directory is written under a
 private temporary name beside it and renamed into place, with mode 0700 for

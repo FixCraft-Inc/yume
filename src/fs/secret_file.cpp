@@ -558,8 +558,10 @@ bool WriteFileExclusive0600(const std::filesystem::path& path,
                             std::string* error,
                             PrivateParentPolicy parent_policy) {
     if (error) error->clear();
-    if (path.empty()) {
-        if (error) *error = "private file path is empty";
+    if (path.empty() || path.filename().empty() ||
+        path.native().find(std::filesystem::path::value_type{}) !=
+            std::filesystem::path::string_type::npos) {
+        if (error) *error = "private file path is invalid";
         return false;
     }
 

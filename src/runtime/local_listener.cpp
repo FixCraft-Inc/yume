@@ -66,10 +66,35 @@ bool same_user(int descriptor) noexcept {
 
 // The socket file this listener created, identified so close never removes a
 // file that replaced it.
-struct SocketFile final {
-    std::filesystem::path path;
-    dev_t device{};
-    ino_t inode{};
+class SocketFile final {
+public:
+    explicit SocketFile(std::filesystem::path path) : path_(std::move(path)) {}
+    SocketFile(const SocketFile&) = delete;
+    SocketFile& operator=(const SocketFile&) = delete;
+    SocketFile(SocketFile&& other) noexcept
+        : path_(std::move(other.path_)),
+          device_(other.device_),
+          inode_(other.inode_),
+          owned_(std::exchange(other.owned_, false)) {}
+    ~SocketFile() noexcept {
+        struct stat info{};
+        if (owned_ && ::lstat(path_.c_str(), &info) == 0 &&
+            S_ISSOCK(info.st_mode) && info.st_dev == device_ &&
+            info.st_ino == inode_) {
+            (void)::unlink(path_.c_str());
+        }
+    }
+    void identify(const struct stat& info) noexcept {
+        device_ = info.st_dev;
+        inode_ = info.st_ino;
+        owned_ = true;
+    }
+
+private:
+    std::filesystem::path path_;
+    dev_t device_{};
+    ino_t inode_{};
+    bool owned_{false};
 };
 
 }  // namespace
@@ -94,7 +119,7 @@ public:
 
     AcceptLoop(std::shared_ptr<providers::AsioExecutionContext> context,
                std::shared_ptr<providers::AsioTcpAcceptedChannelOwner> channels,
-               Acceptor acceptor, std::optional<SocketFile> file) noexcept
+               Acceptor acceptor, std::optional<SocketFile> file)
         : context_(std::move(context)),
           channels_(std::move(channels)),
           acceptor_(std::move(acceptor)),
@@ -128,7 +153,7 @@ public:
         Error ignored;
         acceptor_.close(ignored);
         providers::cancel_timer(retry_);
-        remove_socket_file();
+        file_.reset();
         accepted_ = {};
         full_ = {};
         failed_ = {};
@@ -223,16 +248,6 @@ private:
         }
     }
 
-    void remove_socket_file() noexcept {
-        if (!file_) return;
-        struct stat info{};
-        if (::lstat(file_->path.c_str(), &info) == 0 && S_ISSOCK(info.st_mode) &&
-            info.st_dev == file_->device && info.st_ino == file_->inode) {
-            (void)::unlink(file_->path.c_str());
-        }
-        file_.reset();
-    }
-
     const std::shared_ptr<providers::AsioExecutionContext> context_;
     const std::shared_ptr<providers::AsioTcpAcceptedChannelOwner> channels_;
     Acceptor acceptor_;
@@ -304,25 +319,25 @@ engine::Result<std::shared_ptr<LocalListener::Loop>> open_unix(
     } else if (errno != ENOENT) {
         return Opened(diagnostic(StatusCode::Internal, name, " path could not be checked"));
     }
+    // Allocate the cleanup owner's path before bind creates a filesystem entry.
+    SocketFile file(path);
     UnixLoop::Acceptor acceptor(context->executor());
     Error error;
     acceptor.open(Unix(), error);
     if (!error) acceptor.bind(endpoint, error);
     if (error) return Opened(diagnostic(bind_failure(error), name, " could not open"));
     struct stat created{};
-    SocketFile file{path, {}, {}};
-    if (::chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0 || ::lstat(path.c_str(), &created) != 0 ||
-        !S_ISSOCK(created.st_mode)) {
+    if (::lstat(path.c_str(), &created) != 0 || !S_ISSOCK(created.st_mode)) {
         acceptor.close(error);
         (void)::unlink(path.c_str());
         return Opened(diagnostic(StatusCode::Internal, name, " could not restrict its socket"));
     }
-    file.device = created.st_dev;
-    file.inode = created.st_ino;
+    file.identify(created);
+    if (::chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0)
+        return Opened(diagnostic(StatusCode::Internal, name,
+                                 " could not restrict its socket"));
     acceptor.listen(boost::asio::socket_base::max_listen_connections, error);
     if (error) {
-        acceptor.close(error);
-        (void)::unlink(path.c_str());
         return Opened(diagnostic(StatusCode::Internal, name, " could not open"));
     }
     return Opened(std::shared_ptr<LocalListener::Loop>(std::make_shared<UnixLoop>(

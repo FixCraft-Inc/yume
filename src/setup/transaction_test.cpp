@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 
+#include <dirent.h>
 #include <unistd.h>
 
 // Exercise the private transaction owner without generating a whole cluster
@@ -30,6 +31,8 @@ void require(bool condition, const char* message) {
 const char* close_target = nullptr;
 bool close_seen = false;
 const char* chmod_target = nullptr;
+bool fail_readdir = false;
+bool readdir_seen = false;
 
 template <typename Operation>
 void rollback_sweep(const fs::path& root, const char* name,
@@ -108,6 +111,28 @@ void test_directory_protection_failure(const fs::path& scratch) {
             "directory protection failure left a created directory");
 }
 
+void test_tree_sync_read_failure(const fs::path& scratch) {
+    const auto path = scratch / "unreadable-tree";
+    make_private_directory(path);
+    write_new_file(path / "contents", as_bytes("must be traversed"));
+    readdir_seen = false;
+    bool refused = false;
+    {
+        fail_readdir = true;
+        struct Reset final {
+            ~Reset() { fail_readdir = false; }
+        } reset;
+        try {
+            fsync_tree(path);
+        } catch (const SetupError&) {
+            refused = true;
+        }
+    }
+    require(readdir_seen && refused,
+            "tree sync accepted a directory enumeration failure");
+    fsync_tree(path);
+}
+
 void test_add_client(const fs::path& scratch) {
     InitOptions init;
     init.host = "setup.example.test";
@@ -149,6 +174,16 @@ void test_add_client(const fs::path& scratch) {
         "back");
 }
 }  // namespace
+
+extern "C" dirent* __real_readdir(DIR* directory);
+extern "C" dirent* __wrap_readdir(DIR* directory) {
+    if (fail_readdir) {
+        readdir_seen = true;
+        errno = EIO;
+        return nullptr;
+    }
+    return __real_readdir(directory);
+}
 
 extern "C" int __real_chmod(const char* path, mode_t mode);
 extern "C" int __wrap_chmod(const char* path, mode_t mode) {
@@ -194,6 +229,7 @@ int main() {
     try {
         test_changes(scratch);
         test_directory_protection_failure(scratch);
+        test_tree_sync_read_failure(scratch);
         test_add_client(scratch);
         std::puts("setup transaction tests passed");
     } catch (const std::exception& error) {

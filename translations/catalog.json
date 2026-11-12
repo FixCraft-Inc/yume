@@ -9766,19 +9766,20 @@
     },
     {
       "id": "provider.error.stale",
-      "source": "The server list is out of date or this phone's time could not be confirmed. Check the date and time, then try again.",
+      "source": "The server list or sign-in is out of date. Try again.",
       "context": "Android optional provider presentation",
       "owner": "android.app.consumer",
-      "notes": "Name the Load servers action using its exact translated label. Refresh services reloads local state only and does not obtain a fresh catalog. Keep service API and transport access deadlines distinct.",
+      "notes": "Shown when a server list, sign-in attempt or provider description has expired, or the phone's trusted time went backwards. Missing time has its own message. Keep service API and transport access deadlines distinct.",
       "requirements": {
         "placeholders": []
       },
       "translations": {
-        "ru": "Список серверов устарел, или не удалось подтвердить время на телефоне. Проверьте дату и время и повторите попытку.",
-        "ja": "サーバー一覧が古いか、この端末の時刻を確認できませんでした。日付と時刻を確認して、もう一度お試しください。",
-        "uk": "Список серверів застарів, або не вдалося підтвердити час на телефоні. Перевірте дату й час і спробуйте ще раз.",
-        "zh-Hans": "服务器列表已过期，或无法确认此手机的时间。请检查日期和时间后重试。"
-      }
+        "ru": "Список серверов или вход устарели. Повторите попытку.",
+        "ja": "サーバー一覧またはログイン情報が古くなっています。もう一度お試しください。",
+        "uk": "Список серверів або вхід застаріли. Спробуйте ще раз.",
+        "zh-Hans": "服务器列表或登录信息已过期。请重试。"
+      },
+      "maintainer_review": true
     },
     {
       "id": "provider.error.unauthorized",
@@ -10419,6 +10420,23 @@
         "uk": "Цей постачальник використовує вхід, який ця версія Yume не підтримує.",
         "zh-Hans": "此服务提供商使用的登录方式不受此版本 Yume 支持。"
       }
+    },
+    {
+      "id": "provider.error.clock.unavailable",
+      "source": "The current time could not be confirmed yet. Check the internet connection, then try again.",
+      "context": "Android optional provider presentation",
+      "owner": "android.app.consumer",
+      "notes": "Shown when the app has no trusted time yet, for example after a restart before the provider has answered. The app does not use the phone's date setting, so do not suggest changing it.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Не удалось подтвердить текущее время. Проверьте подключение к интернету и повторите попытку.",
+        "ja": "現在の時刻をまだ確認できません。インターネット接続を確認して、もう一度お試しください。",
+        "uk": "Не вдалося підтвердити поточний час. Перевірте підключення до інтернету й спробуйте ще раз.",
+        "zh-Hans": "暂时无法确认当前时间。请检查网络连接后重试。"
+      },
+      "maintainer_review": true
     }
   ],
   "terminology": [

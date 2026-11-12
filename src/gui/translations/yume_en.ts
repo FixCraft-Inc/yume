@@ -3457,8 +3457,8 @@
     <message id="provider.error.stale">
       <location filename="catalog:provider.error.stale" line="1"/>
       <source></source>
-      <extracomment>source: The server list is out of date or this phone's time could not be confirmed. Check the date and time, then try again.; context: Android optional provider presentation; owner: android.app.consumer; Name the Load servers action using its exact translated label. Refresh services reloads local state only and does not obtain a fresh catalog. Keep service API and transport access deadlines distinct.</extracomment>
-      <translation>The server list is out of date or this phone's time could not be confirmed. Check the date and time, then try again.</translation>
+      <extracomment>source: The server list or sign-in is out of date. Try again.; context: Android optional provider presentation; owner: android.app.consumer; Shown when a server list, sign-in attempt or provider description has expired, or the phone's trusted time went backwards. Missing time has its own message. Keep service API and transport access deadlines distinct.</extracomment>
+      <translation>The server list or sign-in is out of date. Try again.</translation>
     </message>
     <message id="provider.error.unauthorized">
       <location filename="catalog:provider.error.unauthorized" line="1"/>
@@ -3693,6 +3693,12 @@
       <source></source>
       <extracomment>source: This provider uses a sign-in that this version of Yume does not support.; context: Android optional provider presentation; owner: android.app.consumer; Provider means an explicitly selected service operator. Issuer means its separately accepted authorization server. Keep service API and transport access deadlines distinct.</extracomment>
       <translation>This provider uses a sign-in that this version of Yume does not support.</translation>
+    </message>
+    <message id="provider.error.clock.unavailable">
+      <location filename="catalog:provider.error.clock.unavailable" line="1"/>
+      <source></source>
+      <extracomment>source: The current time could not be confirmed yet. Check the internet connection, then try again.; context: Android optional provider presentation; owner: android.app.consumer; Shown when the app has no trusted time yet, for example after a restart before the provider has answered. The app does not use the phone's date setting, so do not suggest changing it.</extracomment>
+      <translation>The current time could not be confirmed yet. Check the internet connection, then try again.</translation>
     </message>
   </context>
 </TS>

@@ -26,6 +26,7 @@ enum class PrivateParentPolicy {
 // protected owner-and-LocalSystem-only DACL at creation. On failure, returns
 // false, records a diagnostic when error is non-null, and attempts to remove
 // a partial file (including any cleanup failure in the diagnostic).
+// Empty filenames and embedded NULs are refused before creating directories.
 bool WriteFileExclusive0600(const std::filesystem::path& path,
                             std::span<const std::uint8_t> contents,
                             std::string* error,

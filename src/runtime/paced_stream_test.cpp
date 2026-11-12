@@ -342,6 +342,29 @@ void test_one_read_at_a_time() {
     check(first_done, "close did not settle the stream's own pending read");
 }
 
+void test_close_callback_releases_stream() {
+    auto context = require(AsioExecutionContext::create(ExecutorAffinity(71U)));
+    auto limiter = std::make_shared<EgressLimiter>(kFast);
+    auto inner = std::make_shared<Inner>(ExecutorAffinity(71U));
+    auto stream = require(
+        pace_stream(context, limiter, "client", [] { return 1.0; }, inner));
+    bool completed = false;
+    boost::asio::post(context->executor(), [&stream, &completed, context] {
+        stream->async_read(
+            {}, [&stream, &completed](Result<ReceivedRecord> result) {
+                check(result.status().code() == StatusCode::Closed,
+                      "close result changed");
+                stream.reset();
+                completed = true;
+            });
+        stream->close(Status(StatusCode::Closed));
+        context->finish();
+    });
+    context->run();
+    check(completed && !stream && inner->closes == 1U,
+          "close did not survive releasing its public owner");
+}
+
 void test_close_from_another_thread() {
     Harness test(kSlow);
     test.inner->push_record(kChunk);
@@ -378,6 +401,7 @@ int main() {
         test_held_write_bound();
         test_one_read_at_a_time();
         test_close_from_another_thread();
+        test_close_callback_releases_stream();
         std::cout << "paced stream tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

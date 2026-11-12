@@ -138,6 +138,8 @@ symlink.
 A new kit, bundle or operator directory is written under a private
 staging name beside its target and renamed into place without replacing
 anything, so a failed command leaves no partial directory.
+A new kit or bundle is published only after its complete staged tree has
+been traversed and flushed; a directory scan failure aborts publication.
 Commands that change an existing server or cluster write each replaced
 file beside it and rename it over the old one.
 Each replacement is atomic, but a command that touches several files is

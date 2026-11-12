@@ -554,41 +554,55 @@ int seal_kit(NativeCliRole role, const std::filesystem::path& directory,
 // Reads one line of at most 256 bytes from standard input, with echo off on
 // a terminal.
 std::optional<std::string> read_code_line(NativeCliRole role) {
+    // Allocate before reading a secret or changing the terminal. Growing the
+    // string later would free unwiped copies of a partially typed code.
+    std::string line;
+    line.reserve(256U);
+    const security::ScopedErase line_guard(line);
     const bool terminal = ::isatty(STDIN_FILENO) == 1;
     termios saved{};
-    const bool quiet = terminal && ::tcgetattr(STDIN_FILENO, &saved) == 0;
+    struct RestoreEcho final {
+        bool quiet{false};
+        termios saved{};
+        ~RestoreEcho() noexcept {
+            if (!quiet) return;
+            static_cast<void>(::tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved));
+            std::fputs("\n", stderr);
+        }
+    } restore;
     if (terminal) {
         std::fputs("kit code: ", stderr);
         std::fflush(stderr);
-    }
-    if (quiet) {
+        if (::tcgetattr(STDIN_FILENO, &saved) != 0) {
+            say(role, "cannot disable kit code echo");
+            return std::nullopt;
+        }
         termios silent = saved;
         silent.c_lflag &= ~static_cast<tcflag_t>(ECHO);
-        static_cast<void>(::tcsetattr(STDIN_FILENO, TCSAFLUSH, &silent));
+        if (::tcsetattr(STDIN_FILENO, TCSAFLUSH, &silent) != 0) {
+            say(role, "cannot disable kit code echo");
+            return std::nullopt;
+        }
+        restore.saved = saved;
+        restore.quiet = true;
     }
-    std::string line;
     bool ended = false;
     for (;;) {
         char ch = 0;
         const auto count = ::read(STDIN_FILENO, &ch, 1U);
         if (count < 0 && errno == EINTR) continue;
         if (count <= 0 || ch == '\n') {
-            ended = count > 0 || !line.empty();
+            ended = count > 0 || (count == 0 && !line.empty());
             break;
         }
         if (line.size() >= 256U) break;
         line.push_back(ch);
     }
-    if (quiet) {
-        static_cast<void>(::tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved));
-        std::fputs("\n", stderr);
-    }
     if (!ended) {
-        security::secure_erase(line);
         say(role, "no kit code on standard input");
         return std::nullopt;
     }
-    return line;
+    return std::optional<std::string>{std::move(line)};
 }
 
 // yume --import-kit FILE --into DIR: reads the code from standard input.

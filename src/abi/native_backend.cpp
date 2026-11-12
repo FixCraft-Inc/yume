@@ -353,9 +353,8 @@ public:
 #if defined(YUME_HAS_DEVICE_BRIDGE)
     std::shared_ptr<runtime::DeviceBridge> bridge;
 #endif
-    // The authenticated server. Without a keeper it is written before start
-    // reports success and unchanged afterwards. With one it follows the
-    // current session and only the runner reads it.
+    // The authenticated server of a client without a keeper. Written before
+    // start reports success, then read by status snapshots.
     BackendPeerIdentity server_peer;
 
     bool running() const noexcept {
@@ -432,8 +431,6 @@ private:
     void on_accept_failure(Status status) noexcept;
     void on_session_ended(const Status& reason) noexcept;
     void on_keeper_status(const runtime::NativeClientStatus& status) noexcept;
-    void on_keeper_session(
-        const std::shared_ptr<engine::SessionEngine>& session) noexcept;
     void on_keeper_failure(Status status) noexcept;
 
     std::atomic<Phase> phase_{Phase::Running};
@@ -573,6 +570,7 @@ private:
     const std::optional<engine::RouteDestination> destination_;
     const Clock::time_point deadline_;
     const engine::ServiceKind kind_;
+    BackendPeerIdentity peer_;
     engine::CancellationSource cancellation_;
     std::mutex mutex_;
     std::condition_variable cv_;
@@ -1312,6 +1310,13 @@ void OpenOperation::open_on_runner() noexcept {
         return;
     }
     try {
+        const auto peer = session->authenticated_peer();
+        if (!peer.ok()) {
+            settle(io_from(peer.status().code()),
+                   "session peer is unavailable");
+            return;
+        }
+        peer_ = identity_from(peer.value(), service_);
         session->async_open(
             service_, kind_, destination_,
             cancellation_.token(),
@@ -1333,10 +1338,8 @@ void OpenOperation::on_opened(
     if (result.ok()) {
         const std::shared_ptr<engine::StreamResponder> responder = result.value();
         try {
-            BackendPeerIdentity identity = run_->server_peer;
-            identity.service = service_;
             stream = std::make_shared<NativeStream>(run_, responder,
-                                                    std::move(identity));
+                                                    std::move(peer_));
             stream->start_reading();
             if (stream->dead()) {
                 stream->close_on_runner();
@@ -1697,12 +1700,6 @@ Status NativeRun::create_endpoint(
                         self->on_keeper_status(status);
                     }
                 };
-            keeping.on_authenticated =
-                [weak](const std::shared_ptr<engine::SessionEngine>& active) {
-                    if (const auto self = weak.lock()) {
-                        self->on_keeper_session(active);
-                    }
-                };
             keeping.stop_when_incompatible = true;
             keeper = std::make_shared<runtime::SessionKeeper>(
                 context, std::move(keeping), [weak](Status status) {
@@ -1783,17 +1780,6 @@ void NativeRun::on_keeper_status(
     // failure.
     const auto operation = start_operation_;
     if (operation) operation->on_kept(status);
-}
-
-void NativeRun::on_keeper_session(
-    const std::shared_ptr<engine::SessionEngine>& active) noexcept {
-    try {
-        auto peer = active->authenticated_peer();
-        server_peer =
-            peer.ok() ? identity_from(peer.value(), {}) : BackendPeerIdentity{};
-    } catch (...) {
-        server_peer = BackendPeerIdentity{};
-    }
 }
 
 // The keeper met a failure it cannot retry, so nothing would reconnect.

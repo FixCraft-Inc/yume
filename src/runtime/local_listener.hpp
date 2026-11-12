@@ -32,7 +32,8 @@ namespace yume::runtime {
 // and a connection whose peer credentials carry another user ID is closed. A
 // socket file left by an earlier run is replaced, a live listener at the path
 // refuses the new one with AddressInUse, and any other file refuses it with
-// AlreadyExists. Close removes the socket file while it is still this one.
+// AlreadyExists. Failed creation and close remove the socket file while it is
+// still this one.
 //
 // Each connection becomes a channel of the supplied owner, whose capacity
 // bounds the adapter's connections. Accepting pauses while full() holds and

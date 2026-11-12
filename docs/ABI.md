@@ -459,6 +459,10 @@ same dispatcher and cannot bypass those checks.
 
 ## Open and accept
 
+A client OPEN takes its reported peer identity from the authenticated session
+that admits it. If that identity cannot be copied, the OPEN fails before it
+is sent.
+
 `yume_open_options` contains a service name, stream/packet kind, and an
 optional typed destination. Custom named services omit the suffix or use
 destination kind `NONE`. Hostname, IPv4, and IPv6 descriptors are validated

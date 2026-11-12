@@ -404,7 +404,10 @@ public:
         state_->write(std::move(payload), std::move(cancellation), std::move(completion));
     }
     Status shutdown_write() noexcept override { return state_->shutdown_write(); }
-    void close(Status reason) noexcept override { state_->close(std::move(reason)); }
+    void close(Status reason) noexcept override {
+        const auto state = state_;
+        state->close(std::move(reason));
+    }
 
 private:
     std::shared_ptr<PacedState> state_;

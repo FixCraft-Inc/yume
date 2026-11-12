@@ -5,6 +5,7 @@
  */
 
 #include "runtime/local_listener.hpp"
+#include "test_support/allocation_failure.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -180,6 +181,45 @@ void test_unix_listener_path_rules() {
           "a relative path was accepted");
 }
 
+void test_open_allocation_rollback() {
+    Directory directory;
+    const auto path = directory.path / "allocation.sock";
+    std::size_t failures = 0U;
+    bool completed = false;
+    for (std::size_t nth = 1U; nth <= 64U; ++nth) {
+        Harness harness;
+        const LocalListener::Address address = LocalListener::Unix{path};
+        bool fired = false;
+        auto opened = harness.on_context([&] {
+            yume::test::arm_allocation_failure(nth);
+            auto result = LocalListener::open(
+                harness.context, address, harness.channels, "test listener");
+            fired = yume::test::disarm_allocation_failure();
+            return result;
+        });
+        if (!opened.ok()) {
+            check(fired &&
+                      opened.status().code() == StatusCode::ResourceExhausted,
+                  "allocation failure was not reported as exhausted");
+            check(!std::filesystem::exists(path),
+                  "failed listener creation left its socket file");
+            ++failures;
+        } else {
+            harness.on_context([&] {
+                opened.value()->close();
+                return true;
+            });
+            check(!std::filesystem::exists(path),
+                  "closed listener left its socket file");
+            if (!fired) {
+                completed = true;
+                break;
+            }
+        }
+    }
+    check(failures > 0U && completed, "allocation sweep did not finish");
+}
+
 void test_loopback_listener_rules() {
     Harness harness;
     check(harness.open(LocalListener::Loopback{boost::asio::ip::make_address("0.0.0.0"), 0U})
@@ -205,6 +245,7 @@ int main() {
         test_unix_listener_accepts_this_user_only_through_a_private_file();
         test_unix_listener_path_rules();
         test_loopback_listener_rules();
+        test_open_allocation_rollback();
         std::cout << "local listener tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

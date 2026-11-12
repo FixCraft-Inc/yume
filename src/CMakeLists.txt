@@ -971,11 +971,21 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
            CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             add_executable(yume_setup_transaction_test setup/transaction_test.cpp)
             target_link_libraries(yume_setup_transaction_test PRIVATE yume_setup)
-            target_link_options(yume_setup_transaction_test PRIVATE "-Wl,--wrap=close,--wrap=chmod")
+            target_link_options(yume_setup_transaction_test PRIVATE "-Wl,--wrap=close,--wrap=chmod,--wrap=readdir")
             yume_apply_perf_opts(yume_setup_transaction_test)
             add_test(NAME yume_setup_transaction_test COMMAND yume_setup_transaction_test)
             set_tests_properties(yume_setup_transaction_test PROPERTIES
                 TIMEOUT 120 LABELS "native-runtime;provisioning")
+            if(TARGET yume_native_runtime)
+                add_executable(yume_native_cli_input_test runtime/native_cli_input_test.cpp)
+                target_link_libraries(yume_native_cli_input_test PRIVATE yume_native_runtime)
+                target_link_options(yume_native_cli_input_test PRIVATE
+                    "-Wl,--wrap=read,--wrap=isatty,--wrap=tcgetattr,--wrap=tcsetattr")
+                yume_apply_perf_opts(yume_native_cli_input_test)
+                add_test(NAME yume_native_cli_input_test COMMAND yume_native_cli_input_test)
+                set_tests_properties(yume_native_cli_input_test PROPERTIES
+                    TIMEOUT 30 LABELS "native-runtime;secrets")
+            endif()
         endif()
     endif()
 

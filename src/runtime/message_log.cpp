@@ -35,8 +35,9 @@ void MessageLog::add(std::string_view text) noexcept {
     const std::uint64_t seq = next_++;
     try {
         Entry entry{seq, now, std::string(text.substr(0U, kMaxTextBytes))};
-        if (entries_.size() == kCapacity) entries_.pop_front();
-        entries_.push_back(std::move(entry));
+        if (!entries_) entries_.emplace();
+        if (entries_->size() == kCapacity) entries_->pop_front();
+        entries_->push_back(std::move(entry));
     } catch (...) {
     }
 }
@@ -46,8 +47,10 @@ MessageLog::Page MessageLog::after(std::uint64_t seq) const noexcept {
     const std::uint64_t numbered = next_ - 1U > seq ? next_ - 1U - seq : 0U;
     Page page;
     try {
-        for (const auto& entry : entries_) {
-            if (entry.seq > seq) page.entries.push_back(entry);
+        if (entries_) {
+            for (const auto& entry : *entries_) {
+                if (entry.seq > seq) page.entries.push_back(entry);
+            }
         }
     } catch (...) {
         page.entries.clear();
@@ -59,15 +62,17 @@ MessageLog::Page MessageLog::after(std::uint64_t seq) const noexcept {
 MessageLog::Next MessageLog::next_after(std::uint64_t seq) const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     Next next;
-    for (const auto& entry : entries_) {
-        if (entry.seq <= seq) continue;
-        try {
-            next.entry = entry;
-            next.missed = entry.seq - seq - 1U;
-        } catch (...) {
-            next.entry.reset();
+    if (entries_) {
+        for (const auto& entry : *entries_) {
+            if (entry.seq <= seq) continue;
+            try {
+                next.entry = entry;
+                next.missed = entry.seq - seq - 1U;
+            } catch (...) {
+                next.entry.reset();
+            }
+            return next;
         }
-        return next;
     }
     next.missed = next_ - 1U > seq ? next_ - 1U - seq : 0U;
     return next;

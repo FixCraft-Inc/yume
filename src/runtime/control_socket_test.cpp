@@ -29,6 +29,7 @@
 #include <nlohmann/json.hpp>
 
 #include "common/version.hpp"
+#include "test_support/allocation_failure.hpp"
 
 namespace {
 using namespace std::chrono_literals;
@@ -587,6 +588,23 @@ void test_accept_route() {
 // The log numbers messages from 1, keeps the latest kCapacity, cuts long
 // text and counts what it no longer keeps.
 void test_message_log() {
+    yume::test::fail_allocations.store(true);
+    MessageLog exhausted;
+    exhausted.add("dropped");
+    yume::test::fail_allocations.store(false);
+    const auto dropped = exhausted.after(0U);
+    check(dropped.entries.empty() && dropped.missed == 1U,
+          "an exhausted log did not count its dropped message");
+    exhausted.add("recovered");
+    const auto recovered = exhausted.after(0U);
+    const auto next = exhausted.next_after(0U);
+    check(recovered.entries.size() == 1U &&
+              recovered.entries.front().seq == 2U &&
+              recovered.entries.front().text == "recovered" &&
+              recovered.missed == 1U && next.entry && next.entry->seq == 2U &&
+              next.missed == 1U,
+          "an exhausted log did not recover with its next message number");
+
     MessageLog log;
     check(log.instance().size() == 16U &&
               log.instance().find_first_not_of("0123456789abcdef") ==

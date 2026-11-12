@@ -24,7 +24,7 @@ namespace yume::runtime {
 // shared channel retains its device owner. close first drains the lease, then
 // invokes on_closed while the device still exists, so that callback may remove
 // managed addresses/routes/DNS. It finally closes the channel. Keep the context
-// running through this drain.
+// running through this drain. on_closed may release the adapter's last owner.
 class NativePacketAdapter final : public engine::StreamHandler {
 public:
     using Closed = std::function<void()>;

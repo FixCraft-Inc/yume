@@ -311,6 +311,21 @@ void callback_reentry(const std::shared_ptr<AsioExecutionContext>& context) {
     CHECK(adapter->start(device, [] { throw std::runtime_error("contained cleanup callback"); }).ok());
     adapter->close();
     CHECK(device->closed);
+
+    // The completion may release the last public adapter owner. The channel
+    // still closes after the callback has removed managed network settings.
+    auto released = require(NativePacketAdapter::create(context, settings()));
+    auto released_device = std::make_shared<Device>();
+    bool released_callback = false;
+    CHECK(released
+              ->start(released_device,
+                      [&released, &released_callback] {
+                          released.reset();
+                          released_callback = true;
+                      })
+              .ok());
+    released->close();
+    CHECK(released_callback && !released && released_device->closed);
 }
 
 void allocation_failures(const std::shared_ptr<AsioExecutionContext>& context) {

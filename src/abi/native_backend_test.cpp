@@ -892,6 +892,82 @@ void test_open_deadline_admission(const std::filesystem::path& kit,
           run->session->state() == engine::SessionState::Active);
 }
 
+void test_open_uses_session_identity(const std::filesystem::path& kit,
+                                     engine::ServiceKind kind) {
+    const bool packet = kind == engine::ServiceKind::PacketChannel;
+    const auto server_base = kit / "server";
+    const auto client_base = kit / "client";
+    NativeBackend server(
+        read_kit_config(server_base /
+                        (packet ? "packet-services.json" : "yumed.json")),
+        server_base, {},
+        std::vector<BackendService>{
+            {"echo", packet ? BackendServiceKind::Packet
+                            : BackendServiceKind::ByteStream}},
+        {}, std::nullopt);
+    std::string error;
+    CHECK(server.start(0U, nullptr, error) == BackendIo::Ok);
+    PausedClient client(
+        read_kit_config(client_base /
+                        (packet ? "routes-udp.json" : "yume.json")),
+        client_base);
+    const auto& run = client.run;
+    const auto queue_open = [&](Clock::time_point deadline,
+                                std::string service = "echo") {
+        auto operation = std::make_shared<OpenOperation>(
+            run, std::move(service), std::nullopt, deadline, kind);
+        CHECK(run->submit(operation->open_task, operation));
+        return operation;
+    };
+    std::shared_ptr<NativeStream> opened;
+    // Connection metadata is not the authority for OPEN identity. Even
+    // absent metadata must leave the channel tied to its actual session.
+    run->server_peer = {};
+    const auto sent_before = run->session->traffic().record_bytes_sent;
+    auto exhausted = std::make_shared<OpenOperation>(
+        run, "echo", std::nullopt, Clock::now() + std::chrono::seconds(3),
+        kind);
+    bool fired = false;
+    boost::asio::post(run->context->executor(), [&] {
+        providers::ControlTaskQueue mailbox;
+        mailbox.push(exhausted->open_task, exhausted);
+        yume::test::arm_allocation_failure(1U);
+        CHECK(mailbox.run_one());
+        fired = yume::test::disarm_allocation_failure();
+    });
+    run->context->poll();
+    CHECK(fired &&
+          exhausted->wait(opened, error) == BackendIo::ResourceExhausted);
+    CHECK(!opened && run->session->traffic().record_bytes_sent == sent_before);
+    std::unique_ptr<BackendStream> accepted_stream;
+    std::unique_ptr<BackendPacket> accepted_packet;
+    auto accepting = std::async(
+        std::launch::async,
+        [&server, packet, &accepted_stream, &accepted_packet] {
+            std::string message;
+            if (packet) {
+                CHECK(server.accept_packet("echo", 3000U, accepted_packet,
+                                           message) == BackendIo::Ok);
+                return;
+            }
+            CHECK(server.accept_stream("echo", 3000U, accepted_stream,
+                                       message) == BackendIo::Ok);
+        });
+    auto authenticated = queue_open(Clock::now() + std::chrono::seconds(3));
+    std::jthread runner([run] { run->context->run(); });
+    const auto outcome = authenticated->wait(opened, error);
+    run->context->stop();
+    runner.join();
+    accepting.get();
+    CHECK(outcome == BackendIo::Ok && opened);
+    const auto peer = run->session->authenticated_peer();
+    CHECK(peer.ok() && opened->identity().authenticated &&
+          opened->identity().peer_is_server &&
+          opened->identity().peer_label == peer.value().identity() &&
+          opened->identity().service == "echo");
+    opened->close();
+}
+
 }  // namespace
 }  // namespace yume::embed
 
@@ -912,6 +988,10 @@ int main(int argc, char** argv) {
         yume::embed::test_open_deadline_admission(
             argv[1], yume::engine::ServiceKind::ByteStream);
         yume::embed::test_open_deadline_admission(
+            argv[1], yume::engine::ServiceKind::PacketChannel);
+        yume::embed::test_open_uses_session_identity(
+            argv[1], yume::engine::ServiceKind::ByteStream);
+        yume::embed::test_open_uses_session_identity(
             argv[1], yume::engine::ServiceKind::PacketChannel);
         yume::embed::test_session_count_retirement(argv[1]);
         std::cout

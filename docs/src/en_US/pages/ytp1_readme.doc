@@ -109,8 +109,8 @@ and client configurations, a static default cover site with an explicit
 adapter manifests. Doctor requires both complete HTML pages and the ordinary
 asset files used by the selected browser profile. Private values are never
 printed. Generate one kit per deployment and one bundle per client, move a
-bundle over an authenticated channel, remove offline CA material from the
-server host, and never commit a kit, capture, profile, or diagnostic artifact.
+bundle over an authenticated channel, and never commit a kit, capture, profile,
+or diagnostic artifact.
 
 Outer TLS certificates are independent of the composite YTP identity. Setup
 uses ECDSA with SHA-256 because the browser signature profile does not offer

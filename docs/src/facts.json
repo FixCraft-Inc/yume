@@ -74,6 +74,7 @@
       ],
       "stated": [
         {"path": "docs/src/en_US/pages/operations.doc", "text": "pinned to primary fingerprint `967278FF6FA436F504CBB0058A1588B5E2598DB1`"},
+        {"path": "docs/src/en_US/pages/operations.doc", "text": "gpg --fingerprint 967278FF6FA436F504CBB0058A1588B5E2598DB1"},
         {"path": "website/hashes/index.html", "text": "confirm its primary fingerprint is <code>967278FF6FA436F504CBB0058A1588B5E2598DB1</code>"},
         {"path": "website/hashes/index.html", "text": "gpg --fingerprint 967278FF6FA436F504CBB0058A1588B5E2598DB1"}
       ]

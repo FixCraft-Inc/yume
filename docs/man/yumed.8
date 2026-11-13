@@ -19,6 +19,9 @@ yumed \- native YTP/1 daemon with configured TCP and UDP egress
 .B --version
 .PP
 .B yumed
+.B --credits
+.PP
+.B yumed
 .B --completion
 .B bash
 .PP
@@ -66,8 +69,9 @@ Security policy has no command-line overrides.
 .TP
 .B --validate
 Check schema, role, referenced credentials, direct-adapter destination
-policy and the daemon's module sockets, then exit without opening a
-listener or network connection.
+policy, the daemon's module sockets and that a cluster or circuits state
+directory is writable, then exit without opening a listener or network
+connection.
 This checks local inputs; it does not test connectivity or complete
 runtime startup, including loading the cover site, matching services to
 runtime adapters, TUN privileges or DNS authorization.

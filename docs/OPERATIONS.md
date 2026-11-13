@@ -20,8 +20,9 @@ yume-doctor --config yume-kit/client/yume.json
 
 The [native guide](development/ytp1/README.md#identity-and-authorization)
 lists every generated file and its purpose. Move the client bundle to its
-machine over an authenticated channel. Remove offline CA material from the
-server host, and never commit a kit, capture or diagnostic artifact.
+machine over an authenticated channel, and never commit a kit, capture or
+diagnostic artifact. Setup discards the TLS CA's private key once it has signed
+the server certificate, so the kit holds only the CA certificate.
 
 Each device gets its own composite identity and access PSK. Issue another
 client bundle from the server tree, then reload the daemon so it reads the
@@ -63,9 +64,12 @@ operator signs and keeps an authenticated link to every other server, and
 circuits run over the links through two or three servers. A `yume` client
 with configured circuits builds its routes over those links. Keep the operator directory, which holds the
 signing key, off the servers, and run the commands on the operator's copies
-of the server directories:
+of the server directories. Each server first needs its own directory from
+`init`, whose certificate names the host that `cluster-add` gives it:
 
 ```bash
+yume-setup init --host north.example.net --port 443 --output "$PWD/north"
+yume-setup init --host south.example.net --port 443 --output "$PWD/south"
 yume-setup cluster-init --output "$PWD/operator"
 yume-setup cluster-add --cluster operator --server north/server \
   --name north --host north.example.net
@@ -86,7 +90,10 @@ SOCKS5 connections then leave through circuits of three servers, with that
 server as the entry. When no route of three hops can be built, the client
 refuses connections until you accept its proposal: `yume --config PATH
 --status` shows it, with what the shorter route gives up, and `yume
---config PATH --accept-route ID` accepts it. Set `circuits.min_hops` to
+--config PATH --accept-route ID` accepts it. Both commands talk to the running
+client over its control socket, which a generated kit does not configure. Set
+`control.socket` in the client's `yume.json`, or start the client with
+`--control-socket PATH` and pass the same option to both commands. Set `circuits.min_hops` to
 approve a shorter route in advance on a machine nobody watches. Deploy each server's
 `credentials/cluster/` directory (and a new member's `yumed.json`) with its
 files owned by the daemon's account and mode `0600`, restart a new member and
@@ -109,7 +116,8 @@ bootstrap `/etc/yume/yumed.json` and a hardened, disabled `yumed.service` that
 runs as the locked `yume` account. Install only the kit's `server/` contents
 under `/etc/yume`, keeping its `credentials/` and `cover-site/` layout. Private
 files must be owned by `yume` with mode `0600`, and `credentials/` should be
-mode `0700`. Then validate as the service account and start the service:
+mode `0700`. `yume-doctor` and `yume-setup` come from the `yume` package, so
+install it too. Then validate as the service account and start the service:
 
 ```bash
 runuser -u yume -- yume-doctor --config /etc/yume/yumed.json
@@ -170,8 +178,8 @@ the daemon raises its soft open-file limit to the hard one at start, keeps 512
 descriptors for itself, gives sessions at most half of the rest and the pool
 what remains. The packaged unit's `LimitNOFILE=65536` allows the full sizes,
 and a limit of 1024 leaves 256 sessions and 256 connections. One authenticated
-identity may reserve at most half of the provider's pending and active route
-limits, rounded up, across its sessions and TCP/UDP services. The reservation
+identity may hold at most half of that pool and half of its connecting slots,
+rounded up, across its sessions and TCP/UDP services. The reservation
 is released when an open fails, is canceled or its channel closes. At a
 circuit exit the counted identity is the previous hop.
 
@@ -182,8 +190,8 @@ A unit that pins the daemon with `CPUAffinity=` also sets how many loops it
 runs by default. A cluster member or a server with a packet adapter runs one
 loop. `yumed --status` shows the sessions on each loop. An idle connection holds
 no read buffer. A session streaming to a slower client can hold its
-`limits.max_queued_bytes` of outbound data, and up to twice that, at least
-8 MiB, of records it received, so plan memory for the sessions that stream at
+`limits.max_queued_bytes` of outbound data, and records it received up to the
+larger of twice that and 8 MiB, so plan memory for the sessions that stream at
 the same time, not for every session, and bound the process as below.
 
 For hard process ceilings, use systemd rather than in-process settings:
@@ -236,9 +244,10 @@ path through the tunnel. Add it to the client's `adapters`:
 
 Every connection to 127.0.0.1:2222 becomes a stream to git.example.net port
 22, which the server's `direct_tcp` destinations must permit. To keep the
-listener away from other local users, use `listen_path` with a socket path in
-a directory only this user can write, such as `$XDG_RUNTIME_DIR/yume/git.sock`,
-instead of an address and port. `yume-doctor` checks the adapter, and `yume`
+listener away from other local users, use `listen_path` with an absolute
+socket path, at most 107 bytes, in a directory only this user can write, such
+as `/run/user/1000/yume/git.sock`, instead of an address and port. The
+configuration expands no variables, so write the path out. `yume-doctor` checks the adapter, and `yume`
 reports a directory with the wrong owner or mode at startup.
 
 ## Run a module
@@ -286,12 +295,15 @@ point directly to the checked-out commit. Publication requires the matching
 `GPG_PRIVATE_KEY` secret, `GPG_PASSPHRASE` when needed, and approval of the
 [release gates](IMPLEMENTATION_STATUS.md#freeze-gates).
 
-Verify the signing key's primary fingerprint through an authenticated source
-before checking downloaded signatures:
+Import the key, confirm its primary fingerprint through an authenticated
+source, check the signature on the checksum list, and only then check the
+files against it:
 
 ```bash
+gpg --import yume-release-key.asc
+gpg --fingerprint 967278FF6FA436F504CBB0058A1588B5E2598DB1
+gpg --verify SHA256SUMS.txt.sig SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
-gpg --verify yumed-amd64-linux.sig yumed-amd64-linux
 gpg --verify release-manifest.json.sig release-manifest.json
 ```
 
@@ -323,7 +335,8 @@ Cloudflare Spectrum.
 ## Troubleshooting
 
 `--validate` checks configuration, credentials, destination policy with its
-egress lists, and module sockets without opening a network connection. `yume-doctor` also checks the cover site and TLS
+egress lists, module sockets, and that the cluster or circuits state directory
+is writable, without opening a network connection. `yume-doctor` also checks the cover site and TLS
 material. Both programs exit with `0` after a requested stop, `1` for a runtime
 failure, and `2` for a usage or configuration error.
 

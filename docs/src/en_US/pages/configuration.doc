@@ -60,7 +60,7 @@ A client names its server:
 | --- | --- | --- |
 | `host` | yes | The server's DNS name or IP literal, at most 253 bytes. TLS and admission authenticate this name |
 | `port` | yes | 1 to 65535 |
-| `connect_address` | no | An IP literal dialled instead of resolving `host`. Managed TUN default routing needs it, or a numeric `host`, to exclude the transport |
+| `connect_address` | no | An IP literal dialled instead of resolving `host`. A client with a packet adapter needs it, a numeric `host` or a SOCKS5 proxy, to keep its own connection outside the tunnel |
 | `socks5_proxy` | no | A SOCKS5 proxy to reach the server through: `address` (an IP literal), `port`, and optional `credentials`, a protected file of a username line and a password line of 1 to 255 bytes each. The proxy resolves `host` unless `connect_address` is set |
 @end
 
@@ -186,7 +186,7 @@ list may hold 16 MiB, the other files 128 MiB, and all lists together
 | --- | --- | --- |
 | `max_frame_bytes` | 1676 to 1048576 | The largest frame, at most `max_queued_bytes`. The minimum fits a rekey INIT |
 | `max_streams` | 1 to 65535 | Open streams per session |
-| `max_queued_bytes` | 65536 to 67108864 | The session's byte budget. Receive windows grow up to it, so a far path is faster with more. A session holds up to the budget of outbound data and twice the budget, at least 8 MiB, of received records |
+| `max_queued_bytes` | 65536 to 67108864 | The session's byte budget. Receive windows grow up to it, so a far path is faster with more. A session holds up to the budget of outbound data, and received records up to the larger of twice the budget and 8 MiB |
 | `max_pending_opens` | 1 to 1024 | OPENs waiting for an answer, at most `max_streams` |
 | `max_rekey_jobs` | 2 to 64 | Rekey operations in flight, two for a crossed rotation |
 | `max_control_messages` | 8 to 4096 | Connection control records, such as PONG and rekey messages, queued for sending. Credit and CLOSE records are bounded per receive window and per stream instead |
@@ -288,7 +288,8 @@ stealth-16`, or set one expert value with `--set max_epoch_bytes=2097152`.
 The latter accepts any schema-valid value of the four tuning keys. Both
 validate the entire original and resulting configuration, then atomically
 replace the file while preserving other members. Restart the client to apply
-it. The command changes the client's allowance. While connected,
+it. The command changes only the client's own limits, and a session uses the
+smaller epoch that either side allows. While connected,
 `posture.epoch_bytes` reports the negotiated epoch, and `posture.limits`
 reports the client's configured limits. See man:yume-setup(1) for file handling
 and failure behavior.

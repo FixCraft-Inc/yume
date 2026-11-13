@@ -18,6 +18,7 @@ man-manual:  YUME Manual
 **yume** **--seal-kit** *directory* **--output** *file*
 **yume** **--import-kit** *file* **--into** *directory*
 **yume** **--version**
+**yume** **--credits**
 **yume** **--completion** **bash**
 **yume** **--help**
 @end

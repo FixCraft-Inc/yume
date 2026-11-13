@@ -1,9 +1,10 @@
 <!-- Generated from docs/src/en_US/pages/quickstart.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME quick start
 
-This starts the native Linux client and daemon with schema-1 configuration,
-TLS/H2, hybrid authentication, and a local SOCKS5 listener.
-[YUME explained](EXPLAINED.md) shows how the pieces fit together.
+This builds YUME, creates a server and a client on one Linux machine, and
+connects them through a local SOCKS5 listener.
+[YUME explained](EXPLAINED.md) shows how the pieces fit together, and the
+[glossary](GLOSSARY.md) defines the terms.
 
 ## Build
 
@@ -13,7 +14,9 @@ cd yume
 ./ezbuild.sh --tests
 ```
 
-The normal build produces `build/bin/yume`, `build/bin/yumed`,
+`ezbuild.sh` first fast-forwards a checkout without local changes to its upstream branch and
+installs missing system packages with `sudo apt-get`. Pass `--no-pull` or set
+`YUME_SKIP_DEPS=1` to skip either. The normal build produces `build/bin/yume`, `build/bin/yumed`,
 `build/bin/yume-setup` and `build/bin/yume-doctor`. It prepares
 the pinned, patched OpenSSL required by the native TLS profile and uses a
 bounded build job count. It does not prepare or change the separate BaseFWX
@@ -24,8 +27,8 @@ Use an isolated build directory for a sanitizer or shared SDK build.
 
 ## Create a local kit
 
-`yume-setup` makes the kit and `yume-doctor` checks it. Both are built
-beside `yume` and make their keys with the same OpenSSL release:
+`yume-setup` makes the kit with the same OpenSSL release as `yume`, and
+`yume-doctor` checks it:
 
 ```bash
 build/bin/yume-setup init \
@@ -47,10 +50,11 @@ import it there with the code the seal prints:
 ```bash
 build/bin/yume --seal-kit yume-kit/client --output laptop.kit
 # on the other device, type the code when asked
+mkdir -p ~/.config/yume/kits
 yume --import-kit laptop.kit --into ~/.config/yume/kits/laptop
 ```
 
-The destination must be a new directory. Use the GUI-managed
+The destination must be a new directory, and its parent must exist. Use the GUI-managed
 `$XDG_CONFIG_HOME/yume/kits/<name>` location if the imported kit should appear
 in `yume-gui`.
 
@@ -107,11 +111,10 @@ build/bin/yumed --version
 ```
 
 For other hosts, provision a kit for the endpoint's DNS name and move each
-client bundle through an authenticated channel. Keep the offline CA private
-material off the server. Run doctor and `--validate` as the identity that will
-run the program. Security policy has no command-line overrides. The client's
-run settings, listed in `yume --help`, change only the address it dials and
-its SOCKS5 listener.
+client bundle through an authenticated channel. Run doctor and `--validate`
+as the identity that will run the program. Security policy has no command-line
+overrides. The client's run settings, listed in `yume --help`, change only the
+address it dials, its SOCKS5 listener and its control socket path.
 
 [The native development guide](development/ytp1/README.md) owns detailed
 credential, managed Linux TUN, packet policy, reconnect and embedding guidance.

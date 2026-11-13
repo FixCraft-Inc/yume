@@ -36,9 +36,10 @@ authorized-keys and admin-keys stores are well formed with matching
 fingerprints and no identity in both, and that a server's cover site holds
 complete pages and the assets its browser profile loads.
 
-It does not inspect file ownership, verify a cluster list's signature or
-parse egress lists, which **yumed --validate** does, and it prints no
-private material. Run it as the account that will run YUME.
+It prints no private material. It does not check file ownership, a
+cluster list's signature or egress lists. **yume** and **yumed** check those
+when they load a configuration, and their **--validate** option runs the same
+checks without starting. Run it as the account that will run YUME.
 
 ## OPTIONS
 

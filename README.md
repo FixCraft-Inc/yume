@@ -67,8 +67,7 @@ yume-setup init \
 ```
 
 The [quick start](docs/QUICKSTART.md) continues from here. The kit contains
-private keys. Move client files over a trusted channel and keep the operator
-CA key off the server.
+private keys, so move client files over a trusted channel.
 
 ## Programs
 

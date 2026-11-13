@@ -12,6 +12,12 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+A client that keeps its session up, as `yume` and an ABI endpoint with a
+device do, reports the wait before its next attempt when a dial fails before
+its start call returns, for example when the socket protector refuses. It
+used to report an attempt in progress, with no retry delay, for the whole
+wait.
+
 The threat model gains a cryptography section: the algorithms, the hard
 problems they rest on, NIST security category 5 for ML-KEM-1024 and
 ML-DSA-87, and what a recording of today's traffic exposes later. The README,

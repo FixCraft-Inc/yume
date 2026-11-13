@@ -141,8 +141,18 @@ void SessionKeeper::record_failure(const Status& failure) noexcept {
         [&](NativeClientStatus& current) { current.last_failure = failure; });
 }
 
+// Publishes Connecting before the attempt starts. A dial can fail inside
+// async_start_session, for example when the socket protector refuses, and
+// the attempt's completion then publishes Waiting before the call returns.
+// A later Connecting would hide that wait and its delay.
 void SessionKeeper::connect() noexcept {
     if (closing_ || !endpoint_) return;
+    transition([](NativeClientStatus& current) {
+        current.state = NativeClientState::Connecting;
+        current.retry_delay = std::chrono::milliseconds(0);
+    });
+    // on_status may have closed the keeper.
+    if (closing_) return;
     Status status;
     try {
         status = endpoint_->async_start_session(
@@ -162,12 +172,7 @@ void SessionKeeper::connect() noexcept {
         } catch (...) {
         }
         schedule_reconnect(&status);
-        return;
     }
-    transition([](NativeClientStatus& current) {
-        current.state = NativeClientState::Connecting;
-        current.retry_delay = std::chrono::milliseconds(0);
-    });
 }
 
 void SessionKeeper::on_session(

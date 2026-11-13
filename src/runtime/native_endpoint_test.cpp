@@ -709,6 +709,60 @@ void test_keeper_stops_on_incompatible_only_when_asked(
     }
 }
 
+// A dial can fail inside async_start_session, here because the socket
+// protector refuses, as Android's VpnService.protect may. The attempt's
+// completion then schedules the retry before the start call returns, and the
+// keeper must go on reporting that wait with its delay, not an attempt in
+// progress.
+void test_keeper_reports_inline_start_failure(
+    const std::filesystem::path& kit) {
+    Runner runner;
+    SessionKeeperOptions keeping;
+    keeping.reconnect_initial = 60s;
+    keeping.reconnect_max = 60s;
+    std::vector<NativeClientState> published;
+    keeping.on_status = [&published](const NativeClientStatus& status) {
+        published.push_back(status.state);
+    };
+    bool failed = false;
+    auto keeper =
+        std::make_shared<SessionKeeper>(runner.context, std::move(keeping),
+                                        [&failed](Status) { failed = true; });
+    unsigned refused = 0U;
+    NativeEndpointOptions options;
+    options.max_sessions = options.max_pending_starts = 1U;
+    options.connection_address = "127.0.0.1";
+    options.socket_protector = [&refused](std::uintptr_t) {
+        ++refused;
+        return Status(StatusCode::PermissionDenied);
+    };
+    options.session_ended = keeper->session_ended();
+    auto handler = std::make_shared<Handler>();
+    auto client = runner.sync([&] {
+        return take(NativeEndpoint::create(
+            runner.context, load(kit / "client/yume.json"), kit / "client",
+            bindings(handler), std::move(options)));
+    });
+    const auto status = runner.sync([&] {
+        keeper->attach(client);
+        keeper->start();
+        return keeper->status();
+    });
+    CHECK(refused == 1U && !failed);
+    CHECK(status.state == NativeClientState::Waiting);
+    CHECK(status.retry_delay == 60s);
+    CHECK(status.failed_attempts == 1U);
+    CHECK(status.last_failure.code() == StatusCode::PermissionDenied);
+    CHECK((published == std::vector{NativeClientState::Connecting,
+                                    NativeClientState::Waiting}));
+    runner.sync([&] {
+        keeper->close();
+        client->close();
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
+
 // With limits.idle_epoch_rotation, an epoch that carried records rotates at
 // its age limit without waiting for another send, on both ends, so the next
 // request after an idle moment does not wait a round trip for REKEY_ACK.
@@ -3689,6 +3743,7 @@ int main(int argc, char** argv) {
         test_session_epoch_is_the_smaller_limit(argv[1]);
         test_epoch_limits_without_overlap_are_incompatible(argv[1]);
         test_keeper_stops_on_incompatible_only_when_asked(argv[1]);
+        test_keeper_reports_inline_start_failure(argv[1]);
         test_credential_reload(argv[1]);
         test_reload_reaches_armed_starts(argv[1]);
         test_promoted_server_auth_deadline(argv[1]);

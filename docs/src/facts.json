@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "about": "Facts that several documents repeat. Each entry names the source that decides the fact and every place that states it. tests/test_doc_facts.py fails when a source no longer contains its text, or a statement is missing, and lists the places to revisit. Matching ignores line breaks and runs of spaces. docs/src/README.md, 'Repeated facts', explains when to add an entry.",
+  "facts": [
+    {
+      "id": "ytp1-suite",
+      "fact": "YTP/1 uses one fixed suite: Ed25519 and ML-DSA-87 identities, X25519 and ML-KEM-1024 key establishment, HKDF-SHA256 and AES-256-GCM. ML-KEM-1024 and ML-DSA-87 are NIST security category 5, so the post-quantum claims change with the parameter sets.",
+      "source": [
+        {"path": "src/ytp/security.hpp", "text": "\"YTP/1:TLS13:H2:ED25519+ML-DSA-87:X25519+ML-KEM-1024:\" \"HKDF-SHA256:AES-256-GCM\""}
+      ],
+      "stated": [
+        {"path": "docs/src/en_US/pages/ytp_1.doc", "text": "YTP/1:TLS13:H2:ED25519+ML-DSA-87:X25519+ML-KEM-1024:HKDF-SHA256:AES-256-GCM"},
+        {"path": "docs/src/en_US/pages/threat_model.doc", "text": "Ed25519 **and** ML-DSA-87. Both signatures must verify."},
+        {"path": "docs/src/en_US/pages/threat_model.doc", "text": "X25519 **and** ML-KEM-1024, combined with the client's 32-byte access PSK"},
+        {"path": "docs/src/en_US/pages/threat_model.doc", "text": "NIST places both in security category 5"},
+        {"path": "docs/src/en_US/pages/threat_model.doc", "text": "AES-256-GCM, with a new key and nonce for every record"},
+        {"path": "docs/src/en_US/pages/readme.doc", "text": "composite Ed25519 and ML-DSA-87 identities"},
+        {"path": "docs/src/en_US/pages/readme.doc", "text": "Session keys combine ML-KEM-1024, X25519, a pre-shared key and the TLS exporter"},
+        {"path": "docs/src/en_US/pages/readme.doc", "text": "ML-KEM-1024 and ML-DSA-87 are in NIST's highest security category"},
+        {"path": "docs/src/en_US/pages/why_yume.doc", "text": "both Ed25519 and ML-DSA-87 signatures"},
+        {"path": "docs/src/en_US/pages/why_yume.doc", "text": "keys combine X25519, ML-KEM-1024, a per-client pre-shared key and the TLS 1.3 exporter"},
+        {"path": "docs/src/en_US/pages/why_yume.doc", "text": "ML-KEM-1024 and ML-DSA-87 are in NIST's highest security category"},
+        {"path": "docs/src/en_US/pages/explained.doc", "text": "an Ed25519 key paired with an ML-DSA-87 key"},
+        {"path": "docs/src/en_US/pages/explained.doc", "text": "Key establishment combines X25519, ML-KEM-1024"},
+        {"path": "docs/src/en_US/pages/glossary.doc", "text": "YUME uses ML-KEM-1024 and ML-DSA-87, both in security category 5"},
+        {"path": "docs/src/en_US/pages/architecture.doc", "text": "| authentication | Ed25519 **and** ML-DSA-87 |"},
+        {"path": "docs/src/en_US/pages/architecture.doc", "text": "| establishment | X25519, ML-KEM-1024, per-identity access PSK, TLS exporter |"},
+        {"path": "docs/src/en_US/pages/gui.doc", "text": "X25519 with ML-KEM-1024, Ed25519 with ML-DSA-87 identities, AES-256-GCM"},
+        {"path": "website/index.html", "text": "<code>ED25519+ML-DSA-87</code>"},
+        {"path": "website/index.html", "text": "<code>X25519+ML-KEM-1024</code>"},
+        {"path": "website/index.html", "text": "<code>AES-256-GCM</code>"},
+        {"path": "website/index.html", "text": "ML-KEM-1024 and ML-DSA-87 are in NIST's highest security category"}
+      ]
+    },
+    {
+      "id": "key-epoch-limits",
+      "fact": "A directional key epoch carries at most its epoch size of payload (1 MiB by default, a power of two up to 64 MiB), one record per 2 KiB of it (512 records at 1 MiB), and at most 500 ms of sending.",
+      "source": [
+        {"path": "src/ytp/protocol.hpp", "text": "kMinEpochPayloadBytes = 1U << 20;"},
+        {"path": "src/ytp/protocol.hpp", "text": "kMaxEpochPayloadBytes = 1U << 26;"},
+        {"path": "src/ytp/security.hpp", "text": "kEpochPayloadBytesPerRecord = 2048U;"},
+        {"path": "src/ytp/security.hpp", "text": "kEpochSendLifetime = std::chrono::milliseconds(500);"},
+        {"path": "src/engine/session_engine.hpp", "text": "std::uint32_t max_epoch_bytes{1U << 20};"}
+      ],
+      "stated": [
+        {"path": "docs/src/en_US/pages/ytp_1.doc", "text": "at most one record per 2 KiB of it, 512 records for 1 MiB"},
+        {"path": "docs/src/en_US/pages/ytp_1.doc", "text": "half its fixed 500 ms send lifetime"},
+        {"path": "docs/src/en_US/pages/explained.doc", "text": "it rotates after one MiB of data, 512 records or 500 ms"},
+        {"path": "docs/src/en_US/pages/explained.doc", "text": "up to 64 MiB"},
+        {"path": "docs/src/en_US/pages/explained.doc", "text": "still with one record per 2 KiB"},
+        {"path": "docs/src/en_US/pages/threat_model.doc", "text": "at least every 1 MiB, 512 records or 500 ms of sending by default"},
+        {"path": "docs/src/en_US/pages/configuration.doc", "text": "1 MiB to 64 MiB, a power of two, 1 MiB when absent"},
+        {"path": "docs/src/en_US/pages/configuration.doc", "text": "never more than 500 ms of sending"},
+        {"path": "docs/src/en_US/man/yume_1.doc", "text": "byte, record or 500 ms lifetime limit"},
+        {"path": "website/index.html", "text": "at least every 1 MiB, 512 records or 500 ms of sending"}
+      ]
+    },
+    {
+      "id": "preset-speed-measurements",
+      "fact": "On emulated 40 to 200 ms paths at default host TCP ceilings, one download through the balanced preset kept about 95 % of the untunnelled rate and the default stealth preset about 41 %. The configuration reference owns the measurement.",
+      "source": [
+        {"path": "docs/src/en_US/pages/configuration.doc", "text": "measured stealth at 41.4, 41.8 and 41.9 percent of the direct path at 40, 100 and 200 ms RTT"},
+        {"path": "docs/src/en_US/pages/configuration.doc", "text": "balanced reached 99.1, 97.0 and 95.6 percent"}
+      ],
+      "stated": [
+        {"path": "website/index.html", "text": "one download through <code>balanced</code> kept about 95&nbsp;% of the untunnelled rate, and the default <code>stealth</code> about 41&nbsp;%"}
+      ]
+    },
+    {
+      "id": "release-signing-key",
+      "fact": "Release tags and files are signed by the key with primary fingerprint 967278FF6FA436F504CBB0058A1588B5E2598DB1, published as third_party/prebuilt/yume-release-key.asc.",
+      "source": [
+        {"path": "scripts/release_integrity.py", "text": "TRUSTED_FINGERPRINT = \"967278FF6FA436F504CBB0058A1588B5E2598DB1\""}
+      ],
+      "stated": [
+        {"path": "docs/src/en_US/pages/operations.doc", "text": "pinned to primary fingerprint `967278FF6FA436F504CBB0058A1588B5E2598DB1`"},
+        {"path": "website/hashes/index.html", "text": "confirm its primary fingerprint is <code>967278FF6FA436F504CBB0058A1588B5E2598DB1</code>"},
+        {"path": "website/hashes/index.html", "text": "gpg --fingerprint 967278FF6FA436F504CBB0058A1588B5E2598DB1"}
+      ]
+    },
+    {
+      "id": "udp-queue-budget",
+      "fact": "Every UDP backlog that waits for a stream holds at most 64 datagrams and 1 MiB, and drops the newest datagram when full.",
+      "source": [
+        {"path": "src/common/udp_queue_budget.hpp", "text": "kMaxUdpQueuedDatagrams = 64U;"},
+        {"path": "src/common/udp_queue_budget.hpp", "text": "kMaxUdpQueuedBytes = 1U * 1024U * 1024U;"}
+      ],
+      "stated": [
+        {"path": "docs/src/en_US/pages/ytp1_readme.doc", "text": "a budget of 64 datagrams and 1 MiB per association"},
+        {"path": "docs/src/en_US/pages/implementation_status.doc", "text": "shared UDP policy of 64 datagrams and 1 MiB per budget"},
+        {"path": "docs/src/en_US/pages/abi.doc", "text": "hold at most 64 datagrams and 1 MiB"}
+      ]
+    }
+  ]
+}

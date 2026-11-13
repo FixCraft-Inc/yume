@@ -291,7 +291,9 @@ Update comments and operator-facing docs in the same patch as behavior. Put
 normative wire requirements under `docs/protocol/`; current support boundaries
 in `docs/IMPLEMENTATION_STATUS.md`; and release notes under `docs/release/`.
 Search CLI help, man pages, release material, and manually maintained website
-pages for duplicate claims.
+pages for duplicate claims. `docs/src/facts.json` lists the facts that several
+documents repeat, and `tests/test_doc_facts.py` names every statement to
+update when one changes.
 
 Documentation, manuals, the changelog, CLI help and figures are generated
 from `docs/src/en_US/` and `docs/diagrams/`. Edit the source a generated

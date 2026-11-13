@@ -35,15 +35,15 @@ per-client limits as described in [operations](OPERATIONS.md#client-identities-a
 
 ## Security contract
 
-YTP/1 has one fixed cryptographic composition. Each peer authenticates its
-composite identity with Ed25519 and ML-DSA-87 signatures. Session keys combine
-X25519, ML-KEM-1024, a per-identity pre-shared key and the TLS 1.3 exporter.
-The handshake transcript binds the suite, roles, identities, capabilities and
-security parameters.
-Records use one-use AES-256-GCM keys from directional ratchets. A missing
-component or provider mismatch fails the connection. There is no fallback
-suite and no weaker mode. The [threat model](THREAT_MODEL.md) states the
-assumptions behind it.
+YTP/1 has one fixed cryptographic composition and no weaker mode. Each peer
+proves its identity with both Ed25519 and ML-DSA-87 signatures, and session
+keys combine X25519, ML-KEM-1024, a per-client pre-shared key and the TLS 1.3
+exporter. Records use one-use AES-256-GCM keys, and each direction replaces its
+keys through fresh X25519 and ML-KEM-1024 exchanges. ML-KEM-1024 and ML-DSA-87
+are in NIST's highest security category, so traffic recorded today stays
+protected if a quantum computer later breaks X25519. The
+[threat model](THREAT_MODEL.md#cryptography) states what an attacker has to
+break and the assumptions behind it.
 
 ## Cover website
 

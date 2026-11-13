@@ -25,12 +25,15 @@ together.
 | Exporter | A value both ends derive from one TLS connection, used to bind YUME's keys to that connection. |
 | Extended CONNECT | The HTTP/2 way to open a WebSocket, defined in RFC 8441. |
 | GREASE | Reserved TLS values that clients include so servers keep tolerating unknown extensions. Matching them is part of looking like the captured browser. |
+| Harvest now, decrypt later | Recording encrypted traffic today to decrypt it once a quantum computer can break its key exchange. ML-KEM-1024 protects YUME's recorded sessions against that. |
 | HKDF | A key-derivation function that turns shared secrets into keys. YUME uses HKDF-SHA256. |
 | HMAC | A keyed checksum. The admission token is one. |
-| ML-KEM, ML-DSA | NIST's post-quantum key encapsulation and signature schemes. YUME uses ML-KEM-1024 and ML-DSA-87. |
+| Hybrid | Using a classical and a post-quantum algorithm together, so an attacker has to break both. YUME pairs X25519 with ML-KEM-1024 and Ed25519 with ML-DSA-87. |
+| ML-KEM, ML-DSA | NIST's post-quantum key encapsulation and signature standards, FIPS 203 and FIPS 204. YUME uses ML-KEM-1024 and ML-DSA-87, both in security category 5. |
 | Nonce | A number used once. The admission token and every sealed message use one. |
 | PSK | Pre-shared key: a secret both sides hold before they connect. |
 | Ratchet | Keys that only move forward. Each one is derived, used, and erased. |
+| Security category | NIST's scale from 1 to 5 for post-quantum algorithms. Breaking a category 5 algorithm costs at least as much as finding an AES-256 key. |
 | SNI | The site name a client sends at the start of TLS. Observers can read it. |
 | Transport v2 | The protocol before YTP/1. It has been removed, and commit `9070b0a` is the last that contains it. |
 | YTP/1 | YUME Transport Protocol 1, which `yume` and `yumed` speak. |

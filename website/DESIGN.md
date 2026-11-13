@@ -79,6 +79,10 @@ working, rose after a failure. Only the protected hop keeps the plum accent on
 its line. Ordinary hops are quiet neutrals, and a branch takes the role of the
 node it turns towards. A role is never used as a site accent.
 
+The homepage's suite figure is a figure too. It shows the YTP/1 suite constant
+one part per column, and each part takes the role of what it does: `disguise`
+for the outer TLS and HTTP/2 shape, `keys` for the cryptography.
+
 ## Typography
 
 - Display: Quicksand, weight 600 or 700, normal style
@@ -86,6 +90,10 @@ node it turns towards. A role is never used as a site accent.
 - Mono: IBM Plex Mono, weight 400 or 500
 - Display tracking: `-0.025em`
 - Display size: `clamp(3.25rem, 7vw, 5.25rem)`
+
+Labels, table headers and small headings use sentence case in the body face.
+Do not set tracked uppercase or monospace labels above content. Monospace is
+for code, commands, paths and protocol constants.
 
 The faces are served from `assets/fonts/` with their license texts, so a page
 view requests nothing from another host.

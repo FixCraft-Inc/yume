@@ -51,6 +51,13 @@ with `web: yes`. Put its title, summary and optional catalog placement in that
 header and run the unified sync. Existing output paths and explicit
 `web-path` values preserve incoming links.
 
+**Change a claim on the landing or checksums page.** These pages are written
+by hand and summarize the documentation. Change the owning `.doc` page in the
+same change. `docs/src/facts.json` lists the claims that
+`tests/test_doc_facts.py` checks against their source, such as the suite, the
+key rotation limits and the signing key fingerprint. Update a listed
+statement there when you reword it.
+
 **Change a colour.** Edit `config/palette.json` at the repository root.
 Generate the shared palette and sync diagrams as the root
 [agent guide](../AGENTS.md#repository-and-dependency-boundaries) describes.

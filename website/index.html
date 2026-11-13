@@ -6,28 +6,27 @@ body_class: home-page
 section_nav:
   - label: How it works
     url: "#how"
-  - label: Install
-    url: "#install"
-  - label: Security
-    url: "#security"
-  - label: Run
+  - label: Protection
+    url: "#protection"
+  - label: Run a tunnel
     url: "#run"
-  - label: Verify
-    url: "#verify"
   - label: Docs
     url: "#docs"
-  - label: Support
+  - label: Help
     url: "#support"
 ---
+<!-- This page is written by hand. Its claims summarize the documentation, and
+     docs/src/facts.json lists the ones tests/test_doc_facts.py checks against
+     the source. Change a claim here together with its owning .doc page. -->
 <section class="hero" id="top">
   <div class="hero-copy">
-    <div class="hero-status"><span aria-hidden="true"></span>Open source under AGPL-3.0</div>
     <h1>YUME <small>For internet freedom.</small></h1>
     <p>
       Reach the internet through a server you control. YUME carries TCP, UDP
-      and IP packets inside an encrypted connection shaped like Chrome
-      visiting a website. Run the <code>yume</code> client and
-      <code>yumed</code> server, or embed the same engine through its C library.
+      and IP packets inside one encrypted connection that looks like Chrome
+      visiting a website, with post-quantum keys. Run the <code>yume</code>
+      client and <code>yumed</code> server, or embed the same engine through
+      its C library.
     </p>
     <p>
       Yume (夢) means dream in Japanese. The dream behind it is internet
@@ -35,13 +34,12 @@ section_nav:
       speed.
     </p>
     <div class="cta-row">
-      <a class="btn" href="{{ '/docs/QUICKSTART/' | relative_url }}">Run a tunnel</a>
-      <a class="btn secondary" href="{{ '/docs/EXPLAINED/' | relative_url }}">How it works</a>
-      <a class="btn secondary" href="{{ '/docs/STEALTH/' | relative_url }}">Stealth model</a>
+      <a class="btn" href="#run">Run a tunnel</a>
+      <a class="btn secondary" href="{{ '/docs/EXPLAINED/' | relative_url }}">Read how it works</a>
       <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume" target="_blank" rel="noopener">View source</a>
     </div>
   </div>
-  <aside class="hero-panel" id="release-card" aria-label="Current version">
+  <aside class="hero-panel" aria-label="Current version">
     <div class="yume-visual" aria-hidden="true">
       <span class="cloud-shape"></span>
       <svg class="yume-logo" viewBox="0 0 256 256" aria-hidden="true" focusable="false">
@@ -54,53 +52,21 @@ section_nav:
         <path fill="url(#hero-mark)" d="m159.71 18.599c-39.025 1.0755-104.53 11.891-114.63 21.51-13.466 12.826-33.846 123.94-25.81 140.71 8.0364 16.768 107.41 70.488 125.84 68.027 18.433-2.4614 100.23-80.372 103.59-98.668 3.3553-18.292-45.465-120.16-61.825-129.01-4.09-2.2109-14.155-2.9346-27.164-2.5761zm-14.145 50.503c7.0154-0.19335 12.444 0.1967 14.65 1.3891 8.8227 4.7694 35.153 59.709 33.343 69.574-1.8095 9.8652-45.924 51.883-55.865 53.211-9.9413 1.3275-63.534-27.644-67.869-36.688-4.3346-9.0449 6.6565-68.968 13.919-75.885 5.4469-5.188 40.776-11.021 61.822-11.6z"/>
       </svg>
     </div>
-    <div class="release-copy">
-      <div class="meta">Development line</div>
-      <div class="panel-title" id="release-version">{{ site.product_version }}</div>
-      <div class="meta-row">
-        <span id="release-date">Build from source</span>
-        <span id="release-assets"></span>
-      </div>
-      <ul class="card-list card-list-spaced">
-        <li>Native <code>yume</code> client and <code>yumed</code> server for Linux x86-64</li>
-        <li>SOCKS5, local forwards and a managed TUN device</li>
-        <li>Desktop GUI, and an Android client on the C library</li>
-      </ul>
-    </div>
-    <div class="panel-foot">
-      <a class="btn secondary" id="release-link" href="https://github.com/FixCraft-Inc/yume/releases" target="_blank" rel="noopener">Releases on GitHub</a>
+    <div class="release-line">
+      <p class="release-version" id="release-version">{{ site.product_version }}</p>
+      <p><span id="release-date">Builds from source on Linux x86-64</span> <span id="release-assets"></span></p>
+      <a class="link-quiet" id="release-link" href="https://github.com/FixCraft-Inc/yume/releases" target="_blank" rel="noopener">Releases on GitHub</a>
     </div>
   </aside>
-  <noscript>
-    <div class="notice">Release links load from GitHub with JavaScript. Without it, build from source or open GitHub Releases directly.</div>
-  </noscript>
-
-  <div class="release-strip" aria-label="Transport at a glance">
-    <div class="release-stat">
-      <strong>Browser masquerade</strong>
-      <span>Chrome's TLS hello, HTTP/2 and WebSocket, with a static cover site on the same listener</span>
-    </div>
-    <div class="release-stat">
-      <strong>Post-quantum security</strong>
-      <span>ML-KEM-1024 with X25519, Ed25519 with ML-DSA-87, and a fresh AES-256-GCM key for every data record</span>
-    </div>
-    <div class="release-stat">
-      <strong>Fast</strong>
-      <span>Epoch rotation starts before the current epoch fills. The <code>balanced</code> preset kept about 95 % of plain TCP speed in emulator runs.</span>
-    </div>
-    <div class="release-stat">
-      <strong>Built to embed</strong>
-      <span>One engine for the client, the server and the C library that apps and Android use</span>
-    </div>
-  </div>
 </section>
 
 <section id="how" data-reveal="drift">
   <h2 class="section-title">How it works</h2>
   <p class="section-lead">
-    Application data is sealed by YTP/1, then wrapped in WebSocket, HTTP/2
-    and TLS. The opening follows a captured Chrome visit. Admission,
-    authentication and service policy determine which traffic can pass.
+    Your application's data is sealed by YTP/1, YUME's own protocol, then
+    wrapped in WebSocket, HTTP/2 and TLS. The connection opens the way a
+    captured Chrome visit does. Admission, authentication and the server's
+    policy decide which traffic can pass.
   </p>
   <!-- Both figures are generated from docs/diagrams/*.json. Edit the JSON,
        never the included SVG or key, then run the sync in docs/src/README.md. -->
@@ -129,258 +95,134 @@ section_nav:
       </details>
     </figure>
   </div>
-  <div class="grid grid-spaced">
+  <div class="grid grid-thirds">
     <div class="card">
       <h3>Client and server</h3>
       <p><code>yume</code> takes traffic from SOCKS5 (TCP and UDP), local forwards or a managed Linux TUN device. <code>yumed</code> serves the cover site and the tunnel on one port, and opens only the destinations its policy allows.</p>
     </div>
     <div class="card">
-      <h3>C library</h3>
-      <p>The opt-in <code>libyume</code> runs the same endpoint inside another program: authenticated named streams, packet channels, and routed TCP and UDP.</p>
+      <h3>Circuits</h3>
+      <p>TCP connections can leave through two or three servers in one operator's cluster, with separate keys on every hop. The client takes a shorter route only with the user's approval.</p>
     </div>
     <div class="card">
-      <h3>Circuits</h3>
-      <p>TCP connections can leave through two or three servers in one operator's cluster, with separate protection on every hop.</p>
+      <h3>Speed</h3>
+      <p>Tuning presets trade traffic shape for speed. On emulated 40 to 200 ms paths, one download through <code>balanced</code> kept about 95&nbsp;% of the untunnelled rate, and the default <code>stealth</code> about 41&nbsp;%. See the <a href="{{ '/docs/CONFIGURATION/#tuning-presets' | relative_url }}">presets</a>.</p>
+    </div>
+    <div class="card">
+      <h3>C library</h3>
+      <p><code>libyume</code> runs the same endpoint inside another program: authenticated named streams, packet channels, and routed TCP and UDP. Its interface can still change between development versions.</p>
+    </div>
+    <div class="card">
+      <h3>Desktop and Android</h3>
+      <p><code>yume-gui</code> imports kits and starts, stops and watches clients on Linux. The Android app runs native YTP/1 through the C library.</p>
     </div>
     <div class="card">
       <h3>Modules</h3>
-      <p><code>yumed</code> hands a service's streams to a module program over a private UNIX socket. Chat, file and codec modules are planned on libraries that already exist.</p>
+      <p><code>yumed</code> hands a service's streams to a separate program over a private UNIX socket. The Debian package runs each module as its own user, without network access.</p>
+    </div>
+  </div>
+</section>
+
+<section id="protection" data-reveal="drift">
+  <h2 class="section-title">What protects a session</h2>
+  <p class="section-lead">
+    YTP/1 accepts one set of algorithms and nothing else, so an attacker on
+    the path cannot push a session to a weaker or classical-only mode. This is
+    the suite as the protocol spells it.
+  </p>
+  <figure class="suite">
+    <ol class="suite-parts">
+      <li class="suite-part" data-role="disguise"><code>TLS13</code><span>The outer connection, opened the way Chrome opens it</span></li>
+      <li class="suite-part" data-role="disguise"><code>H2</code><span>HTTP/2, with the tunnel in a WebSocket stream</span></li>
+      <li class="suite-part" data-role="keys"><code>ED25519+ML-DSA-87</code><span>Each side proves its identity with both signatures</span></li>
+      <li class="suite-part" data-role="keys"><code>X25519+ML-KEM-1024</code><span>Session keys need both key exchanges</span></li>
+      <li class="suite-part" data-role="keys"><code>HKDF-SHA256</code><span>Derives every key from those secrets</span></li>
+      <li class="suite-part" data-role="keys"><code>AES-256-GCM</code><span>Seals each record under a key used once</span></li>
+    </ol>
+    <figcaption>The suite constant in <a href="{{ '/docs/protocol/YTP_1/#fixed-security-composition' | relative_url }}">YTP/1</a>. A session missing any part fails.</figcaption>
+  </figure>
+  <div class="grid">
+    <div class="card">
+      <h3>Classical and post-quantum together</h3>
+      <p>Session keys combine X25519, ML-KEM-1024, a 32-byte key unique to each client and a secret from the TLS connection. Reading a session means breaking both key exchanges and stealing that client's key.</p>
+    </div>
+    <div class="card">
+      <h3>Recorded traffic stays sealed</h3>
+      <p>ML-KEM-1024 and ML-DSA-87 are in NIST's highest security category, as hard to break as an AES-256 key. By default each direction replaces its keys at least every 1 MiB, 512 records or 500 ms of sending, each time through a fresh ML-KEM-1024 exchange, so traffic recorded today stays protected if a quantum computer later breaks X25519.</p>
+    </div>
+    <div class="card">
+      <h3>An ordinary website to everyone else</h3>
+      <p>Without a valid admission proof, <code>yumed</code> is a static HTTPS site: GET and HEAD serve its pages, and other methods get 405. The proof is bound to the TLS connection and refused if replayed.</p>
+    </div>
+    <div class="card">
+      <h3>What the server still sees</h3>
+      <p><code>yumed</code> ends the tunnel, so it knows which client connected and where its traffic goes. HTTPS inside the tunnel keeps page content private from it, as on any network.</p>
     </div>
   </div>
   <p class="section-lead">
-    The <a href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}">implementation status</a>
-    lists what each part is tested with.
+    The <a href="{{ '/docs/THREAT_MODEL/#cryptography' | relative_url }}">threat model</a>
+    says what an attacker has to break and what each party can see. The
+    <a href="{{ '/docs/STEALTH/' | relative_url }}">stealth reference</a> covers
+    the browser profile and the captures behind it.
   </p>
 </section>
 
-<section id="install">
-  <h2 class="section-title">Install</h2>
+<section id="run">
+  <h2 class="section-title">Run a tunnel</h2>
   <p class="section-lead">
-    YUME builds from source on Linux x86-64. Add <code>--tests</code> to build
-    the test executables.
+    These steps from the <a href="{{ '/docs/QUICKSTART/' | relative_url }}">quick start</a>
+    run a server and a client on Linux x86-64. A public server needs a DNS
+    name, a trusted certificate and its own cover site, as the
+    <a href="{{ '/docs/OPERATIONS/' | relative_url }}">operations guide</a> describes.
   </p>
-  <div class="download-grid">
-    <article class="download-card download-card-wide">
-      <span class="chip">Recommended</span>
-      <h3>Build from source</h3>
-      <p class="section-lead">
-        <code>ezbuild.sh</code> prepares the checksum-pinned patched OpenSSL and
-        nghttp2 and builds Release binaries into <code>build/bin</code>. It
-        leaves the separate BaseFWX checkout alone.
-      </p>
-      <div class="link-row">
-        <a class="btn" href="{{ '/docs/QUICKSTART/' | relative_url }}">Quick start</a>
-        <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume/blob/main/docs/development/ytp1/README.md" target="_blank" rel="noopener">YTP/1 development guide</a>
-        <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume/blob/main/ezbuild.sh" target="_blank" rel="noopener">ezbuild.sh</a>
-      </div>
-      <div class="card-meta">Produces <code>build/bin/yume</code> and <code>build/bin/yumed</code>.</div>
-    </article>
-
-    <article class="download-card">
-      <span class="chip">Linux amd64</span>
-      <h3>Release artifacts</h3>
-      <p class="section-lead">
-        Binary releases are published on GitHub with checksums and a
-        manifest. Until the first one, build from source.
-      </p>
-      <ul class="card-list">
-        <li><code>yume-amd64-linux.tar.xz</code>: client bundle with <code>yume</code>, <code>yume-setup</code>, <code>yume-doctor</code>, licensing documents, the quick start, and <code>manifest.json</code></li>
-        <li><code>yumed-amd64-linux</code>: daemon executable</li>
-      </ul>
-      <div class="link-row">
-        <a class="btn secondary disabled" data-download="yume-linux-amd64" aria-disabled="true" tabindex="-1">client bundle</a>
-        <a class="btn secondary disabled" data-download="yumed-linux-amd64" aria-disabled="true" tabindex="-1">daemon</a>
-        <a class="link-tertiary" href="{{ '/hashes/' | relative_url }}">checksums</a>
-      </div>
-    </article>
-
-    <article class="download-card">
-      <span class="chip">Debian</span>
-      <h3>Packages</h3>
-      <p class="section-lead">
-        Debian metadata builds the native client and daemon packages. The
-        service stays disabled until an operator installs and validates a kit.
-      </p>
-      <ul class="card-list">
-        <li><code>yume</code>: client, setup and doctor tools, manuals, and examples</li>
-        <li><code>yume-daemon</code>: server, bootstrap configuration, locked service account, and hardened systemd unit</li>
-      </ul>
-      <div class="link-row">
-        <a class="btn secondary" href="{{ '/docs/PACKAGING/' | relative_url }}">Packaging guide</a>
-      </div>
-    </article>
-
-    <article class="download-card download-card-wide">
-      <span class="chip">Other surfaces</span>
-      <h3>GUI, Android, and embedding</h3>
-      <p class="section-lead">
-        The Linux desktop GUI imports kits and starts, stops and watches
-        clients through their control sockets. Build it with
-        <code>-DYUME_BUILD_GUI=ON</code>. The Android client lives in its own
-        repository and runs native YTP/1 through the C library's device bridge.
-        Programs that embed the C library build against the same source tree,
-        and its interface can still change between development versions.
-      </p>
-      <div class="link-row">
-        <a class="btn secondary" href="{{ '/docs/ABI/' | relative_url }}">C ABI</a>
-        <a class="btn secondary" href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}">Implementation status</a>
-      </div>
-    </article>
-  </div>
-</section>
-
-<section id="security" data-reveal="drift">
-  <h2 class="section-title">Tunnel protection</h2>
-  <p class="section-lead">
-    Authentication, admission, and authorization are separate checks, and each
-    one fails closed.
-  </p>
-  <div class="table-scroll">
-    <table class="compare-table">
-      <thead>
-        <tr>
-          <th>Layer</th>
-          <th>YTP/1</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>Client identity</td>
-          <td>A composite Ed25519 + ML-DSA-87 identity per client, and explicit trust in the server's composite identity. Both signatures must verify.</td>
-        </tr>
-        <tr>
-          <td>Key establishment</td>
-          <td>ML-KEM-1024 + X25519 + a distinct 32-byte access PSK per client identity, with roles, identities, transcript, capabilities, parameters, and the TLS exporter bound into the key schedule.</td>
-        </tr>
-        <tr>
-          <td>Record layer</td>
-          <td>One-use directional AES-256-GCM keys. The default epoch allows 1 MiB or 512 records, with a 500 ms send lifetime. Peers can agree on a larger epoch. Rotation starts halfway to a limit. Data waits if that limit is reached before confirmation. Streams and the connection have credit and bounded allocations.</td>
-        </tr>
-        <tr>
-          <td>Policy surface</td>
-          <td>No security modes and no suite negotiation. Named service capabilities are authenticated, and every OPEN is authorized and bounded on its own.</td>
-        </tr>
-        <tr>
-          <td>Carrier</td>
-          <td>Persistent TLS 1.3 + HTTP/2 + WebSocket on one connection, shaped by one immutable captured browser profile. A default-off capability in the pinned OpenSSL reproduces the profile's ClientHello structure.</td>
-        </tr>
-        <tr>
-          <td>Admission and cover</td>
-          <td>An exporter-bound, replay-protected HMAC proof promotes one HTTP/2 stream to a carrier. Requests that fail admission stay in cover handling: GET and HEAD serve static routes, other methods get a fixed 405. TLS and resource refusals are described in the <a href="{{ '/docs/STEALTH/#admission-and-failure-behavior' | relative_url }}">stealth reference</a>.</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-  <div class="notice">
-    <p>
-      <code>yumed</code> ends the tunnel, so it knows which client connected
-      and where its traffic goes. HTTPS inside the tunnel keeps page content
-      between the app and the site, as it does on any network. The
-      <a href="{{ '/docs/THREAT_MODEL/' | relative_url }}">threat model</a>
-      shows what each party can see, and the
-      <a href="{{ '/docs/STEALTH/' | relative_url }}">stealth model</a> covers
-      the browser profile and the captures behind it.
-    </p>
-  </div>
-</section>
-
-<section id="run" data-reveal="drift">
-  <h2 class="section-title">Build, provision, connect</h2>
-  <p class="section-lead">
-    The <a href="{{ '/docs/QUICKSTART/' | relative_url }}">quick start</a>
-    walks through these steps. Credentials are owner-only files, and a client
-    bundle must move to its machine through a trusted channel.
-  </p>
-  <div class="workflow-grid">
-    <div class="workflow-step">
-      <div class="meta">01</div>
+  <ol class="steps">
+    <li class="step">
       <h3>Build</h3>
-      <p class="section-lead">Clone the tree and run <code>ezbuild.sh</code>.</p>
-    </div>
-    <div class="workflow-step">
-      <div class="meta">02</div>
-      <h3>Provision</h3>
-      <p class="section-lead"><code>yume-setup</code> writes a server and client kit: identities, access PSK, admission key, TLS material, configuration, and a cover site.</p>
-    </div>
-    <div class="workflow-step">
-      <div class="meta">03</div>
-      <h3>Serve</h3>
-      <p class="section-lead"><code>yumed</code> serves the cover site and the authenticated tunnel on one listener.</p>
-    </div>
-    <div class="workflow-step">
-      <div class="meta">04</div>
-      <h3>Connect</h3>
-      <p class="section-lead">The client offers SOCKS5, local forwards, or a managed Linux TUN.</p>
-    </div>
-  </div>
-  <div class="command-stack command-stack-spaced">
-    <div class="command-block">
-      <h3>Build</h3>
+      <p><code>ezbuild.sh</code> prepares the pinned, patched OpenSSL and builds into <code>build/bin</code>. The <a href="{{ '/docs/CONTRIBUTING/#build' | relative_url }}">contributor guide</a> lists what the build needs.</p>
       <pre><code>git clone https://github.com/FixCraft-Inc/yume.git
 cd yume
 ./ezbuild.sh</code></pre>
-    </div>
-    <div class="command-block">
-      <h3>Provision</h3>
-      <pre><code>./build/bin/yume-setup init \
-    --host yume.example.com --port 8443 \
-    --output ~/yume-kit --client-name laptop</code></pre>
-    </div>
-    <div class="command-block">
-      <h3>Server</h3>
-      <pre><code>./build/bin/yumed --config ~/yume-kit/server/yumed.json --validate
-./build/bin/yumed --config ~/yume-kit/server/yumed.json</code></pre>
-    </div>
-    <div class="command-block">
-      <h3>Client</h3>
-      <pre><code>./build/bin/yume --config ~/yume-kit/client/yume.json
+    </li>
+    <li class="step">
+      <h3>Create a kit</h3>
+      <p><code>yume-setup</code> writes a server folder and a client folder: identities, keys, TLS material, configuration and a cover site. The client folder holds private keys, so move it over a trusted channel or seal it into one file with <code>yume --seal-kit</code>.</p>
+      <pre><code>build/bin/yume-setup init \
+  --host yume.example.com --port 8443 \
+  --output "$PWD/yume-kit" --client-name laptop</code></pre>
+    </li>
+    <li class="step">
+      <h3>Start the server</h3>
+      <p>Check the configuration, then serve the cover site and the tunnel on one port.</p>
+      <pre><code>build/bin/yumed --config yume-kit/server/yumed.json --validate
+build/bin/yumed --config yume-kit/server/yumed.json</code></pre>
+    </li>
+    <li class="step">
+      <h3>Connect</h3>
+      <p>The client listens for SOCKS5 on <code>127.0.0.1:1080</code> and reconnects by itself if the session drops.</p>
+      <pre><code>build/bin/yume --config yume-kit/client/yume.json
 curl --socks5-hostname 127.0.0.1:1080 https://example.com/</code></pre>
-    </div>
-  </div>
-  <div class="notice">
-    <p>
-      Before you open a server to the public, give it your own cover site and a
-      certificate for its domain. The
-      <a href="{{ '/docs/OPERATIONS/' | relative_url }}">operations guide</a>
-      lists what to publish to its users.
-    </p>
-    <p>
-      Port 443 needs <code>CAP_NET_BIND_SERVICE</code>, which the packaged
-      service grants and nothing more. Cloudflare in HTTP mode terminates TLS
-      and breaks YUME. Use Spectrum or another TCP passthrough if you front the
-      daemon with it.
-    </p>
-  </div>
-</section>
-
-<section id="verify">
-  <h2 class="section-title">Verify release files</h2>
-  <p class="section-lead">
-    The release workflow requires SHA-256 checksums and detached GPG signatures.
-    It verifies both artifacts, the aggregate checksum list and the final
-    manifest before uploading them.
-  </p>
-  <div class="grid">
+    </li>
+  </ol>
+  <h3 class="subsection-title">Other ways to install</h3>
+  <div class="grid grid-thirds">
     <div class="card">
-      <h3>Checksums</h3>
-      <p>Verify with the per-artifact <code>.sha256</code> file or the aggregate list.</p>
-      <div class="hash-block hash-block-spaced">
-        <div class="hash-title">Aggregate</div>
-        <div class="hash-value">sha256sum -c SHA256SUMS.txt</div>
+      <h3>Debian packages</h3>
+      <p><code>yume</code> carries the client, setup and doctor tools. <code>yume-daemon</code> carries the server and a hardened systemd unit that stays disabled until you install a kit.</p>
+      <div class="link-row"><a class="btn secondary" href="{{ '/docs/PACKAGING/' | relative_url }}">Packaging guide</a></div>
+    </div>
+    <div class="card">
+      <h3>Release builds</h3>
+      <p>Linux builds will appear on GitHub with checksums and a signed manifest. There is no release yet, so build from source.</p>
+      <div class="link-row">
+        <a class="btn secondary disabled" data-download="yume-linux-amd64" aria-disabled="true" tabindex="-1">Client bundle</a>
+        <a class="btn secondary disabled" data-download="yumed-linux-amd64" aria-disabled="true" tabindex="-1">Daemon</a>
+        <a class="link-quiet" href="{{ '/hashes/' | relative_url }}">Checksums</a>
       </div>
     </div>
     <div class="card">
-      <h3>Signatures</h3>
-      <p>The <code>.sig</code> sidecars cover both artifacts, the checksum list and the manifest.</p>
-      <div class="hash-block hash-block-spaced">
-        <div class="hash-title">GPG</div>
-        <div class="hash-value">gpg --verify yumed-amd64-linux.sig yumed-amd64-linux</div>
-      </div>
-    </div>
-    <div class="card">
-      <h3>Manifest</h3>
-      <p><a class="disabled" data-asset-link="release-manifest.json" aria-disabled="true" tabindex="-1">release-manifest.json</a> records each artifact's component, OS, architecture, size, linkage, and SHA-256. Signatures travel in the <code>.sig</code> sidecars.</p>
-      <div class="card-meta"><a href="{{ '/hashes/' | relative_url }}">Live checksums for the current release</a></div>
+      <h3>Desktop GUI</h3>
+      <p>Build <code>yume-gui</code> with <code>-DYUME_BUILD_GUI=ON</code> and Qt 6.4 or later. It imports kits and controls each client through its control socket.</p>
+      <div class="link-row"><a class="btn secondary" href="{{ '/docs/GUI/' | relative_url }}">Desktop GUI</a></div>
     </div>
   </div>
 </section>
@@ -388,8 +230,9 @@ curl --socks5-hostname 127.0.0.1:1080 https://example.com/</code></pre>
 <section id="docs" data-reveal="drift">
   <h2 class="section-title">Read by task</h2>
   <p class="section-lead">
-    Start with the quick start and the operations guide. The YTP/1 development
-    guide covers build options, setup tools, embedding, and verification gates.
+    Start with the quick start and the operations guide. The
+    <a href="{{ '/docs/' | relative_url }}">documentation index</a> lists
+    every page.
   </p>
   {% include doc-catalog.html group_field="home_group" %}
 </section>

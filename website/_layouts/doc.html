@@ -24,6 +24,14 @@
         {%- endif %}
         <article class="doc-article">
           {{ content }}
+          {%- if page.doc_source %}
+          <p class="doc-source">
+            This page is generated from
+            <a href="{{ site.repo_url }}/blob/main/{{ page.doc_source }}" target="_blank" rel="noopener"><code>{{ page.doc_source }}</code></a>.
+            Edit that file and run the sync in
+            <a href="{{ site.repo_url }}/blob/main/docs/src/README.md" target="_blank" rel="noopener"><code>docs/src/README.md</code></a>.
+          </p>
+          {%- endif %}
         </article>
       </main>
       {% include site-footer.html %}

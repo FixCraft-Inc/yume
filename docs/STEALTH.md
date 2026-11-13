@@ -340,7 +340,10 @@ distinguishability within the release overhead budget.
 
 YUME uses hybrid post-quantum key establishment. “Quantum-proof,”
 “uncrackable,” “identical to Chrome,” “DPI-proof,” and guaranteed
-future-proof are not supported claims.
+future-proof are not supported claims. The supported post-quantum claim is the
+one in the [threat model](THREAT_MODEL.md#recorded-traffic): recorded traffic
+stays protected if X25519 falls, as long as ML-KEM-1024 holds and the
+endpoints were not compromised.
 
 Compromise claims must name the exposed material. A one-use message key, the
 current chain or root, a prepared future root, the deployment PSK, and live

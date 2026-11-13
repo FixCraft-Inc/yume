@@ -108,8 +108,9 @@ library dependency, and `yume_tls_client_profile` owns SSL_CTX profile
 configuration. The H2 library links profile data, nghttp2, OpenSSL Crypto and
 platform threading, with no SSL, BaseFWX or session-engine dependency.
 `yume_bounded_files` owns the bounded and confined reader that the cover site,
-and the egress lists use. Every archive the shared ABI takes
-in, these two included, gets hidden, PIC, non-LTO preparation first.
+the egress lists and sealed kits use. Every archive the shared ABI takes in,
+the two profile libraries and this reader included, gets hidden, PIC,
+non-LTO preparation first.
 `yume_native_endpoint` links `yume_direct_route_handler` directly for
 configured destination adapters. That archive depends only on the engine
 contracts.

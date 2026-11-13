@@ -35,7 +35,7 @@ It also composes configured direct TCP/UDP adapters whose schema-1
 destinations are authorized before resolution and for every resolved address.
 The experimental schema-1 C ABI backend carries named streams, named packets
 and routed TCP/UDP requests, while refusing adapter declarations.
-Development `yumed` and `yume` processes compose direct routes, SOCKS5 CONNECT
+The `yumed` and `yume` programs compose direct routes, SOCKS5 CONNECT
 and UDP ASSOCIATE, forwards, server modules and managed Linux TUN.
 Qualification is tracked in [implementation status](../IMPLEMENTATION_STATUS.md).
 

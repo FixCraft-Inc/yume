@@ -7,6 +7,15 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+The protocol contracts, the C ABI page, the source map and the YTP/1
+development guide were checked against the code and corrected where they
+differed. Module programs run under a service manager and `yumed` never
+starts them, the ABI refuses a `circuits` section as it refuses a `cluster`
+section, `0.3.0-rc1` waits only for the freeze gates in implementation
+status, and `yume-doctor` leaves file ownership and cluster signatures to
+`yumed`. `docs/src/facts.json` also tracks the reconnect backoff, the message
+log bounds and the sealed kit code.
+
 A client that keeps its session up, as `yume` and an ABI endpoint with a
 device do, reports the wait before its next attempt when a dial fails before
 its start call returns, for example when the socket protector refuses. It

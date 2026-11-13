@@ -224,12 +224,13 @@ file left by an earlier run is replaced, while a live listener or any other
 file at the path stops startup. Like SOCKS5, forward TCP listeners accept only
 127.0.0.1 or ::1.
 
-A server `module` adapter serves its stream service with a program that
-`yumed` starts before its listeners accept and restarts with backoff. Each
-authorized stream reaches the program as one connection on a private UNIX
-socket, after a header line naming the client identity. A stream that names a
-destination is refused. [Modules](../../MODULES.md) describes what the program
-receives and its trust boundary.
+A server `module` adapter serves its stream service with a program that a
+service manager such as systemd runs on a listening UNIX socket. `yumed`
+never starts the program. Each authorized stream reaches it as one
+connection to that socket, after a header line naming the client identity.
+A stream that names a destination is refused. [Modules](../../MODULES.md)
+describes the socket checks, the systemd units, what the program receives
+and its trust boundary.
 
 `scripts/yume_ndpi_smoke.py` runs one loopback session inside a rootless
 network namespace with Ethernet-sized frames and records what nDPI reports.
@@ -436,13 +437,14 @@ sets one expert value through the same parser. Restart after saving. A
 server with a smaller epoch still caps the session.
 
 Schema 1 rejects inline secrets, aliases, unknown keys, unsupported providers,
-and unsafe combinations. The CLIs accept config selection, validation, the
-client's run settings and status, shell completion, version and help.
-Network and security policy have no CLI override. Once the runtime gate closes, a service manager
-should invoke only `yumed --config /etc/yume/yumed.json` as a dedicated
-unprivileged identity, prefer a high port or grant only
-`CAP_NET_BIND_SERVICE`, and restrict filesystem access to the generated
-server tree and the cover root.
+and unsafe combinations. The CLIs accept config selection, validation,
+status, version, credits, help and shell completion. `yume` also takes its
+run settings, route acceptance, kit sealing and import, and an outer-carrier
+evidence report. Network and security policy have no CLI override. A
+service manager runs `yumed --config /etc/yume/yumed.json` as a dedicated
+unprivileged user, with a high port or only `CAP_NET_BIND_SERVICE`, and with
+a read-only view of the configuration. The Debian package's
+`yumed.service` runs it that way.
 
 ## Identity and authorization
 
@@ -508,9 +510,9 @@ their bounds and ownership. Production qualification remains open.
 
 Diagnostics are typed and scoped to the object that failed; they are not a
 second control channel. ABI operations that can fail return a stable `yume_status`,
-`yume_get_status_info()` gives its name and retry class, and
+`yume_get_status_info()` gives its stable name, and
 `yume_handle_get_diagnostic()` returns bounded text and the relevant JSON
-pointer for a runtime, config, endpoint, stream, or packet handle. Never
+pointer for a runtime, config, endpoint, stream, packet or kit handle. Never
 parse diagnostic prose to recover a status. Callbacks receive borrowed
 records valid only during the call; the only handle operation permitted
 inside one is diagnostic lookup, lifecycle and I/O re-entry fail with
@@ -575,10 +577,8 @@ and environment and link immutable captures, TLS/H2 semantic gates,
 active-probe cover results, and a held-out classifier evaluation; YUME does
 not claim universal indistinguishability or DPI resistance.
 
-`0.3.0-rc1` requires clean cross-platform builds, protocol vectors,
-sanitizer and fuzz evidence, installed ABI consumers, setup smoke,
-documentation drift checks, ingress evidence, and an external protocol and
-cryptography review. Treat provider, suite, exporter, identity, capability,
+[Implementation status](../../IMPLEMENTATION_STATUS.md#freeze-gates) owns
+the gates `0.3.0-rc1` must pass. Treat provider, suite, exporter, identity, capability,
 and credential mismatches as terminal; treat exhaustion as a bounded failure
 whose limits change only after a measured resource review; rotate a
 compromised key by issuing a new per-identity bundle; and retain only

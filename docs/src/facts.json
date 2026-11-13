@@ -91,6 +91,51 @@
         {"path": "docs/src/en_US/pages/implementation_status.doc", "text": "shared UDP policy of 64 datagrams and 1 MiB per budget"},
         {"path": "docs/src/en_US/pages/abi.doc", "text": "hold at most 64 datagrams and 1 MiB"}
       ]
+    },
+    {
+      "id": "reconnect-backoff",
+      "fact": "A client, a cluster link and an ABI endpoint with a device retry a failed attempt, or a session shorter than 30 seconds, after a wait that starts at 1 second and doubles up to 30 seconds.",
+      "source": [
+        {"path": "src/runtime/session_keeper.hpp", "text": "std::chrono::milliseconds reconnect_initial{1'000};"},
+        {"path": "src/runtime/session_keeper.hpp", "text": "std::chrono::milliseconds reconnect_max{30'000};"},
+        {"path": "src/runtime/native_client_runtime.hpp", "text": "std::chrono::milliseconds reconnect_initial{1'000};"},
+        {"path": "src/runtime/native_client_runtime.hpp", "text": "std::chrono::milliseconds reconnect_max{30'000};"}
+      ],
+      "stated": [
+        {"path": "docs/src/en_US/pages/ytp1_readme.doc", "text": "and sessions that end within 30 seconds of authenticating, wait with backoff from 1 to 30 seconds"},
+        {"path": "docs/src/en_US/pages/cluster_1.doc", "text": "started again with the client's backoff: one second, doubling to thirty"},
+        {"path": "docs/src/en_US/pages/abi.doc", "text": "it reconnects at once after a session that lasted 30 seconds, and after a wait that doubles from 1 to 30 seconds"}
+      ]
+    },
+    {
+      "id": "message-log-bounds",
+      "fact": "yume, yumed and an ABI endpoint keep their latest 256 printed lines, each cut to 512 bytes.",
+      "source": [
+        {"path": "src/runtime/message_log.hpp", "text": "static constexpr std::size_t kCapacity = 256U;"},
+        {"path": "src/runtime/message_log.hpp", "text": "static constexpr std::size_t kMaxTextBytes = 512U;"}
+      ],
+      "stated": [
+        {"path": "docs/src/en_US/pages/control_1.doc", "text": "A program keeps its latest 256 lines, each cut to 512 bytes."},
+        {"path": "docs/src/en_US/pages/abi.doc", "text": "its latest 256, each cut to 512 bytes"},
+        {"path": "docs/src/en_US/pages/gui.doc", "text": "keeps its latest 256 lines"}
+      ]
+    },
+    {
+      "id": "sealed-kit-code",
+      "fact": "A sealed kit opens with a 25-character code, shown in five groups of five, through Argon2id over 64 MiB of memory.",
+      "source": [
+        {"path": "src/runtime/sealed_kit.hpp", "text": "inline constexpr std::size_t kCodeCharacters = 25U;"},
+        {"path": "src/runtime/sealed_kit.hpp", "text": "inline constexpr std::uint32_t kArgonMemoryKiB = 64U * 1024U;"}
+      ],
+      "stated": [
+        {"path": "docs/src/en_US/pages/sealed_kit_1.doc", "text": "memory 65536 KiB"},
+        {"path": "docs/src/en_US/pages/sealed_kit_1.doc", "text": "The code is 25 characters of Crockford base32"},
+        {"path": "docs/src/en_US/pages/sealed_kit_1.doc", "text": "It is shown in five groups of five"},
+        {"path": "docs/src/en_US/pages/abi.doc", "text": "opened with a 25-character code"},
+        {"path": "docs/src/en_US/pages/abi.doc", "text": "the code is not 25 code characters"},
+        {"path": "docs/src/en_US/pages/abi.doc", "text": "Opening derives a key with Argon2id over 64 MiB"},
+        {"path": "docs/src/en_US/man/yume_1.doc", "text": "print a new code in five groups of five characters"}
+      ]
     }
   ]
 }

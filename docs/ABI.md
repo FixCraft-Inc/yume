@@ -8,8 +8,8 @@ commands, a JSON operation bus, private C++ classes, or provider selection. The
 current implementation boundary is stated below.
 
 The ABI line, product version, YTP version, and config schema are independent.
-During `0.3.0-dev*`, this replacement surface is still allowed to break without
-an ABI-version bump. The opt-in candidate is an unversioned `libyume.so`; it is not
+During `0.3.0-dev*`, this surface may still break without an ABI-version
+bump. The opt-in candidate is an unversioned `libyume.so`; it is not
 `libyume.so.1`. `YUME_INSTALL_EXPERIMENTAL_SDK=ON` enables development
 installation of that library, the public C header, `yume.pc`, and the
 `yume::yume` CMake target. It requires `YUME_BUILD_SHARED_ABI=ON` and remains
@@ -421,8 +421,8 @@ settles `FAILED` through `STOPPING` to `STOPPED`. Start accepts only `CREATED`
 or `STOPPED`; a direct retry from `FAILED` returns `YUME_STATUS_INVALID_STATE`
 without starting work or emitting lifecycle events. A client start
 that outlives its deadline reports `YUME_STATUS_TIMEOUT`. Declared adapters,
-a `control` socket, a `cluster` section and reverse-proxy cover report
-`YUME_STATUS_UNSUPPORTED` instead of starting without them. Never infer a status from the message.
+a `control` socket, a `cluster` or `circuits` section and reverse-proxy
+cover report `YUME_STATUS_UNSUPPORTED` instead of starting without them. Never infer a status from the message.
 
 `stop` is synchronous, idempotent after a start attempt, and accepts only zero.
 It closes the endpoint's sessions, wakes blocked calls, and joins the backend's
@@ -932,7 +932,7 @@ from the two capability manifests.
 
 ## Export and freeze gates
 
-`src/abi/yume.map` is the canonical 40-symbol set. CMake derives the Mach-O
+`src/abi/yume.map` is the canonical symbol set. CMake derives the Mach-O
 list and validates the built ELF/Mach-O/PE surface from it. The same change
 must update:
 

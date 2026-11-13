@@ -159,9 +159,10 @@ by the daemon's user and closed to group and others, even the public ones.
 `exit.service` must name the service of a `direct_tcp` adapter, whose
 destination policy then decides every circuit stream this server carries to
 a destination.
-`yumed --validate` checks all of it without dialing, and `yume-doctor` checks
-that each file is one the daemon would open. A client configuration and the
-embedding interface refuse the section.
+`yumed --validate` checks all of it without dialing. `yume-doctor` checks
+that each file is a regular file, not a link, closed to group and others and
+within its size bound, and leaves ownership and the signatures to `yumed`.
+A client configuration and the embedding interface refuse the section.
 
 `state` is where the server saves the highest list serial it has loaded, as
 the JSON object `{"schema":1,"cluster":ID,"serial":N}`. `yume-setup` emits the

@@ -7,6 +7,17 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+The threat model gains a cryptography section: the algorithms, the hard
+problems they rest on, NIST security category 5 for ML-KEM-1024 and
+ML-DSA-87, and what a recording of today's traffic exposes later. The README,
+YUME explained, Why YUME, the glossary and the website summarize it and link
+there. `docs/src/facts.json` lists facts that several documents repeat, and
+`tests/test_doc_facts.py` (CTest `yume_doc_facts_test`) fails with every place
+to update when one changes in the source or a document. Generated website
+pages name their `.doc` source. The landing page now shows the suite constant
+part by part and the quick start's steps with their commands, and the
+checksums page gives the signing key fingerprint and the verification order.
+
 Packet-adapter and paced-stream close operations keep their state alive when
 a completion releases the last public owner. Client ABI OPENs copy their peer
 identity from the authenticated session before admission, so a failed copy

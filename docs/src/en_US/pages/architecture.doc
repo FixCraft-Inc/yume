@@ -25,11 +25,10 @@ in from outside.
 The HTTP/2 and WebSocket carrier code and the browser profile came from
 transport v2, the protocol before YTP/1, which has been removed. The relay
 channel, file transfer and codecs live on as module libraries, and sealed
-kits replaced the share container. The transport-v2 GUI was removed. The native
-[desktop GUI](GUI.md) is a separate Qt program that talks to `yume` only
-through its control socket.
-A new protocol name proves neither better speed nor stronger security.
-[Implementation status](IMPLEMENTATION_STATUS.md) lists the open gates.
+kits replaced the share container. The native [desktop GUI](GUI.md) is a
+separate Qt program that talks to `yume` only through its control socket.
+[Implementation status](IMPLEMENTATION_STATUS.md) lists what each part is
+tested with.
 
 ## Composition
 
@@ -139,9 +138,8 @@ owner, bounded cover state and provider/executor provenance. A previously
 answered cover stream need not wait for the peer to close its request side;
 that stream transfers with the existing parser and cover ledger. Ordinary H2
 requests still receive cover after promotion, and listener destruction does
-not close a published carrier. This is a source-level ingress provider. The
-experimental schema-1 ABI backend and the development standalone runtimes
-compose it through `NativeEndpoint`.
+not close a published carrier. The schema-1 ABI backend and the standalone
+`yume` and `yumed` runtimes compose it through `NativeEndpoint`.
 
 The caller supplies the single-runner `AsioExecutionContext`. The front door
 binds promoted carriers to that context's ordinary and reserved control
@@ -157,7 +155,7 @@ carrier so its admitted application-protocol state remains intact. The first
 provider uses a duplex HTTP/2 exchange. HTTP/2 is not a session-engine
 dependency, and transport-profile geometry is not a YTP field.
 
-The experimental `h2-duplex` provider uses the libnghttp2 and RFC 8441 state
+The `h2-duplex` provider uses the libnghttp2 and RFC 8441 state
 machine in `stealth/h2_carrier.*`. It performs the
 client's genuine priming and extended-CONNECT acceptance sequence, while the
 server construction seam accepts only an already-admitted live H2 carrier so
@@ -441,10 +439,9 @@ selection, dynamic loading in key-holding processes, fallback, or partial
 build. A configured provider that is absent, incompatible, or missing a
 required capability causes a typed hard failure.
 
-Trusted custom providers may use the experimental source-level C++20 provider
-interfaces. Cross-language applications target the C ABI candidate after its
-functional and freeze gates pass. An out-of-process plugin protocol is
-intentionally deferred.
+Trusted custom providers may use the source-level C++20 provider interfaces,
+which carry no stability promise. Applications in other languages use the
+[C ABI](ABI.md). An out-of-process plugin protocol is deferred.
 
 ## First suite
 
@@ -516,9 +513,9 @@ connects each mechanism to its implementation and explains the data path.
 
 ## Public ABI boundary
 
-The explicitly enabled candidate builds as unversioned
-`libyume.so`. It exposes opaque runtime, config, endpoint, stream, and packet
-types but is not a frozen installed product ABI. The surface is role-neutral
+When enabled, the C ABI builds as unversioned `libyume.so`. It exposes opaque
+runtime, config, endpoint, stream, and packet types, and the interface is not
+frozen yet. The surface is role-neutral
 and has no JSON operation bus. A runtime owns callback delivery and coordinates
 child endpoints; execution resources belong to the selected backend. An
 immutable config owns validated values, an endpoint owns one backend selection,

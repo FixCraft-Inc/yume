@@ -45,6 +45,9 @@ jobs:
       - name: Check the generated CLI help and completion
         run: python3 scripts/yume_cli.py check
 
+      - name: Check repeated documentation facts
+        run: python3 tests/test_doc_facts.py
+
       - name: Sync docs into website
         run: bash scripts/sync_website_docs.sh
 

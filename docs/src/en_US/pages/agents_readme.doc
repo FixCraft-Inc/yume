@@ -47,7 +47,8 @@ layers.
 | Dependencies | Manifest, dependency/SBOM check, third-party notices |
 | Control socket | [Control protocol 1](../protocol/CONTROL_1.md) and its additive rules, control socket, CLI and native runtime tests, and the GUI tests |
 | Desktop GUI | [Desktop GUI](../GUI.md), `yume_gui_test`, `yume_gui_ui_test`, `yume_gui_ui_rtl_test`, `yume_gui_live_test`, a page capture reviewed as images, and a build against Qt 6.4 |
-| Documentation | `docs/src` source, unified sync/drift and website catalog checks, affected links, manuals and CLI help/completion |
+| Documentation | `docs/src` source, unified sync/drift and website catalog checks, `tests/test_doc_facts.py`, affected links, manuals and CLI help/completion |
+| Cryptographic suite, key schedule or key epoch limits | [YTP/1](../protocol/YTP_1.md), the [threat model](../THREAT_MODEL.md#cryptography), and every statement `docs/src/facts.json` lists for the fact |
 | Wire, KDF or AAD labels | The label's contract page, `tests/test_wire_labels.py` and the protocol's vectors |
 | New directories, libraries or functions | The layer table in `cmake/YumeLayering.cmake`, an exact link assertion for each library, and `scripts/check_reachability.py` over a Debug gc-sections tree, as CI's `reachability` job runs it, with `config/reachability.json` for code kept on purpose |
 | Any commit | `scripts/check_repository_hygiene.py --staged` before committing: whitespace in staged files, and in CI each pushed commit's format and signature |
@@ -71,6 +72,9 @@ generated file's banner names and run the commands in
 Search `docs/src/en_US` and the touched source comments for every name or
 guarantee you changed. A passing drift check confirms generated output, not
 that the written behavior still agrees with the live code.
+`docs/src/facts.json` lists the values and claims that several documents and
+the website landing page repeat, and `tests/test_doc_facts.py` names every
+place to update when one of them changes.
 
 [CONTRIBUTING](../../CONTRIBUTING.md#documentation-and-review) says what
 public documents hold and where task state and evidence go instead. A fresh

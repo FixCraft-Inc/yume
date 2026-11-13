@@ -1,8 +1,8 @@
 <!-- Generated from docs/src/en_US/pages/implementation_status.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME implementation status
 
-This page is the public support boundary for the live source tree. It uses
-three terms deliberately:
+This page records what works in the current source tree and how each part is
+tested. It uses three terms:
 
 - **Implemented** means code exists in this repository.
 - **Tested** means a named executable or integration path exercises it.
@@ -10,9 +10,23 @@ three terms deliberately:
   named platform and environment.
 
 YUME `0.3.0-dev1` composes native YTP/1 as `yume` and `yumed`, using schema-1
-configuration. The C ABI is an experimental interface. Release qualification
-is tracked by surface below: the native programs, SDK, installed packages and
-GUI each need evidence for their own environment.
+configuration. The native programs, SDK, installed packages and GUI each need
+qualification evidence for their own environment.
+
+## Summary
+
+| Part | State | Details |
+| --- | --- | --- |
+| `yume` client: SOCKS5 TCP and UDP, forwards, reconnect, control socket | Implemented, tested end to end between real processes | [Native programs](#native-programs), [native endpoint](#native-endpoint) |
+| `yumed` server: front door, cover site, admission, policy, reload, egress pacing | Implemented, tested end to end between real processes | [Ingress front door](#ingress-front-door), [egress and listeners](#egress-and-listeners) |
+| Managed TUN on Linux, with per-link DNS | Implemented, tested in unprivileged namespaces | [Native programs](#native-programs) |
+| TCP circuits through two or three servers of one operator | Implemented, tested with four daemons | [Clusters and circuits](#clusters-and-circuits) |
+| `yume-setup` and `yume-doctor` | Implemented and tested | [Native programs](#native-programs) |
+| C ABI (`libyume`): streams, packets, routed TCP and UDP | Implemented and tested, interface still experimental | [Embedding ABI](#embedding-abi) |
+| Server modules over UNIX sockets | Implemented and tested, installed units not yet run on a qualified host | [Native programs](#native-programs) |
+| Desktop GUI | Implemented and tested on Linux, not packaged | [Existing integration coverage](#existing-integration-coverage) |
+| Debian 13 package and systemd units | Implemented, covered by package and service checks | [Native programs](#native-programs) |
+| Release `0.3.0-rc1` | Freeze gates open | [Freeze gates](#freeze-gates) |
 
 ## Current 0.3 foundation
 
@@ -49,12 +63,11 @@ Implemented and covered by focused tests:
   key-schedule-input codecs;
 - entirely new `yume/ytp/1/...` domains plus checked-in canonical encoding
   vectors;
-- an OpenSSL 3.5 session-security provider candidate
+- an OpenSSL 3.5 session-security provider
   with exact Ed25519 plus ML-DSA-87 authentication, X25519 plus ML-KEM-1024
   establishment, per-identity access PSKs, exporter/transcript/capability binding,
-  one-use AES-256-GCM record keys, and crossed directional rekey tests. It is
-  wired to the source-level native endpoint composition, with production
-  qualification still open;
+  one-use AES-256-GCM record keys, and crossed directional rekey tests. The
+  native endpoint uses it;
 - a Boost.Asio client TCP ByteChannel provider with
   bounded DNS/connect work, socket-protection-before-connect, bounded ordered
   operation queues, per-operation and provider cancellation, real TCP
@@ -146,8 +159,8 @@ contains runner exceptions and resumes cleanup. The front door binds H2
 ordinary dispatch and reserved control delivery to that context. H2 close,
 cancellation and credit return use the same allocation-free mailbox as TCP;
 TLS/H2 failure settlement preserves callbacks when diagnostics cannot allocate.
-Ingress resolves no names. The source-level native endpoint now connects this ingress to session bootstrap,
-and the experimental schema-1 ABI backend composes that endpoint.
+Ingress resolves no names. The native endpoint connects this ingress to
+session bootstrap, and the schema-1 ABI backend composes that endpoint.
 
 `yume_h2_web_front_door_test` exercises real loopback TLS/H2 ingress, configured
 cover responses, invalid-then-valid admission on one connection, exporter
@@ -157,8 +170,8 @@ deadline cleanup and listener-independent carrier lifetime. A real occupied-port
 test preserves the original listener. Linux GNU/Clang tests inject bind errors
 at the syscall boundary to verify classification and retry without changing
 host privileges or resource limits. The cover-site,
-TLS and H2 tests cover their separate parsing and ownership boundaries. These
-focused checks do not establish AUTH, a complete YTP session or a YTP ABI path.
+TLS and H2 tests cover their separate parsing and ownership boundaries. The
+native endpoint and runtime tests below cover AUTH and complete sessions.
 
 ### Automated evidence
 
@@ -167,9 +180,9 @@ C++ ABI consumers, exact built/header/map/candidate-symbol agreement, schema
 examples and negative parser cases, real-key hybrid handshake/record/rekey
 tests, malformed canonical-codec cases, fake-channel TLS/H2 provider tests,
 real loopback TCP and connected-UDP route tests, the H2 carrier regression,
-and the end-to-end ABI named-stream probe. Exact candidate run results belong
-to CI or private qualification artifacts rather than this current-behavior
-document. Passing focused tests does not qualify the replacement end to end.
+and the end-to-end ABI named-stream probe. Results of individual runs belong
+to CI and qualification records, not this page. The [freeze gates](#freeze-gates)
+qualify a whole release.
 
 ### Native endpoint
 
@@ -739,30 +752,16 @@ addresses, routes and per-link DNS.
 
 ## Security boundary
 
-The YTP/1 design requires all of the following:
-
-- Ed25519 **and** ML-DSA-87 authentication;
-- X25519 **and** ML-KEM-1024 establishment;
-- a distinct per-identity random access PSK;
-- the live TLS 1.3 exporter and exact roles, identities, transcript,
-  capabilities, suite, and fixed security parameters in the key schedule;
-- independent directional ratcheting, one-use AES-256-GCM keys for protected
-  records, and a candidate-new-root authenticated rekey acknowledgement;
-- bounded work and allocation before attacker-controlled parsing, KEM,
-  stream creation, queueing, or rekey preparation;
-- hard failure on a missing component, provider mismatch, role confusion,
-  replay, malformed canonical encoding, or authentication failure.
-
-The provider selected by the native application implements the cryptographic
-portions and has focused tests with real keys; dependency-pure engine tests
-cover the matching record and resource contracts. Native endpoint integration
-connects the live TLS exporter, carrier and session security. Published
-synthetic construction vectors check deterministic transcript, key schedule,
-record protection and rekey calculations against an independent generator.
-Independent-peer interoperability, broader qualification and an independent
-security review remain open. Review is planned alongside development and is
-not a release prerequisite. Ratchet recovery depends on fresh uncompromised
-contributions and erasure, as the [threat model](THREAT_MODEL.md) describes.
+The [threat model](THREAT_MODEL.md#cryptography) and
+[YTP/1](protocol/YTP_1.md#fixed-security-composition) state the required
+composition. The provider selected by the native application implements it and
+has focused tests with real keys, and dependency-pure engine tests cover the
+matching record and resource contracts. The native endpoint connects the live
+TLS exporter, carrier and session security. Published synthetic construction
+vectors check the transcript, key schedule, record protection and rekey
+calculations against an independent generator. Interoperability with an
+independent implementation and an independent security review are still open.
+The review runs alongside development and does not gate a release.
 
 ## Ingress evidence boundary
 

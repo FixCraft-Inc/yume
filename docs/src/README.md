@@ -32,6 +32,7 @@ The unified sync does not silently delete retired files.
 | --- | --- |
 | A document's text, heading, summary and publication settings | One `en_US/pages/<aspect>.doc` or `en_US/man/<command>.doc` |
 | A fact repeated by several documents | One `en_US/parts/shared/<aspect>.part`, included by those documents |
+| A value or claim that several documents state in their own words | Its entry in `docs/src/facts.json`, described under [repeated facts](#repeated-facts) |
 | A diagram's topology, labels, accessible title and caption, per-part notes and their sources | One `docs/diagrams/<name>.json` |
 | Where a diagram appears | `@diagram <name>` in the document; no second target list |
 | Website page title | `title:`; optional `web-title:` in the same document for a different web heading |
@@ -79,6 +80,29 @@ and private notes are edited directly. Product documents and changelogs are
 claims with a behavior change. BaseFWX's native help is runtime code, while
 its manual and web reference share a source. The tooling does not claim to
 derive either project's parser behavior from documentation.
+
+## Repeated facts
+
+Some facts appear in several documents, each worded for its own reader: the
+cryptographic suite, the key rotation limits, queue budgets. A `.part` cannot
+hold them because the sentences differ. `docs/src/facts.json` lists each such
+fact with the source text that decides it, usually a constant, and every place
+that states it. Run:
+
+```sh
+python3 tests/test_doc_facts.py
+```
+
+It fails when a source no longer contains its text, and the message lists
+every statement of that fact to revisit. It also fails when a document no
+longer contains a listed statement. Matching ignores line breaks and repeated
+spaces.
+
+When you change a listed value, update every statement the failure names and
+then the entry. When you state a listed fact somewhere new, add that place.
+Add an entry when a value appears in more than one document or on the website
+landing page. A statement must be in a `.doc`, `.part`, `.cli`, diagram JSON or
+hand-written website page, never in generated output.
 
 ## Writing and review
 

@@ -5,9 +5,10 @@ description: SHA-256 values and detached signatures for published YUME release a
 body_class: hashes-page
 nav_current: Hashes
 ---
+<!-- The signing key fingerprint below is listed in docs/src/facts.json, so
+     tests/test_doc_facts.py fails if it drifts from scripts/release_integrity.py. -->
 <section class="hero">
   <div>
-    <div class="hero-status"><span aria-hidden="true"></span>Release integrity</div>
     <h1>Checksums</h1>
     <p>
       Digests are read live from the SHA-256 sidecars attached to the latest GitHub release.
@@ -25,7 +26,6 @@ nav_current: Hashes
   </noscript>
   <div class="hero-panel">
     <div>
-      <div class="meta">Release channel</div>
       <div class="panel-title" id="release-version">No published release yet</div>
       <div class="meta-row">
         <span id="release-date">Nothing to verify until a stable release ships</span>
@@ -80,26 +80,28 @@ nav_current: Hashes
 
 <section id="verify">
   <h2 class="section-title">Verifying</h2>
-  <div class="grid">
-    <div class="card">
-      <h3>Both artifacts at once</h3>
-      <p>Download <code>SHA256SUMS.txt</code> alongside the artifacts and check them together.</p>
-      <div class="hash-block hash-block-spaced">
-        <div class="hash-title">Shell</div>
-        <div class="hash-value">sha256sum -c SHA256SUMS.txt</div>
-      </div>
-    </div>
-    <div class="card">
-      <h3>Signatures</h3>
-      <p>Publication requires detached armored signatures for both artifacts, the checksum list and the manifest.</p>
-      <div class="hash-block hash-block-spaced">
-        <div class="hash-title">GPG</div>
-        <div class="hash-value">gpg --verify SHA256SUMS.txt.sig SHA256SUMS.txt</div>
-      </div>
-    </div>
-    <div class="card">
-      <h3>SHA-256</h3>
-      <p>Use the SHA-256 sidecars or aggregate list to check file integrity, and verify signatures to authenticate their origin.</p>
-    </div>
-  </div>
+  <p class="section-lead">
+    Check the signature on the checksum list first, then check the files
+    against it. The <a href="{{ '/docs/OPERATIONS/#release-verification' | relative_url }}">operations guide</a>
+    describes what the release workflow signs and checks before it uploads.
+  </p>
+  <ol class="steps">
+    <li class="step">
+      <h3>Import the release key</h3>
+      <p>Get <a href="https://github.com/FixCraft-Inc/yume/blob/main/third_party/prebuilt/yume-release-key.asc" target="_blank" rel="noopener"><code>yume-release-key.asc</code></a> from the repository and confirm its primary fingerprint is <code>967278FF6FA436F504CBB0058A1588B5E2598DB1</code> through a source you trust.</p>
+      <pre><code>gpg --import yume-release-key.asc
+gpg --fingerprint 967278FF6FA436F504CBB0058A1588B5E2598DB1</code></pre>
+    </li>
+    <li class="step">
+      <h3>Check the signatures</h3>
+      <p>Every artifact, the checksum list and the manifest has a detached <code>.sig</code> file.</p>
+      <pre><code>gpg --verify SHA256SUMS.txt.sig SHA256SUMS.txt
+gpg --verify release-manifest.json.sig release-manifest.json</code></pre>
+    </li>
+    <li class="step">
+      <h3>Check the files</h3>
+      <p>Run this in the folder that holds the downloads. Each artifact also has its own <code>.sha256</code> file.</p>
+      <pre><code>sha256sum -c SHA256SUMS.txt</code></pre>
+    </li>
+  </ol>
 </section>

@@ -324,6 +324,11 @@ certificate identity, the server's composite identity fingerprint, and the
 services and fair-use limits it offers. Whether an operator keeps logs is a
 policy claim that clients cannot verify remotely.
 
+`yumed` must end the TLS connection itself, because admission is bound to it.
+A proxy or CDN that terminates TLS, such as Cloudflare's HTTP proxy, breaks
+admission. Put such a service in front only as a TCP passthrough, such as
+Cloudflare Spectrum.
+
 ## Troubleshooting
 
 `--validate` checks configuration, credentials, destination policy with its

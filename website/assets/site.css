@@ -400,24 +400,6 @@ section {
   min-width: 0;
 }
 
-.hero-status {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  margin-block-end: var(--space-lg);
-  color: var(--color-muted);
-  font-size: var(--text-sm);
-  font-weight: 500;
-}
-
-.hero-status span {
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: var(--radius-pill);
-  background: var(--color-accent);
-  box-shadow: 0 0 0 0.25rem var(--color-accent-soft);
-}
-
 .hero h1 {
   max-width: 12ch;
   font-size: var(--text-display);
@@ -513,10 +495,12 @@ a.disabled {
   padding-block-start: var(--space-md);
 }
 
+/* A phone gets a smaller cloud, so the copy above it and the version below
+   it stay close. The wide layout restores the full size. */
 .yume-visual {
   position: relative;
   display: grid;
-  min-height: 19rem;
+  min-height: 13rem;
   place-items: center;
   isolation: isolate;
 }
@@ -527,7 +511,7 @@ a.disabled {
 .cloud-shape {
   position: absolute;
   z-index: var(--z-base);
-  width: min(84%, 22rem);
+  width: min(70%, 16rem);
   aspect-ratio: 1.18;
   border-radius: 44% 56% 48% 52% / 52% 46% 54% 48%;
   background: var(--color-accent-soft);
@@ -561,22 +545,33 @@ a.disabled {
   stop-color: var(--color-logo-to);
 }
 
-.release-copy {
+/* The version sits under the mark as plain text. site.js replaces the
+   version and the line under it once GitHub reports a release. */
+.release-line {
   margin-block-start: var(--space-md);
-  padding: var(--space-lg);
-  border-radius: var(--radius-cloud);
-  background: var(--color-cloud);
-  box-shadow: var(--shadow-whisper);
+  text-align: center;
+}
+
+.release-line p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+}
+
+.hero .release-line .release-version {
+  margin: 0;
+  color: var(--color-ink);
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: 1.2;
 }
 
 .meta,
 .hash-title {
   color: var(--color-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: var(--text-sm);
+  font-weight: 600;
 }
 
 .panel-title {
@@ -601,60 +596,8 @@ a.disabled {
   margin-block-start: var(--space-md);
 }
 
-.card-list {
-  padding-inline-start: 1.15rem;
-  color: var(--color-ink-soft);
-}
-
-.card-list-spaced {
-  margin-block-start: var(--space-md);
-}
-
-.card-list li + li {
-  margin-block-start: var(--space-xs);
-}
-
-.release-strip,
 .hero noscript {
   grid-column: 1 / -1;
-}
-
-.release-strip {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  margin-block-start: var(--space-xl);
-  padding-inline: var(--space-sm);
-  border-radius: var(--radius-cloud);
-  background: var(--color-cloud);
-  box-shadow: var(--shadow-whisper);
-}
-
-.release-stat {
-  min-width: 0;
-  padding: var(--space-lg) var(--space-sm);
-  border-block-end: var(--rule-hairline) solid var(--color-rule-soft);
-}
-
-.release-stat:last-child {
-  border-block-end: 0;
-}
-
-.release-stat strong,
-.release-stat span {
-  display: block;
-}
-
-.release-stat strong {
-  font-size: var(--text-base);
-  font-weight: 600;
-  line-height: 1.35;
-}
-
-.release-stat span {
-  margin-block-start: var(--space-xs);
-  color: var(--color-muted);
-  font-size: var(--text-sm);
-  line-height: 1.45;
 }
 
 .home-page main > section:not(.hero),
@@ -675,9 +618,7 @@ a.disabled {
   color: var(--color-ink-soft);
 }
 
-.subsection-title + .grid,
-.subsection-title + .download-grid,
-.subsection-title + .command-stack {
+.subsection-title + .grid {
   margin-block-start: var(--space-md);
 }
 
@@ -795,8 +736,7 @@ a.disabled {
   margin-block-end: 0;
 }
 
-.status-pill,
-.chip {
+.status-pill {
   display: inline-flex;
   align-items: center;
   gap: var(--space-xs);
@@ -805,8 +745,7 @@ a.disabled {
   font-weight: 600;
 }
 
-.status-pill::before,
-.chip::before {
+.status-pill::before {
   width: 0.45rem;
   height: 0.45rem;
   flex: 0 0 auto;
@@ -826,20 +765,14 @@ a.disabled {
   background: var(--color-warn);
 }
 
-.grid,
-.download-grid {
+.grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 0 var(--space-xl);
   margin-block-start: var(--space-xl);
 }
 
-.grid-spaced {
-  margin-block-start: var(--space-xl);
-}
-
-.card,
-.download-card {
+.card {
   min-width: 0;
   padding-block: var(--space-lg);
   border-block-start: var(--rule-hairline) solid var(--color-rule-soft);
@@ -893,36 +826,18 @@ a.card:active::before {
 
 .card h3,
 .card h4,
-.download-card h3,
-.workflow-step h3,
-.command-block h3 {
+.step h3 {
   font-size: var(--text-md);
   line-height: 1.25;
 }
 
-.card p,
-.download-card p {
+.card p {
   margin-block-start: var(--space-xs);
   color: var(--color-ink-soft);
 }
 
-.card > :last-child,
-.download-card > :last-child {
+.card > :last-child {
   margin-block-end: 0;
-}
-
-.card-meta {
-  margin-block-start: var(--space-md);
-  color: var(--color-muted);
-  font-size: var(--text-sm);
-}
-
-.download-card .chip {
-  margin-block-end: var(--space-sm);
-}
-
-.download-card-wide {
-  grid-column: 1 / -1;
 }
 
 .table-scroll {
@@ -938,10 +853,6 @@ table {
   font-size: var(--text-sm);
 }
 
-.compare-table {
-  min-width: 30rem;
-}
-
 th,
 td {
   min-width: 9rem;
@@ -952,75 +863,131 @@ td {
 }
 
 th {
-  color: var(--color-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  color: var(--color-ink);
+  font-weight: 700;
 }
 
 tbody tr:last-child td {
   border-block-end: 0;
 }
 
-.workflow-grid {
+/* The quick start's steps, each with the command it runs. The number is the
+   list's own counter, because the steps are a real sequence. */
+.steps {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-xl);
   margin-block-start: var(--space-xl);
+  padding: 0;
+  counter-reset: step;
+  list-style: none;
 }
 
-.workflow-step {
+/* On a phone the text and command use the full width under the number and
+   title. From 40rem they sit in the title's column. */
+.step {
   display: grid;
-  grid-template-columns: 3rem minmax(0, 1fr);
-  gap: var(--space-xs) var(--space-md);
-  padding-block: var(--space-lg);
-  border-block-start: var(--rule-hairline) solid var(--color-rule);
-}
-
-.workflow-step .meta {
-  grid-row: 1 / span 2;
-}
-
-.workflow-step .section-lead {
-  margin: 0;
-}
-
-.command-stack {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-lg);
-}
-
-.command-stack-spaced {
-  margin-block-start: var(--space-2xl);
-}
-
-.command-block {
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  gap: 0 var(--space-md);
+  align-items: center;
   min-width: 0;
-  overflow: hidden;
-  border: var(--rule-hairline) solid var(--color-code-rule);
-  border-radius: var(--radius-cloud);
-  background: var(--color-code);
-  box-shadow: var(--shadow-whisper);
-  color: var(--color-code-ink);
+  padding-block-start: var(--space-lg);
+  border-block-start: var(--rule-hairline) solid var(--color-rule-soft);
+  counter-increment: step;
 }
 
-.command-block h3 {
-  padding: var(--space-md) var(--space-lg);
-  border-block-end: var(--rule-hairline) solid var(--color-code-rule);
-  background: var(--color-code-head);
-  color: var(--color-code-ink);
+.step > p,
+.step > pre {
+  grid-column: 1 / -1;
 }
 
-.command-block pre {
-  margin: 0;
+.step::before {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
+  content: counter(step);
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.step p {
+  max-width: 68ch;
+  margin-block-start: var(--space-xs);
+  color: var(--color-ink-soft);
+}
+
+.step pre {
+  margin: var(--space-md) 0 0;
   overflow-x: auto;
-  padding: var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+  border: var(--rule-hairline) solid var(--color-code-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-code);
   color: var(--color-code-ink);
   font-size: var(--text-sm);
   line-height: 1.65;
   tab-size: 2;
+}
+
+/* The suite as the protocol spells it, one part per column. Each part takes
+   the figure role of what it does: the outer shape is the disguise, the
+   cryptography is the keys. The colons are the constant's own separators. */
+.suite {
+  margin: var(--space-xl) 0 0;
+}
+
+.suite-parts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.suite-part {
+  --part-soft: var(--color-role-keys-soft);
+  --part-ink: var(--color-role-keys-ink);
+  --part-line: var(--color-role-keys);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2xs) var(--space-md);
+  align-items: baseline;
+  padding: var(--space-sm) var(--space-md);
+  border-inline-start: 3px solid var(--part-line);
+  border-radius: var(--radius-sm);
+  background: var(--part-soft);
+}
+
+.suite-part[data-role="disguise"] {
+  --part-soft: var(--color-role-disguise-soft);
+  --part-ink: var(--color-role-disguise-ink);
+  --part-line: var(--color-role-disguise);
+}
+
+.suite-part code {
+  padding: 0;
+  background: none;
+  color: var(--part-ink);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.suite-part span {
+  color: var(--color-ink);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.suite figcaption {
+  margin-block-start: var(--space-sm);
+  color: var(--color-muted);
+  font-size: var(--text-sm);
 }
 
 .hash-block {
@@ -1061,7 +1028,7 @@ tbody tr:last-child td {
   content: "collapse";
 }
 
-.link-tertiary {
+.link-quiet {
   display: inline-flex;
   min-height: 2.75rem;
   align-items: center;
@@ -1320,6 +1287,16 @@ tbody tr:last-child td {
 }
 
 /* Generated pages: Long Document. */
+/* The closing line names the page's .doc source, for a reader who wants to
+   correct it and for an agent looking for the file to edit. */
+.doc-source {
+  margin-block-start: var(--space-3xl);
+  padding-block-start: var(--space-md);
+  border-block-start: var(--rule-hairline) solid var(--color-rule-soft);
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+}
+
 .doc-container {
   padding-block-end: var(--space-2xl);
 }
@@ -1537,42 +1514,17 @@ html:not(.js) .doc-toc {
     display: block;
   }
 
-  .release-strip {
+  .grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .release-stat:nth-child(odd) {
-    border-inline-end: var(--rule-hairline) solid var(--color-rule-soft);
+  .step > p,
+  .step > pre {
+    grid-column: 2;
   }
 
-  .release-stat:nth-last-child(-n + 2) {
-    border-block-end: 0;
-  }
-
-  .grid,
-  .download-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .workflow-step {
-    grid-template-columns: 4rem 8rem minmax(0, 1fr);
-    align-items: start;
-  }
-
-  .workflow-step .meta {
-    grid-row: auto;
-  }
-
-  .workflow-step .section-lead {
-    grid-column: 3;
-  }
-
-  .command-stack {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .command-block:first-child {
-    grid-column: 1 / -1;
+  .suite-part {
+    grid-template-columns: 11rem minmax(0, 1fr);
   }
 
   .credit-group dl {
@@ -1609,19 +1561,6 @@ html:not(.js) .doc-toc {
     padding-block: var(--space-2xl) var(--space-3xl);
   }
 
-  .release-strip {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .release-stat,
-  .release-stat:nth-child(odd) {
-    border-inline-end: var(--rule-hairline) solid var(--color-rule-soft);
-    border-block-end: 0;
-  }
-
-  .release-stat:last-child {
-    border-inline-end: 0;
-  }
   .home-page .grid {
     grid-template-columns: repeat(12, minmax(0, 1fr));
   }
@@ -1630,8 +1569,33 @@ html:not(.js) .doc-toc {
     grid-column: span 6;
   }
 
-  .download-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .home-page .grid-thirds > .card {
+    grid-column: span 4;
+  }
+
+  /* Six parts in one row read as the constant itself. */
+  .suite-parts {
+    grid-template-columns: repeat(6, minmax(min-content, 1fr));
+  }
+
+  .yume-visual {
+    min-height: 19rem;
+  }
+
+  .cloud-shape {
+    width: min(84%, 22rem);
+  }
+
+  .suite-part {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    padding: var(--space-md);
+    border-block-start: 3px solid var(--part-line);
+    border-inline-start: 0;
+  }
+
+  .suite-part span {
+    color: var(--color-ink-soft);
   }
 
   .docs-page .hero {
@@ -1722,8 +1686,7 @@ html:not(.js) .doc-toc {
 }
 
 .hero > div > *,
-.hero > .hero-panel,
-.hero > .release-strip {
+.hero > .hero-panel {
   animation: drift-in var(--dur-long) var(--ease-out) both;
 }
 
@@ -1732,16 +1695,6 @@ html:not(.js) .doc-toc {
 .hero > div > *:nth-child(3) { animation-delay: 180ms; }
 .hero > div > *:nth-child(4) { animation-delay: 250ms; }
 .hero > .hero-panel { animation-delay: 180ms; }
-.hero > .release-strip { animation-delay: 300ms; }
-
-.release-stat {
-  animation: settle-in var(--dur-short) var(--ease-out) both;
-}
-
-.release-stat:nth-child(1) { animation-delay: 360ms; }
-.release-stat:nth-child(2) { animation-delay: 400ms; }
-.release-stat:nth-child(3) { animation-delay: 440ms; }
-.release-stat:nth-child(4) { animation-delay: 480ms; }
 
 /* Scroll motion is progressive enhancement. Without the motion-ready class,
    every item stays visible. */
@@ -1815,10 +1768,7 @@ html:not(.js) .doc-toc {
   }
 
   .doc-nav {
-    width: 100%;
-    overflow-x: auto;
-    padding-block-end: var(--space-2xs);
-    scrollbar-width: none;
+    margin-inline-start: auto;
   }
 
   .motion-ready [data-reveal],

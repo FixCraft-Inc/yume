@@ -29,8 +29,11 @@ On the wire the session is TLS 1.3 with a pinned Chrome ClientHello, HTTP/2
 and WebSocket framing. The front door serves ordinary HTTP/2 requests from the
 cover site. A fresh admission proof opens a carrier, where clients authenticate
 with composite Ed25519 and ML-DSA-87 identities. Session keys combine
-ML-KEM-1024, X25519, a pre-shared
-key and the TLS exporter. Application data uses one-use AES-256-GCM record keys.
+ML-KEM-1024, X25519, a pre-shared key and the TLS exporter, and application
+data uses one-use AES-256-GCM record keys. ML-KEM-1024 and ML-DSA-87 are in
+NIST's highest security category, and recorded traffic stays protected if a
+quantum computer later breaks X25519
+([threat model](docs/THREAT_MODEL.md#cryptography)).
 
 In a direct session, `yumed` ends the tunnel, so it knows which client connected
 and where its traffic goes. HTTPS inside the tunnel keeps page content between

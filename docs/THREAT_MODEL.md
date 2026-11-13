@@ -1,9 +1,9 @@
 <!-- Generated from docs/src/en_US/pages/threat_model.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME 0.3 threat model
 
-This threat model describes the intended YTP/1 product and explicitly separates
-requirements from current evidence. The authoritative implementation boundary
-is [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+This page states what YUME protects, from whom, and what each party can still
+see. [Implementation status](IMPLEMENTATION_STATUS.md) records which parts are
+tested and where.
 
 ## Assets and actors
 
@@ -116,26 +116,64 @@ This limits protocol fingerprint and asymmetric-work exposure; it cannot
 prevent link saturation, kernel-state exhaustion, or all TLS handshake denial
 of service.
 
-## Authentication and establishment
+## Cryptography
 
-YTP/1 requires both composite signature components and both classical and
-post-quantum establishment components. The canonical inputs bind:
+YTP/1 uses one fixed set of algorithms, the suite in
+[YTP/1](protocol/YTP_1.md#fixed-security-composition), and every session uses
+all of them. Nothing is negotiated, so an attacker on the path cannot steer a
+session to a weaker or classical-only mode. A stripped component, changed
+transcript, exporter mismatch, replay, role confusion, invalid capability list
+or provider mismatch ends the session.
 
-- the new `yume/ytp/1/...` domains and exact suite/security parameters;
-- initiator and responder roles;
-- the complete transcript and live TLS exporter;
-- both authenticated identities and capability manifests;
-- per-identity access PSK;
-- both X25519 public keys and shared contribution;
-- ML-KEM public key, ciphertext, and shared contribution.
+| Job | Algorithms | Hard problem it relies on |
+| --- | --- | --- |
+| Prove each peer's identity | Ed25519 **and** ML-DSA-87. Both signatures must verify. | Discrete logarithms on Curve25519, and the Module-LWE and Module-SIS lattice problems |
+| Agree on session keys | X25519 **and** ML-KEM-1024, combined with the client's 32-byte access PSK and a secret exported from the TLS 1.3 connection | Diffie-Hellman on Curve25519, and Module-LWE |
+| Derive keys | HKDF-SHA256 | SHA-256 as a pseudorandom function |
+| Encrypt records | AES-256-GCM, with a new key and nonce for every record | AES-256 |
 
-Component stripping, transcript mutation, exporter mismatch, replay, role
-confusion, invalid capabilities, or provider mismatch is terminal. YTP/1 does
-not negotiate a weaker composition or fall back to another provider.
+ML-KEM-1024 and ML-DSA-87 are the strongest parameter sets of NIST's
+post-quantum standards, [FIPS 203](https://csrc.nist.gov/pubs/fips/203/final)
+and [FIPS 204](https://csrc.nist.gov/pubs/fips/204/final). NIST places both in
+security category 5, its highest: breaking them must cost at least as much as
+searching for an AES-256 key
+([NIST's category definitions](https://csrc.nist.gov/projects/post-quantum-cryptography/post-quantum-cryptography-standardization/evaluation-criteria/security-(evaluation-criteria))).
+OpenSSL 3.5 performs every operation. YUME loads its default provider into a
+private library context and has no fallback provider.
 
-TLS still has its own certificate and implementation assumptions. Composite
-YTP authentication does not make a malicious terminating server trustworthy,
-and “hybrid” does not mean quantum-proof or independently certified.
+### Hybrid keys
+
+A session's first keys come from one HKDF over all of its inputs together: the
+X25519 and ML-KEM-1024 shared secrets, the access PSK, the TLS exporter, the
+suite and security parameters, both roles, both identities and capability
+lists, and the handshake transcript. Reading the session needs every secret
+among them. An attacker who breaks X25519, for example with a future quantum
+computer, still has to break ML-KEM-1024 and learn the client's PSK. A flaw
+found later in ML-KEM still leaves X25519 and the PSK in place. Impersonating a
+peer needs forgeries of both of its signatures.
+[RFC 9954](https://www.rfc-editor.org/rfc/rfc9954) describes the same way of
+combining a classical and a post-quantum key exchange for TLS 1.3.
+
+### Recorded traffic
+
+Traffic recorded today stays protected if a quantum computer later breaks
+X25519. Each direction of a session replaces its keys at least every 1 MiB,
+512 records or 500 ms of sending by default (see [keys](EXPLAINED.md#keys)).
+Each replacement runs a new X25519 and ML-KEM-1024 exchange with key pairs made
+for it alone, mixes the result into the previous root, and erases the old root
+once the peer uses the new one.
+
+- A session's first keys depend on the server's long-term ML-KEM-1024 key and
+  the client's PSK. Someone who later steals both, and can break X25519 and
+  the outer TLS connection's key exchange, could read the first epoch of each
+  direction.
+- Every later epoch also depends on a one-time ML-KEM-1024 key pair that no
+  longer exists, so stolen long-term keys do not reveal it.
+
+These protections assume that neither endpoint is compromised while it runs
+and that OpenSSL implements the algorithms correctly. Authentication proves
+which server a client reached. That server still ends the tunnel and sees what
+[the table above](#assets-and-actors) lists.
 
 ## Records and rekeying
 
@@ -149,11 +187,10 @@ directional state, old and temporary secret material uses wipeable RAII storage,
 and cancellation destroys pending work. Races must not admit a record under an
 unconfirmed or reused key.
 
-Ratcheting is post-compromise-oriented. Recovery depends on later fresh,
-uncompromised contributions, correct erasure, and the adversary losing endpoint
-access. It does not retroactively protect plaintext or keys retained by a
-malicious endpoint, and the exact recovery claim remains gated on external
-review and evidence.
+After a key leaks, later epochs recover once a fresh exchange happens that the
+attacker did not see, provided the old secrets were erased and the attacker no
+longer controls an endpoint. Rekeying cannot protect plaintext or keys that a
+compromised endpoint already holds.
 
 ## Authorization and egress
 
@@ -204,15 +241,13 @@ different browser, server, network, or application mix.
 Claims name the exact profile, observer and evidence environment. Measured
 resistance applies to those conditions.
 
-## Replacement scope
+## Scope
 
-The first YTP/1 endpoint targets direct routing, forwards, named services,
-modules and packet adapters, and a client can route its streams through a
-circuit in one operator's cluster. Transport v2's federation and
-host-controller modes are gone, and native YTP/1 has no command execution.
-Chat and file relay are planned as modules on the relay channel library, and
-each needs its own design before it ships. The desktop GUI is a separate
-client of the control socket. See
+YTP/1 covers direct routes, forwards, named services, modules and packet
+adapters, and a client can route its TCP streams through a circuit in one
+operator's cluster. Native YTP/1 has no command execution. Chat and file relay
+are planned as modules on the relay channel library, each with its own design.
+The desktop GUI is a separate client of the control socket. See
 [implementation status](IMPLEMENTATION_STATUS.md).
 
 ## Validation

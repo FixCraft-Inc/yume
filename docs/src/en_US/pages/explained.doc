@@ -56,7 +56,9 @@ establishment combines X25519, ML-KEM-1024, the client's access PSK and a
 secret exported from the live TLS connection. Both signatures and every
 key-schedule input are required. The transcript binds the suite, both
 identities, both service lists and the security parameters.
-There is one suite and no negotiation or fallback.
+There is one suite and no negotiation or fallback. The
+[threat model](THREAT_MODEL.md#cryptography) explains what an attacker has to
+break, including one who records traffic for a future quantum computer.
 
 After authentication application data is sealed with AES-256-GCM under a key
 that is used once per record. Each direction has its own key epoch. At the

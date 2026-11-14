@@ -32,6 +32,10 @@
 #include <utility>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <sys/socket.h>
+#endif
+
 #include <boost/asio/post.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/address.hpp>
@@ -1982,6 +1986,90 @@ void test_open_and_channel_cancellation(RequestFactory& requests) {
     server.wait();
 }
 
+void test_operation_cancellation_is_independent(RequestFactory& requests) {
+    struct Gate final {
+        std::mutex mutex;
+        std::condition_variable condition;
+        bool accepted{false};
+        bool release{false};
+    };
+    const auto gate = std::make_shared<Gate>();
+    TcpServer server([gate](Tcp::socket& socket) {
+        boost::system::error_code error;
+        socket.set_option(boost::asio::socket_base::receive_buffer_size(1), error);
+        CHECK(!error);
+        {
+            std::unique_lock<std::mutex> lock(gate->mutex);
+            gate->accepted = true;
+            gate->condition.notify_all();
+            gate->condition.wait_for(lock, 5s, [&] { return gate->release; });
+        }
+        std::array<char, 4096> bytes{};
+        while (socket.read_some(boost::asio::buffer(bytes), error) > 0U) {}
+        CHECK(error == boost::asio::error::eof ||
+              error == boost::asio::error::operation_aborted);
+    });
+
+    IoRuntime runtime;
+    AsioDirectRouteLimits limits;
+    limits.max_tcp_write_bytes = 128U * 1024U;
+    auto provider = make_provider(runtime, limits, [](NativeSocket socket) {
+#if !defined(_WIN32)
+        int size = 1;
+        CHECK(::setsockopt(static_cast<int>(socket.handle), SOL_SOCKET, SO_SNDBUF,
+                           &size, sizeof(size)) == 0);
+#endif
+        return Status::success();
+    });
+    auto request = requests.make(ipv4_destination(
+        ytp1::TransportProtocol::Tcp, server.port()));
+    auto opened = open_route(runtime, provider, request);
+    CHECK(opened.ok());
+    auto channel = std::move(opened).take_value().take_byte_channel();
+    {
+        std::unique_lock<std::mutex> lock(gate->mutex);
+        CHECK(gate->condition.wait_for(lock, 3s, [&] { return gate->accepted; }));
+    }
+
+    CancellationSource read_cancellation;
+    auto pending_read = start_read(runtime, *channel, 1U,
+                                   read_cancellation.token());
+    std::vector<std::byte> payload(128U * 1024U, std::byte{0x5a});
+    auto pending_write = start_write(runtime, *channel,
+        require(Buffer::copy_from(std::span<const std::byte>(payload),
+                                  limits.max_tcp_write_bytes)));
+    if (pending_write.future.wait_for(100ms) != std::future_status::timeout) {
+        const auto early = pending_write.future.get();
+        throw TestFailure("write completed early code=" +
+                          std::to_string(static_cast<int>(early.status.code())) +
+                          " bytes=" + std::to_string(early.transferred));
+    }
+
+    CHECK(read_cancellation.cancel());
+    CHECK(pending_read.future.wait_for(3s) == std::future_status::ready);
+    auto read_result = pending_read.future.get();
+    CHECK(pending_read.calls->load(std::memory_order_relaxed) == 1U);
+    CHECK(!read_result.ok() && read_result.status().code() == StatusCode::Cancelled);
+    if (pending_write.future.wait_for(100ms) != std::future_status::timeout) {
+        const auto early = pending_write.future.get();
+        throw TestFailure("write canceled by read code=" +
+                          std::to_string(static_cast<int>(early.status.code())) +
+                          " bytes=" + std::to_string(early.transferred));
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(gate->mutex);
+        gate->release = true;
+        gate->condition.notify_all();
+    }
+    CHECK(pending_write.future.wait_for(10s) == std::future_status::ready);
+    auto write_result = pending_write.future.get();
+    CHECK(pending_write.calls->load(std::memory_order_relaxed) == 1U);
+    CHECK(write_result.status.ok() && write_result.transferred == payload.size());
+    channel->close();
+    server.wait();
+}
+
 void test_provider_cancel_pending_open(RequestFactory& requests) {
     // Cancellation is allowed to prevent connect from reaching accept. A
     // passive backlog supplies a real endpoint without requiring that side effect.
@@ -2257,6 +2345,12 @@ int main(int argc, char** argv) {
             std::cout << "direct read-end regression passed\n";
             return 0;
         }
+        if (argc == 2 && std::string_view(argv[1]) == "--operation-cancel") {
+            yume::providers::RequestFactory requests;
+            yume::providers::test_operation_cancellation_is_independent(requests);
+            std::cout << "direct operation-cancel regression passed\n";
+            return 0;
+        }
         yume::providers::test_creation_and_limits();
         yume::providers::RequestFactory requests;
         yume::providers::test_request_factory_across_epoch_lifetime(requests);
@@ -2274,6 +2368,7 @@ int main(int argc, char** argv) {
             requests);
         yume::providers::test_pending_capacity(requests);
         yume::providers::test_open_and_channel_cancellation(requests);
+        yume::providers::test_operation_cancellation_is_independent(requests);
         yume::providers::test_provider_cancel_pending_open(requests);
         yume::providers::test_socket_protector_failures(requests);
         for (const bool tcp : {false, true}) {

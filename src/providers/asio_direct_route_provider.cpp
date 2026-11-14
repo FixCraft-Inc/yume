@@ -22,6 +22,9 @@
 #include <vector>
 
 #include <boost/asio/async_result.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/cancellation_type.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/ip/address_v4.hpp>
@@ -582,6 +585,7 @@ private:
         std::size_t max_bytes;
         ByteChannel::ReadCompletion completion;
         CancellationRegistration cancellation;
+        boost::asio::cancellation_signal signal;
         bool cancelled{false};
     };
 
@@ -597,6 +601,7 @@ private:
         Buffer buffer;
         ByteChannel::WriteCompletion completion;
         CancellationRegistration cancellation;
+        boost::asio::cancellation_signal signal;
         bool cancelled{false};
         std::size_t transferred{0U};
     };
@@ -683,10 +688,12 @@ private:
                 error == boost::asio::error::try_again) {
                 socket_.async_wait(
                     Tcp::socket::wait_read,
-                    [self = shared_from_this(), id](
-                        const boost::system::error_code& waited) noexcept {
-                        self->complete_socket_wait(id, waited);
-                    });
+                    boost::asio::bind_cancellation_slot(
+                        pending_read_->signal.slot(),
+                        [self = shared_from_this(), id](
+                            const boost::system::error_code& waited) noexcept {
+                            self->complete_socket_wait(id, waited);
+                        }));
                 return;
             }
             // A peek can consume a pending socket error. Preserve it instead
@@ -749,10 +756,12 @@ private:
                 last_read_filled_ = false;
                 socket_.async_wait(
                     Tcp::socket::wait_read,
-                    [self = shared_from_this(), id](
-                        const boost::system::error_code& waited) noexcept {
-                        self->complete_socket_wait(id, waited);
-                    });
+                    boost::asio::bind_cancellation_slot(
+                        pending_read_->signal.slot(),
+                        [self = shared_from_this(), id](
+                            const boost::system::error_code& waited) noexcept {
+                            self->complete_socket_wait(id, waited);
+                        }));
                 return;
             }
             if (error) {
@@ -883,11 +892,18 @@ private:
             return;
         }
         const auto through = cancel_through_.load(std::memory_order_acquire);
-        if ((pending_read_ && (pending_read_->id <= through ||
-             pending_read_->id == cancelled_read_.load(std::memory_order_acquire))) ||
-            (pending_write_ && (pending_write_->id <= through ||
-             pending_write_->id == cancelled_write_.load(std::memory_order_acquire))))
-            cancel_on_context();
+        if (pending_read_ && (pending_read_->id <= through ||
+                              pending_read_->id == cancelled_read_.load(
+                                  std::memory_order_acquire))) {
+            pending_read_->cancelled = true;
+            pending_read_->signal.emit(boost::asio::cancellation_type::terminal);
+        }
+        if (pending_write_ && (pending_write_->id <= through ||
+                               pending_write_->id == cancelled_write_.load(
+                                   std::memory_order_acquire))) {
+            pending_write_->cancelled = true;
+            pending_write_->signal.emit(boost::asio::cancellation_type::terminal);
+        }
     }
 
     void continue_write() noexcept {
@@ -911,10 +927,13 @@ private:
         }
         try {
             socket_.async_write_some(boost::asio::buffer(remaining.data(), remaining.size()),
-                [self = shared_from_this(), id](const boost::system::error_code& error,
-                                               std::size_t count) noexcept {
-                    self->complete_socket_write(id, error, count);
-                });
+                boost::asio::bind_cancellation_slot(
+                    operation.signal.slot(),
+                    [self = shared_from_this(), id](
+                        const boost::system::error_code& error,
+                        std::size_t count) noexcept {
+                        self->complete_socket_write(id, error, count);
+                    }));
         } catch (const std::bad_alloc&) {
             settle_write(allocation_status("TCP write continuation allocation failed"), transferred);
         } catch (...) {
@@ -995,20 +1014,6 @@ private:
         socket_.shutdown(Tcp::socket::shutdown_send, ignored);
         write_shutdown_ = true;
         shutdown_after_write_ = false;
-    }
-
-    void cancel_on_context() noexcept {
-        if (closed_) {
-            return;
-        }
-        if (pending_read_) {
-            pending_read_->cancelled = true;
-        }
-        if (pending_write_) {
-            pending_write_->cancelled = true;
-        }
-        boost::system::error_code ignored;
-        socket_.cancel(ignored);
     }
 
     Status terminal_read_status() const noexcept {
@@ -1203,6 +1208,7 @@ private:
         Buffer buffer;
         PacketChannel::ReceiveCompletion completion;
         CancellationRegistration cancellation;
+        boost::asio::cancellation_signal signal;
         bool cancelled{false};
     };
 
@@ -1218,6 +1224,7 @@ private:
         Buffer buffer;
         PacketChannel::SendCompletion completion;
         CancellationRegistration cancellation;
+        boost::asio::cancellation_signal signal;
         bool cancelled{false};
     };
 
@@ -1272,11 +1279,13 @@ private:
             socket_.async_receive(
                 boost::asio::buffer(
                     receive_bytes.data(), receive_bytes.size()),
-                [self = shared_from_this(), id](
-                    const boost::system::error_code& error,
-                    std::size_t transferred) noexcept {
-                    self->complete_socket_receive(id, error, transferred);
-                });
+                boost::asio::bind_cancellation_slot(
+                    pending_receive_->signal.slot(),
+                    [self = shared_from_this(), id](
+                        const boost::system::error_code& error,
+                        std::size_t transferred) noexcept {
+                        self->complete_socket_receive(id, error, transferred);
+                    }));
         } catch (const std::bad_alloc&) {
             if (pending_receive_) {
                 settle_receive(allocation_status(
@@ -1338,11 +1347,13 @@ private:
             const auto send_bytes = pending_send_->buffer.bytes();
             socket_.async_send(
                 boost::asio::buffer(send_bytes.data(), send_bytes.size()),
-                [self = shared_from_this(), id](
-                    const boost::system::error_code& error,
-                    std::size_t transferred) noexcept {
-                    self->complete_socket_send(id, error, transferred);
-                });
+                boost::asio::bind_cancellation_slot(
+                    pending_send_->signal.slot(),
+                    [self = shared_from_this(), id](
+                        const boost::system::error_code& error,
+                        std::size_t transferred) noexcept {
+                        self->complete_socket_send(id, error, transferred);
+                    }));
         } catch (const std::bad_alloc&) {
             if (pending_send_) {
                 settle_send(allocation_status(
@@ -1388,11 +1399,18 @@ private:
             return;
         }
         const auto through = cancel_through_.load(std::memory_order_acquire);
-        if ((pending_receive_ && (pending_receive_->id <= through ||
-             pending_receive_->id == cancelled_receive_.load(std::memory_order_acquire))) ||
-            (pending_send_ && (pending_send_->id <= through ||
-             pending_send_->id == cancelled_send_.load(std::memory_order_acquire))))
-            cancel_on_context();
+        if (pending_receive_ && (pending_receive_->id <= through ||
+                                 pending_receive_->id == cancelled_receive_.load(
+                                     std::memory_order_acquire))) {
+            pending_receive_->cancelled = true;
+            pending_receive_->signal.emit(boost::asio::cancellation_type::terminal);
+        }
+        if (pending_send_ && (pending_send_->id <= through ||
+                              pending_send_->id == cancelled_send_.load(
+                                  std::memory_order_acquire))) {
+            pending_send_->cancelled = true;
+            pending_send_->signal.emit(boost::asio::cancellation_type::terminal);
+        }
     }
 
     void complete_socket_receive(
@@ -1498,20 +1516,6 @@ private:
             std::move(pending_send_->completion);
         pending_send_.reset();
         invoke_noexcept(completion, std::move(status), transferred);
-    }
-
-    void cancel_on_context() noexcept {
-        if (closed_) {
-            return;
-        }
-        if (pending_receive_) {
-            pending_receive_->cancelled = true;
-        }
-        if (pending_send_) {
-            pending_send_->cancelled = true;
-        }
-        boost::system::error_code ignored;
-        socket_.cancel(ignored);
     }
 
     void close_on_context() noexcept {

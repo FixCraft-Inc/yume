@@ -259,7 +259,9 @@ and nonzero padding. The client picks stream numbers, and one stream's
 messages carry the same number for its whole life.
 
 The BEGIN payload is an address kind followed by the destination bytes of a
-YTP/1 OPEN. The destination is TCP and meets YTP/1's destination rules:
+YTP/1 OPEN. The destination is TCP and meets YTP/1's destination rules. A
+malformed destination ends that stream with `END(protocol)` and leaves the
+circuit open:
 
 @code text
 u8  address_kind       1 IPv4, 2 IPv6, 3 DNS

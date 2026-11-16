@@ -229,7 +229,7 @@ typedef struct yume_runtime_options {
      * package metadata name its location. The file must be owned by root or
      * the effective user and must not be writable by group or others. NULL
      * leaves names unresolvable: such an endpoint fails to start, while a
-     * numeric host or endpoint.connect_address never needs the helper. Name
+     * IPv4 host or endpoint.connect_address never needs the helper. Name
      * lookup runs in that separate process so stopping an endpoint never waits
      * for a system lookup that does not return. */
     const char* resolver_program;
@@ -704,8 +704,10 @@ YUME_API yume_status yume_kit_get_file(const yume_kit* kit, size_t index,
 YUME_API void yume_kit_destroy(yume_kit* kit) YUME_NOEXCEPT;
 
 /*
- * Copies a handle-scoped diagnostic. A successful operation clears the
- * handle's prior diagnostic. Event callbacks may call this function and the
+ * Copies a handle-scoped diagnostic. A successful status-returning operation
+ * clears the handle's prior diagnostic. Side-effect-free queries, including
+ * peer identity and this diagnostic query, preserve it on success and failure.
+ * Event callbacks may call this function and the
  * global version, build, compatibility and status-info queries. Endpoint
  * state returns 0 in a callback; endpoint status and message queries return
  * YUME_STATUS_INVALID_STATE. Pass runtime, config, endpoint, stream, packet,

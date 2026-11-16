@@ -15,7 +15,7 @@
 
 namespace yume::providers {
 
-void drop_process_privileges() noexcept {
+bool drop_process_privileges() noexcept {
 #if defined(__linux__)
     (void)::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 #if defined(PR_CAP_AMBIENT)
@@ -26,6 +26,18 @@ void drop_process_privileges() noexcept {
     header.pid = 0;
     __user_cap_data_struct data[_LINUX_CAPABILITY_U32S_3]{};
     (void)::syscall(SYS_capset, &header, data);
+    if (::syscall(SYS_capget, &header, data) != 0) return false;
+    for (const auto& entry : data) {
+        if (entry.effective != 0U || entry.permitted != 0U ||
+            entry.inheritable != 0U) {
+            return false;
+        }
+    }
+    if (::prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1) return false;
+    // The kernel keeps ambient capabilities within permitted AND inheritable.
+    return true;
+#else
+    return false;
 #endif
 }
 

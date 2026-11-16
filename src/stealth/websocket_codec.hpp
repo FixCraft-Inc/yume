@@ -102,7 +102,8 @@ public:
     }
     void EncodePing(WebSocketBytes& out, const std::uint8_t* data,
                     std::size_t size);
-    // RFC 6455 allows at most 123 bytes of UTF-8 reason after the code.
+    // Refuses reserved/unknown codes and reasons that are not strict UTF-8.
+    // RFC 6455 allows at most 123 bytes of reason after the code.
     void EncodeClose(WebSocketBytes& out, std::uint16_t code = 1000,
                      std::string_view reason = {});
 

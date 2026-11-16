@@ -82,18 +82,29 @@ Each authorized client identity has:
 - the server's trusted composite public identity;
 - server TLS trust material;
 - server ML-KEM material;
-- admission material appropriate to the front-door design.
+- the server's shared 32-byte front-door admission key.
 
 Server setup stores client identity, access PSK, and authorization together.
 Each client has a separate access PSK so theft of one PSK does not expose a
 secret shared by every client. Private credentials are referenced by strict
 config paths, created and read with owner-only permissions, and never embedded
-inline or printed by setup/doctor.
+inline or printed by setup/doctor. Removing a client and reloading ends its
+session authority, but its issued kit retains that admission key and can
+still reach YTP authentication through the front door. Admission does not
+grant a session or replace the client's identity and access PSK.
 
 Endpoint compromise can expose plaintext, long-term credentials, and live
 session state. File permissions and best-effort wiping cannot defend against a
 process that is already compromised, swap/core copies, malicious endpoints, or
 credentials copied before installation.
+
+System DNS and NSS parsing runs in a separate resolver helper process, outside
+the parent's memory and without inherited credential descriptors. On Linux
+the helper verifies empty capability sets and no-new-privileges before it
+serves. It keeps the parent's user identity, so a compromised helper can still
+read that user's credential files and may access other same-user processes
+where the operating system permits. This is process-memory separation, not a
+separate-user or filesystem sandbox.
 
 ## Public admission and cover
 

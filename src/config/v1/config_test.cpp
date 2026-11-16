@@ -425,9 +425,14 @@ void TestEndpointValidation() {
     document["endpoint"]["host"] = "192.0.2.10";
     Check(Parse(document).role() == Role::Client,
           "valid client IPv4 host was rejected");
-    document["endpoint"]["host"] = "2001:db8::1";
+    for (const char* host : {"2001:db8::1", "::1", "::ffff:192.0.2.1"}) {
+        document["endpoint"]["host"] = host;
+        ExpectError(document, "/endpoint/host", "endpoint.connect_address");
+    }
+    document["endpoint"]["host"] = "example.com";
+    document["endpoint"]["connect_address"] = "2001:db8::1";
     Check(Parse(document).role() == Role::Client,
-          "valid client IPv6 host was rejected");
+          "DNS host with IPv6 connection address was rejected");
     document["endpoint"]["port"] = 0;
     ExpectError(document, "/endpoint/port");
     document["endpoint"]["port"] = 65536;

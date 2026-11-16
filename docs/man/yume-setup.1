@@ -248,8 +248,15 @@ written.
 .SH OPTIONS
 .TP
 .BI "--host " host
-The DNS name or IP literal the server's TLS certificate names, which
+The DNS name or IPv4 literal the server's TLS certificate names, which
 clients authenticate.
+IPv6 literal hosts are refused.
+Use a DNS name and set the client's
+.B endpoint.connect_address
+or
+.B cluster-add
+.B --address
+to dial an IPv6 address.
 Required by
 .BR init ,
 .B add-client

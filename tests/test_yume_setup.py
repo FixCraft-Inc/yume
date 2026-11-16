@@ -832,6 +832,27 @@ class YumeSetupTests(unittest.TestCase):
                 [],
             )
 
+    def test_refuses_ipv6_server_hosts_before_publishing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            for host in ("2001:db8::1", "::1", "::ffff:192.0.2.1"):
+                with self.subTest(host=host):
+                    result = self.run_tool(
+                        "init", "--host", host, "--output", str(parent / "kit")
+                    )
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn("endpoint.connect_address", result.stderr)
+                    self.assertIn("--address", result.stderr)
+                    self.assertFalse(any(parent.iterdir()))
+
+    def test_ipv4_server_host_still_creates_a_kit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            kit = Path(temporary) / "kit"
+            result = self.run_tool("init", "--host", "192.0.2.1", "--output", str(kit))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            client = json.loads((kit / "client" / "yume.json").read_text(encoding="utf-8"))
+            self.assertEqual(client["endpoint"]["host"], "192.0.2.1")
+
     def test_rejects_invalid_host_client_name_and_output_parent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)

@@ -124,10 +124,12 @@ written.
 @options
 @opt **--host** *host*
 @cli spell: --host <host>
-@cli help: The server's public DNS name or IP address
+@cli help: The server's public DNS name or IPv4 address
 
-The DNS name or IP literal the server's TLS certificate names, which clients
-authenticate. Required by **init**, **add-client** and **cluster-add**.
+The DNS name or IPv4 literal the server's TLS certificate names, which clients
+authenticate. IPv6 literal hosts are refused. Use a DNS name and set the
+client's **endpoint.connect_address** or **cluster-add --address** to dial an
+IPv6 address. Required by **init**, **add-client** and **cluster-add**.
 @opt **--output** *directory*
 @cli file: yes
 @cli spell: --output <directory>

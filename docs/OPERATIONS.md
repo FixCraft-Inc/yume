@@ -55,7 +55,9 @@ systemctl reload yumed
 
 `remove-client` replaces the store atomically, then deletes the client's
 public key and PSK. It refuses to remove the last client, because the daemon
-requires at least one.
+requires at least one. Revocation removes session authority. A previously
+issued kit still holds the shared admission key and can pass the public
+front door, where YTP authentication then refuses its removed identity.
 
 ## Join servers into a cluster
 
@@ -270,9 +272,13 @@ NSS modules, in a separate helper process. It appears as a `yume-resolver`
 child after the first lookup. The helper holds no connections, keeps no
 capabilities, and runs each lookup on its own thread, up to 64 at once. Later
 lookups wait for a free thread, up to 1024 of them, instead of failing their
-connections. Stopping `yume` or
+connections. All event loops sharing that helper also share a separate bound
+of 1088 forwarded lookups, held through queued owner work and answer delivery,
+including after cancellation. A full forwarding budget refuses new lookups
+until queued work drains. Lookups fail if a sandbox prevents the helper from
+giving up capabilities it holds or verifying no-new-privileges. Stopping `yume` or
 `yumed` kills it, so a stalled DNS server or NSS module never delays shutdown.
-A numeric host or `endpoint.connect_address` needs no lookup. A client with
+An IPv4 host or `endpoint.connect_address` needs no lookup. A client with
 `endpoint.socks5_proxy` looks nothing up either: it connects to the proxy's
 numeric address and the proxy resolves the server's name. A client with a
 managed TUN adapter needs a numeric first hop, the proxy or else the server,

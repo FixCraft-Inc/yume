@@ -26,6 +26,48 @@ constexpr std::size_t kMaxPendingBytes = 32U * 1024U * 1024U;
 constexpr std::size_t kRetainedInboundBytes = 256U * 1024U;
 constexpr std::size_t kMaxHeaderBytes = 14U;
 
+bool ValidCloseCode(std::uint16_t code) noexcept {
+    return (code >= 1000U && code <= 1003U) ||
+           (code >= 1007U && code <= 1014U) || (code >= 3000U && code <= 4999U);
+}
+
+bool ValidUtf8(std::span<const std::uint8_t> text) noexcept {
+    std::size_t offset = 0U;
+    while (offset < text.size()) {
+        const auto first = text[offset++];
+        if (first <= 0x7fU) continue;
+        std::size_t remaining;
+        std::uint32_t value;
+        std::uint32_t minimum;
+        if (first >= 0xc2U && first <= 0xdfU) {
+            remaining = 1U;
+            value = first & 0x1fU;
+            minimum = 0x80U;
+        } else if (first >= 0xe0U && first <= 0xefU) {
+            remaining = 2U;
+            value = first & 0x0fU;
+            minimum = 0x800U;
+        } else if (first >= 0xf0U && first <= 0xf4U) {
+            remaining = 3U;
+            value = first & 0x07U;
+            minimum = 0x10000U;
+        } else {
+            return false;
+        }
+        if (remaining > text.size() - offset) return false;
+        for (std::size_t index = 0U; index < remaining; ++index) {
+            const auto next = text[offset++];
+            if ((next & 0xc0U) != 0x80U) return false;
+            value = (value << 6U) | (next & 0x3fU);
+        }
+        if (value < minimum || value > 0x10ffffU ||
+            (value >= 0xd800U && value <= 0xdfffU)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::size_t HeaderBytes(std::size_t size, bool masked) noexcept {
     const std::size_t length_bytes =
         size < 126U                                         ? 0U
@@ -200,6 +242,12 @@ void WebSocketCodec::EncodeClose(WebSocketBytes& out, std::uint16_t code,
     if (reason.size() > 123) {
         throw std::runtime_error("WebSocket close reason exceeds 123 bytes");
     }
+    if (!ValidCloseCode(code) ||
+        !ValidUtf8({reinterpret_cast<const std::uint8_t*>(reason.data()),
+                    reason.size()})) {
+        throw std::runtime_error(
+            "invalid WebSocket close code or UTF-8 reason");
+    }
     std::array<std::uint8_t, 125> payload{
         static_cast<std::uint8_t>((code >> 8) & 0xffU),
         static_cast<std::uint8_t>(code & 0xffU)};
@@ -357,6 +405,16 @@ void WebSocketCodec::Process() {
                 if (payload_length == 1) {
                     Fail("invalid one-byte WebSocket close payload");
                     return;
+                }
+                if (payload_length >= 2U) {
+                    const auto code = static_cast<std::uint16_t>(
+                        (static_cast<std::uint16_t>(payload_data[0]) << 8U) |
+                        payload_data[1]);
+                    if (!ValidCloseCode(code) ||
+                        !ValidUtf8({payload_data + 2U, payload_length - 2U})) {
+                        Fail("invalid WebSocket close code or UTF-8 reason");
+                        return;
+                    }
                 }
                 closed_ = true;
                 if (!close_sent_) {

@@ -856,15 +856,23 @@ public:
         CHECK(!error);
         port_ = acceptor_.local_endpoint().port();
         future_ = promise_.get_future();
-        thread_ = std::thread([this]() noexcept {
-            try {
-                boost::system::error_code error;
-                acceptor_.accept(socket_, error);
+        // stop() can release the runner while accept is still pending. The
+        // callback publishes the accepted socket before the handler can block.
+        acceptor_.async_accept(
+            socket_, [this](boost::system::error_code error) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (stopping_) return;
+                    accepted_ = !error;
+                }
                 if (error) {
-                    throw TestFailure("TCP accept failed: " +
-                                      error.message());
+                    throw TestFailure("TCP accept failed: " + error.message());
                 }
                 handler_(socket_);
+            });
+        thread_ = std::thread([this]() noexcept {
+            try {
+                context_.run();
                 promise_.set_value(nullptr);
             } catch (...) {
                 try {
@@ -879,14 +887,20 @@ public:
     TcpServer& operator=(const TcpServer&) = delete;
     ~TcpServer() noexcept {
         boost::system::error_code ignored;
-        acceptor_.cancel(ignored);
-        acceptor_.close(ignored);
-        socket_.cancel(ignored);
-        socket_.shutdown(Tcp::socket::shutdown_both, ignored);
-        socket_.close(ignored);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+            // Shutdown wakes a blocked handler without releasing its
+            // descriptor. The accept callback cannot publish after this.
+            if (accepted_)
+                socket_.shutdown(Tcp::socket::shutdown_both, ignored);
+        }
+        context_.stop();
         if (thread_.joinable()) {
             thread_.join();
         }
+        acceptor_.close(ignored);
+        socket_.close(ignored);
     }
 
     std::uint16_t port() const noexcept { return port_; }
@@ -908,8 +922,40 @@ private:
     std::promise<std::exception_ptr> promise_;
     std::future<std::exception_ptr> future_;
     std::thread thread_;
+    std::mutex mutex_;
+    bool accepted_{false};
+    bool stopping_{false};
     std::uint16_t port_{0U};
 };
+
+void test_tcp_server_teardown() {
+    std::atomic<bool> unused_handler_called{false};
+    {
+        TcpServer server([&](Tcp::socket&) {
+            unused_handler_called.store(true, std::memory_order_relaxed);
+        });
+    }
+    CHECK(!unused_handler_called.load(std::memory_order_relaxed));
+    boost::asio::io_context context;
+    Tcp::socket peer(context);
+    std::promise<void> entered;
+    auto reading = entered.get_future();
+    std::atomic<bool> finished{false};
+    {
+        TcpServer server([&](Tcp::socket& socket) {
+            entered.set_value();
+            std::array<char, 1U> bytes{};
+            boost::system::error_code error;
+            socket.read_some(boost::asio::buffer(bytes), error);
+            CHECK(error == boost::asio::error::eof ||
+                  error == boost::asio::error::operation_aborted);
+            finished.store(true, std::memory_order_relaxed);
+        });
+        peer.connect({boost::asio::ip::address_v4::loopback(), server.port()});
+        CHECK(reading.wait_for(3s) == std::future_status::ready);
+    }
+    CHECK(finished.load(std::memory_order_relaxed));
+}
 
 class UdpServer final {
 public:
@@ -2351,6 +2397,7 @@ int main(int argc, char** argv) {
             std::cout << "direct operation-cancel regression passed\n";
             return 0;
         }
+        yume::providers::test_tcp_server_teardown();
         yume::providers::test_creation_and_limits();
         yume::providers::RequestFactory requests;
         yume::providers::test_request_factory_across_epoch_lifetime(requests);

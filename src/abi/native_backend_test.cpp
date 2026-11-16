@@ -8,6 +8,7 @@
 // Including its implementation keeps test-only controls out of the embed API;
 // this executable does not link the separately compiled backend archive.
 #include "abi/native_backend.cpp"
+#define YUME_TEST_ALIGNED_ALLOCATIONS 1
 #include "test_support/allocation_failure.hpp"
 
 #ifndef YUME_TEST_RESOLVER_PROGRAM
@@ -15,6 +16,7 @@
 #endif
 
 #include <array>
+#include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -26,13 +28,35 @@
 
 #include <boost/asio/post.hpp>
 #if defined(YUME_HAS_DEVICE_BRIDGE)
+#include <fcntl.h>
 #include <boost/asio/error.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/local/connect_pair.hpp>
 #include <boost/asio/local/datagram_protocol.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/system/error_code.hpp>
+#endif
+
+#if defined(YUME_TEST_WRAP_POSIX_MEMALIGN)
+namespace {
+thread_local bool intercept_device_activation_allocations = false;
+}  // namespace
+
+extern "C" int __real_posix_memalign(void**, std::size_t, std::size_t);
+extern "C" int __wrap_posix_memalign(void** storage, std::size_t alignment,
+                                     std::size_t size) {
+    // Boost.Align uses this route with libc++. Keep the fault on the runner
+    // thread during bridge activation and preserve the POSIX error channel.
+    try {
+        if (intercept_device_activation_allocations)
+            yume::test::check_allocation(size);
+    } catch (...) {
+        return ENOMEM;
+    }
+    return __real_posix_memalign(storage, alignment, size);
+}
 #endif
 
 namespace yume::embed {
@@ -174,10 +198,34 @@ void test_shutdown_deadlines(const v1::Config& config) {
         CHECK(Clock::now() - before < std::chrono::seconds(1));
         CHECK(fixture.responder->shutdown_count == 0U);
         CHECK(stream->write("x", 1U, 0U, error) == BackendIo::Closed);
+        CHECK(stream->write(nullptr, 0U, 0U, error) == BackendIo::Closed);
         fixture.run->context->poll();
         CHECK(stream->shutdown_write(0U, error) == BackendIo::Ok);
         CHECK(stream->shutdown_write(0U, error) == BackendIo::Ok);
         CHECK(fixture.responder->shutdown_count == 1U);
+    }
+}
+
+void test_empty_writes_observe_terminal_state(const v1::Config& config) {
+    for (const unsigned terminal : {0U, 1U, 2U}) {
+        Fixture fixture(config);
+        const auto stream = fixture.stream();
+        std::string error = "stale diagnostic";
+        CHECK(stream->write(nullptr, 0U, 0U, error) == BackendIo::Ok);
+        CHECK(error.empty() && fixture.responder->write_count == 0U);
+        CHECK(stream->write("x", 1U, 0U, error) == BackendIo::Ok);
+        // Empty writes do not wait behind an already admitted write.
+        CHECK(stream->write(nullptr, 0U, 0U, error) == BackendIo::Ok);
+        if (terminal == 0U) {
+            stream->close();
+        } else if (terminal == 1U) {
+            fixture.run->begin_stop();
+        } else {
+            fixture.on_runner(
+                [&] { fixture.responder->close(Status(StatusCode::Closed)); });
+        }
+        CHECK(stream->write(nullptr, 0U, 0U, error) == BackendIo::Closed);
+        CHECK(!error.empty());
     }
 }
 
@@ -541,7 +589,8 @@ v1::Config read_kit_config(const std::filesystem::path& path) {
 }
 
 #if defined(YUME_HAS_DEVICE_BRIDGE)
-void test_device_start_stop_settles(const std::filesystem::path& kit) {
+void test_device_start_stop_settles(const std::filesystem::path& kit,
+                                    bool cancel) {
     const auto base = kit / "client";
     const auto config = read_kit_config(base / "yume.json");
     boost::asio::io_context sockets;
@@ -553,6 +602,11 @@ void test_device_start_stop_settles(const std::filesystem::path& kit) {
     boost::asio::local::datagram_protocol::socket device(sockets),
         peer(sockets);
     boost::asio::local::connect_pair(device, peer);
+    boost::asio::local::datagram_protocol::socket observer(sockets);
+    const int duplicate = ::fcntl(device.native_handle(), F_DUPFD_CLOEXEC, 0);
+    CHECK(duplicate >= 0);
+    observer.assign(boost::asio::local::datagram_protocol{}, duplicate);
+    observer.non_blocking(true);
     DeviceOptions options;
     options.descriptor = device.native_handle();
     options.stream_service = "echo";
@@ -585,6 +639,29 @@ void test_device_start_stop_settles(const std::filesystem::path& kit) {
     }
     Status result;
     CHECK(!startup->wait(Clock::now(), result));
+    constexpr std::array<char, 7U> pending{'p', 'e', 'n', 'd', 'i', 'n', 'g'};
+    CHECK(peer.send(boost::asio::buffer(pending)) == pending.size());
+    // Let a ready device handler run before cancelling/failing authentication.
+    // The old bridge consumes this invalid packet. A prepared bridge leaves it.
+    std::promise<void> elapsed;
+    auto barrier = elapsed.get_future();
+    boost::asio::post(run->context->executor(), [&] {
+        auto timer = std::make_shared<boost::asio::steady_timer>(
+            run->context->executor());
+        timer->expires_after(std::chrono::milliseconds(50));
+        timer->async_wait(
+            [timer, &elapsed](const boost::system::error_code& error) {
+                CHECK(!error);
+                elapsed.set_value();
+            });
+    });
+    CHECK(barrier.wait_for(std::chrono::seconds(2)) ==
+          std::future_status::ready);
+    if (!cancel) {
+        stalled.close();
+        CHECK(startup->wait(Clock::now() + std::chrono::seconds(3), result));
+        CHECK(!result.ok() && result.code() != StatusCode::Cancelled);
+    }
     const auto stopped_at = Clock::now();
     run->begin_stop();
     // Closing and draining I/O alone must also wake the blocking start.
@@ -593,14 +670,155 @@ void test_device_start_stop_settles(const std::filesystem::path& kit) {
     CHECK(run->drained());
     CHECK(startup->wait(Clock::now() + std::chrono::seconds(1), result));
     CHECK(Clock::now() - stopped_at < std::chrono::seconds(2));
-    CHECK(result.code() == StatusCode::Cancelled);
+    CHECK(!result.ok());
+    if (cancel) CHECK(result.code() == StatusCode::Cancelled);
+    std::array<char, pending.size()> preserved{};
+    boost::system::error_code read_error;
+    CHECK(observer.receive(boost::asio::buffer(preserved), 0, read_error) ==
+          pending.size());
+    CHECK(!read_error && preserved == pending);
     run->begin_stop();
     Status repeated;
     CHECK(startup->wait(Clock::now(), repeated));
-    CHECK(repeated.code() == StatusCode::Cancelled);
+    CHECK(repeated.code() == result.code());
     startup.reset();
     run.reset();
     CHECK(weak_startup.expired() && weak_run.expired());
+}
+
+void test_device_reads_after_authenticated_start(
+    const std::filesystem::path& kit) {
+    const auto server_base = kit / "server";
+    const auto client_base = kit / "client";
+    NativeBackend server(read_kit_config(server_base / "yumed.json"),
+                         server_base, {}, {}, {}, std::nullopt);
+    std::string error;
+    CHECK(server.start(0U, nullptr, error) == BackendIo::Ok);
+    boost::asio::io_context sockets;
+    boost::asio::local::datagram_protocol::socket device(sockets),
+        peer(sockets);
+    boost::asio::local::connect_pair(device, peer);
+    DeviceOptions options;
+    options.descriptor = device.native_handle();
+    options.stream_service = "echo";
+    options.ipv4 =
+        runtime::DeviceAddressPair{{127U, 0U, 0U, 1U}, {127U, 0U, 0U, 2U}};
+    NativeBackend client(read_kit_config(client_base / "yume.json"),
+                         client_base, YUME_TEST_RESOLVER_PROGRAM, {}, {},
+                         options);
+    constexpr std::array<char, 3U> payload{'i', 'p', '?'};
+    CHECK(peer.send(boost::asio::buffer(payload)) == payload.size());
+    CHECK(client.start(5000U, nullptr, error) == BackendIo::Ok);
+    const auto deadline = Clock::now() + std::chrono::seconds(2);
+    while (device.available() != 0U) {
+        CHECK(Clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    client.stop();
+    CHECK(peer.send(boost::asio::buffer(payload)) == payload.size());
+    std::array<char, payload.size()> preserved{};
+    CHECK(device.receive(boost::asio::buffer(preserved)) == payload.size());
+    CHECK(preserved == payload);
+}
+
+void test_device_activation_failure_drains_authenticated_run(
+    const std::filesystem::path& kit) {
+    const auto server_base = kit / "server";
+    const auto client_base = kit / "client";
+    NativeBackend server(read_kit_config(server_base / "yumed.json"),
+                         server_base, {}, {}, {}, std::nullopt);
+    std::string error;
+    CHECK(server.start(0U, nullptr, error) == BackendIo::Ok);
+    boost::asio::io_context sockets;
+    boost::asio::local::datagram_protocol::socket device(sockets),
+        peer(sockets);
+    boost::asio::local::connect_pair(device, peer);
+    DeviceOptions options;
+    options.descriptor = device.native_handle();
+    options.stream_service = "echo";
+    options.ipv4 =
+        runtime::DeviceAddressPair{{127U, 0U, 0U, 1U}, {127U, 0U, 0U, 2U}};
+    auto context = providers::AsioExecutionContext::create(
+        engine::ExecutorAffinity(0x44455646U));
+    CHECK(context.ok());
+    auto run = std::make_shared<NativeRun>(
+        std::move(context).take_value(),
+        read_kit_config(client_base / "yume.json"), client_base,
+        YUME_TEST_RESOLVER_PROGRAM, std::vector<BackendService>{},
+        providers::AsioTcpSocketProtector{}, std::make_shared<BackendRecord>(),
+        options);
+    const std::weak_ptr<NativeRun> weak_run = run;
+    std::weak_ptr<engine::SessionEngine> weak_session;
+    unsigned stopped = 0U;
+    std::promise<void> prepared;
+    auto ready = prepared.get_future();
+    boost::asio::post(run->context->executor(), [&, run] {
+        CHECK(run->create_endpoint(std::chrono::seconds(5)).ok());
+        auto bridge = runtime::DeviceBridge::create(
+            run->context, options,
+            [weak_run] {
+                const auto owner = weak_run.lock();
+                return owner ? owner->active_session() : nullptr;
+            },
+            [&](Status) { ++stopped; });
+        CHECK(bridge.ok());
+        run->bridge = std::move(bridge).take_value();
+        // Authenticate before activating the bridge so arming failure leaves
+        // a live session for the shutdown path to tear down.
+        run->keeper->start();
+        prepared.set_value();
+    });
+    std::jthread runner([run] { run->run_until_drained(); });
+    CHECK(ready.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+    const auto deadline = Clock::now() + std::chrono::seconds(5);
+    while (run->keeper->status().state !=
+           runtime::NativeClientState::Connected) {
+        CHECK(Clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    std::promise<Status> activated;
+    auto activation = activated.get_future();
+    boost::asio::post(run->context->executor(), [&, run] {
+        weak_session = run->active_session();
+        CHECK(!weak_session.expired());
+        // Asio can recover from a single allocation failure while arming.
+        // Keep failing on this thread until activation returns.
+        thread_local bool injected = false;
+        injected = false;
+        yume::test::before_allocate = [](std::size_t) {
+            injected = true;
+            throw std::bad_alloc();
+        };
+#if defined(YUME_TEST_WRAP_POSIX_MEMALIGN)
+        intercept_device_activation_allocations = true;
+#endif
+        auto status = run->bridge->start();
+#if defined(YUME_TEST_WRAP_POSIX_MEMALIGN)
+        intercept_device_activation_allocations = false;
+#endif
+        yume::test::before_allocate = nullptr;
+        CHECK(injected);
+        if (status.code() != StatusCode::ResourceExhausted) {
+            std::cerr << "bridge activation failure status="
+                      << static_cast<unsigned>(status.code()) << '\n';
+        }
+        CHECK(run->bridge->start().code() == StatusCode::Closed);
+        activated.set_value(std::move(status));
+    });
+    CHECK(activation.wait_for(std::chrono::seconds(2)) ==
+          std::future_status::ready);
+    const Status result = activation.get();
+    CHECK(result.code() == StatusCode::ResourceExhausted);
+    // NativeBackend::start_run takes this same shutdown path for any failed
+    // success decision: close the bridge, keeper and endpoint, then drain.
+    run->begin_stop();
+    run->context->finish();
+    runner.join();
+    CHECK(run->drained() && stopped == 0U);
+    CHECK(run->keeper->status().state == runtime::NativeClientState::Closed);
+    CHECK(run->endpoint()->session_count() == 0U && weak_session.expired());
+    run.reset();
+    CHECK(weak_run.expired());
 }
 #endif
 
@@ -976,7 +1194,11 @@ int main(int argc, char** argv) {
     if (std::filesystem::is_directory(argv[1])) {
         yume::embed::test_authenticated_runs_release_owners(argv[1]);
 #if defined(YUME_HAS_DEVICE_BRIDGE)
-        yume::embed::test_device_start_stop_settles(argv[1]);
+        yume::embed::test_device_start_stop_settles(argv[1], true);
+        yume::embed::test_device_start_stop_settles(argv[1], false);
+        yume::embed::test_device_reads_after_authenticated_start(argv[1]);
+        yume::embed::test_device_activation_failure_drains_authenticated_run(
+            argv[1]);
 #endif
         for (const auto kind : {yume::engine::ServiceKind::ByteStream,
                                 yume::engine::ServiceKind::PacketChannel}) {
@@ -1003,6 +1225,7 @@ int main(int argc, char** argv) {
     const std::string text{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
     const auto config = yume::config::v1::ParseJson(text);
     yume::embed::test_shutdown_deadlines(config);
+    yume::embed::test_empty_writes_observe_terminal_state(config);
     yume::embed::test_write_admission_is_all_or_none(config);
     yume::embed::test_partial_read_credit_and_terminal_precedence(config);
     yume::embed::test_runner_failure_stops_and_drains(config);

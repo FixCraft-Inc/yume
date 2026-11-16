@@ -38,6 +38,9 @@ constexpr std::size_t kCapabilityEntryPrefixSize = 8;
     return false;
 }
 
+// An unassigned type zero distinguishes bare REKEY_ACK from protected records.
+static_assert(!IsKnownRecordType(static_cast<RecordType>(0U)));
+
 [[nodiscard]] constexpr bool IsKnownServiceKind(ServiceKind kind) noexcept {
     return kind == ServiceKind::ByteStream || kind == ServiceKind::Packet;
 }

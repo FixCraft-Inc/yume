@@ -46,10 +46,14 @@ A client names its server:
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `host` | yes | The server's DNS name or IP literal, at most 253 bytes. TLS and admission authenticate this name |
+| `host` | yes | The server name TLS and admission authenticate, at most 253 bytes. A DNS name or IPv4 literal is accepted. An IPv6 literal is refused |
 | `port` | yes | 1 to 65535 |
-| `connect_address` | no | An IP literal dialled instead of resolving `host`. A client with a packet adapter needs it, a numeric `host` or a SOCKS5 proxy, to keep its own connection outside the tunnel |
+| `connect_address` | no | An IPv4 or IPv6 literal dialled instead of resolving `host`. For a client with a packet adapter, set it or use a SOCKS5 proxy to keep its own connection outside the tunnel |
 | `socks5_proxy` | no | A SOCKS5 proxy to reach the server through: `address` (an IP literal), `port`, and optional `credentials`, a protected file of a username line and a password line of 1 to 255 bytes each. The proxy resolves `host` unless `connect_address` is set |
+
+A DNS `host` with `connect_address` is the recommended form for reaching a
+numeric address. An IPv4 `host` is sent in the TLS server name, which browsers
+do not do.
 
 A server lists where it listens: `listen_addresses`, 1 to 16 distinct IP
 literals, and `port`. Its optional `event_loops`, 1 to 64, is how many

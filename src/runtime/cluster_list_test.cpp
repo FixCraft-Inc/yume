@@ -220,6 +220,9 @@ void test_valid_list(const Fixture& fixture) {
           "a node's fields are wrong");
     check(value.find(std::string(64, '0')) == nullptr,
           "an unknown identity was found");
+    auto numeric = fixture.document();
+    numeric["nodes"][0]["host"] = "192.0.2.1";
+    check(fixture.signed_list(numeric).ok(), "an IPv4 host was refused");
 }
 
 void test_signature_refusals(const Fixture& fixture) {
@@ -289,6 +292,9 @@ void test_document_refusals(const Fixture& fixture) {
     const std::pair<const char*, Json> bad_fields[] = {
         {"identity", fixture.node_b.fingerprint()},
         {"host", "bad host"},
+        {"host", "2001:db8::1"},
+        {"host", "::1"},
+        {"host", "::ffff:192.0.2.1"},
         {"port", 0},
         {"port", 65536},
         {"name", "-bad"},

@@ -87,11 +87,15 @@ at once, and closing the resolver kills and reaps the helper, so final drain
 never waits for a stalled system call. A cancelled lookup keeps its slot until
 the helper answers. When every slot is taken and some belong to abandoned
 lookups, the helper is replaced and its live lookups fail. The helper holds
-only its standard streams and the socketpair. It drops every capability and
-sets no-new-privileges before serving, which keeps system DNS and NSS parsing
-away from key material. `yume` and `yumed` re-execute their own image as the
-helper. Embedding hosts name the installed `yume-resolver` program. A numeric
-host never starts the helper. A name without a configured helper fails closed,
+only its standard streams and the socketpair. On Linux it verifies empty
+capability sets and no-new-privileges before announcing readiness. Failure
+ends the helper and fails the lookup closed. The separate address space keeps
+system DNS and NSS parsing away from the parent's in-memory keys. The helper
+runs as the same user and can still read files accessible to that user. It is
+not a file-access sandbox. `yume` and `yumed` re-execute their own image as the
+helper. Embedding hosts name the installed `yume-resolver` program. An IPv4
+host or `endpoint.connect_address` never starts the helper. A name without a
+configured helper fails closed,
 and there is no in-process fallback.
 
 ### SecureChannel

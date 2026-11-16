@@ -8,10 +8,10 @@
 
 namespace yume::providers {
 
-// Best effort for a helper that needs no privilege: no new
-// privileges on exec, no ambient capabilities and an empty capability set.
-// yume and yumed may hold CAP_NET_BIND_SERVICE or CAP_NET_ADMIN, or run as
-// root. Where the kernel or a sandbox refuses, the process keeps what it had.
-void drop_process_privileges() noexcept;
+// Drops Linux capability sets and prevents privilege gains on exec. Returns
+// true only after read-back verifies the outcome, even if a redundant drop
+// syscall was refused. Unsupported platforms return false. This leaves the
+// user identity and its file access unchanged. It is not a filesystem sandbox.
+[[nodiscard]] bool drop_process_privileges() noexcept;
 
 }  // namespace yume::providers

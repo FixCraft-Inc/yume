@@ -417,9 +417,10 @@ bool same_secret(std::span<const std::byte> left,
 
 // Verifies the operator-signed cluster list and this node's peer store, and
 // builds each outbound link's providers. A peer's inbound identity and PSK go
-// to the server factory through inbound. Every secret must differ from every
-// other: the link PSKs in both directions, every admission key and every
-// client access PSK. A node identity is never also a client or admin.
+// to the server factory through inbound. Link PSKs differ from one another,
+// admission keys and client access PSKs. Admission keys also differ from
+// client access PSKs. Admission-to-admission reuse grants no extra authority.
+// A node identity is never also a client or admin.
 NativeClusterCredentials load_cluster(
     const config::v1::ClusterSettings& refs, const std::filesystem::path& base,
     const CredentialCrypto& crypto, const CompositePrivate& local,
@@ -522,6 +523,10 @@ NativeClusterCredentials load_cluster(
         require(!reserved.contains(identity),
                 "a cluster peer is also a client or admin identity");
         auto admission = peer_file(entry, "admission_key");
+        for (const auto& client : clients) {
+            require(!same_secret(admission.bytes(), client.access_psk.bytes()),
+                    "a peer admission key equals a client access PSK");
+        }
         for (const auto& secret : secrets) {
             require(!same_secret(admission.bytes(), secret.bytes()),
                     "a cluster link PSK equals an admission key");

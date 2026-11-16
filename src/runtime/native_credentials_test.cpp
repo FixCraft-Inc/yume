@@ -1142,6 +1142,16 @@ void test_cluster_membership(Fixture& fixture) {
         fixture.write("credentials/cluster/to-peer.psk", secret);
         refused(description);
     }
+    fixture.write("credentials/cluster/peer-admission.key",
+                  std::string(32, '\x7a'));
+    check(!load(config).ok(),
+          "a peer admission key equal to a client access PSK was accepted");
+    fixture.write("credentials/cluster/peer-admission.key",
+                  std::string(32, '\x2a'));
+    check(load(config).ok(),
+          "admission-key reuse within its trust class was refused");
+    fixture.write("credentials/cluster/peer-admission.key",
+                  std::string(32, '\x3b'));
     check(take(load(config)).cluster.has_value(),
           "the restored cluster was refused");
 

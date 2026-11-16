@@ -92,6 +92,11 @@ std::optional<std::string> canonical_ip(std::string_view text) {
 }
 
 std::string require_host(std::string_view host) {
+    if (config::v1::IsIpv6Literal(host)) {
+        throw SetupError(
+            "host cannot be an IPv6 literal, use a DNS host with "
+            "endpoint.connect_address or cluster-add --address instead");
+    }
     if (const auto ip = canonical_ip(host)) return *ip;
     if (!config::v1::IsEndpointHost(host)) {
         throw SetupError("host must be a valid IP literal or DNS name");

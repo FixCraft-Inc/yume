@@ -1630,6 +1630,19 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_system_resolver_test COMMAND yume_system_resolver_test)
         set_tests_properties(yume_system_resolver_test PROPERTIES
             TIMEOUT 30 LABELS "foundation;0.3;resolver")
+
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_executable(yume_process_privileges_test
+                providers/process_privileges_test.cpp)
+            target_link_libraries(yume_process_privileges_test
+                PRIVATE yume_system_resolver_helper)
+            target_link_options(yume_process_privileges_test PRIVATE
+                -Wl,--wrap=prctl -Wl,--wrap=syscall)
+            yume_apply_perf_opts(yume_process_privileges_test)
+            add_test(NAME yume_process_privileges_test COMMAND yume_process_privileges_test)
+            set_tests_properties(yume_process_privileges_test PROPERTIES
+                TIMEOUT 30 LABELS "foundation;0.3;resolver")
+        endif()
     endif()
 
     if(YUME_BUILD_NATIVE_PROVIDERS)
@@ -2162,6 +2175,12 @@ if(YUME_BUILD_TESTING)
         if(TARGET yume_device_bridge)
             target_compile_definitions(yume_native_backend_test PRIVATE
                 YUME_HAS_DEVICE_BRIDGE=1)
+            if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_definitions(yume_native_backend_test PRIVATE
+                    YUME_TEST_WRAP_POSIX_MEMALIGN=1)
+                target_link_options(yume_native_backend_test PRIVATE
+                    "-Wl,--wrap=posix_memalign")
+            endif()
         endif()
         add_dependencies(yume_native_backend_test yume-resolver)
         yume_apply_perf_opts(yume_native_backend_test)

@@ -9,6 +9,7 @@
 #define YUME_TEST_ALIGNED_ALLOCATIONS
 #include "test_support/allocation_failure.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -672,6 +673,104 @@ void test_remote_cancel_and_close_during_allocation_denial() {
 
 }  // namespace
 
+// Holding the owner cannot bypass its forwarding budget, even if every
+// accepted lookup is immediately cancelled. The budget is shared by remotes.
+void test_remote_forwarding_bound() {
+    for (const bool cancel : {false, true}) {
+        const auto owner_context = make_context();
+        const auto context = make_context();
+        const auto owner = make_resolver(
+            owner_context, YUME_TEST_STALL_RESOLVER_PROGRAM, 1U, 1U);
+        const auto remote = make_remote(context, owner);
+        const auto second = make_remote(context, owner);
+        std::size_t accepted = 0U;
+        std::size_t refused = 0U;
+        std::size_t completed = 0U;
+        std::vector<std::weak_ptr<int>> callbacks;
+        boost::asio::post(context->executor(), [&] {
+            for (std::size_t index = 0U; index < 2048U; ++index) {
+                auto marker = std::make_shared<int>(0);
+                callbacks.push_back(marker);
+                const auto& resolver = index % 2U == 0U ? remote : second;
+                const auto started = resolver->resolve(
+                    kMissingHost, 1U, [&, marker](Result<Addresses> result) {
+                        ++completed;
+                        CHECK(!result.ok() &&
+                              result.status().code() == StatusCode::Closed);
+                    });
+                if (started.ok()) {
+                    ++accepted;
+                    if (cancel) resolver->cancel(started.value());
+                } else {
+                    ++refused;
+                    CHECK(started.status().code() ==
+                          StatusCode::ResourceExhausted);
+                }
+            }
+        });
+        context->poll();
+        CHECK(accepted == 2U && refused == 2046U);
+        CHECK(std::count_if(callbacks.begin(), callbacks.end(),
+                            [](const auto& marker) {
+                                return !marker.expired();
+                            }) == (cancel ? 0 : 2));
+        if (cancel) {
+            owner_context
+                ->poll();  // Drain cancelled shells without starting a helper.
+            boost::asio::post(context->executor(), [&] {
+                const auto recovered =
+                    remote->resolve(kMissingHost, 1U, [](Result<Addresses>) {});
+                CHECK(recovered.ok());
+                if (recovered.ok()) remote->cancel(recovered.value());
+            });
+            context->poll();
+        }
+        remote->close();
+        second->close();
+        context->poll();
+        CHECK(completed == (cancel ? 0U : 2U));
+        close_remote_fixture(context, remote, owner_context, owner);
+        for (const auto& marker : callbacks) CHECK(marker.expired());
+    }
+}
+
+// Even an owner's synchronous refusal retains its slot until the caller's
+// queued answer has drained. No helper is needed for this fixture.
+void test_remote_answer_holds_budget() {
+    const auto owner_context = make_context();
+    const auto context = make_context();
+    const auto owner = make_resolver(owner_context, "", 1U, 1U);
+    const auto remote = make_remote(context, owner);
+    std::size_t completed = 0U;
+    boost::asio::post(context->executor(), [&] {
+        const auto lookup = [&] {
+            return remote->resolve(
+                kMissingHost, 1U, [&](Result<Addresses> result) {
+                    ++completed;
+                    CHECK(!result.ok() && result.status().code() ==
+                                              StatusCode::FailedPrecondition);
+                });
+        };
+        CHECK(lookup().ok());
+        CHECK(lookup().ok());
+        owner_context->poll();
+        const auto refused = lookup();
+        CHECK(!refused.ok() &&
+              refused.status().code() == StatusCode::ResourceExhausted);
+        CHECK(completed == 0U);
+    });
+    context->poll();
+    CHECK(completed == 2U);
+    boost::asio::post(context->executor(), [&] {
+        const auto recovered =
+            remote->resolve(kMissingHost, 1U, [](Result<Addresses>) {});
+        CHECK(recovered.ok());
+        if (recovered.ok()) remote->cancel(recovered.value());
+    });
+    context->poll();
+    close_remote_fixture(context, remote, owner_context, owner);
+}
+
 // A remote resolver on one context sends its lookups to an owner's helper on
 // another and answers on its own. Cancel keeps a completion from running,
 // close fails what is outstanding, and the owner's refusal arrives through
@@ -762,6 +861,8 @@ int main(int argc, char** argv) {
     test_close_fails_waiting_lookups();
     test_non_helper_program();
     test_remote_lookups();
+    test_remote_forwarding_bound();
+    test_remote_answer_holds_budget();
     test_remote_refusal_during_allocation_denial();
     test_remote_forward_allocation_rollback();
     test_remote_cancel_and_close_during_allocation_denial();

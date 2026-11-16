@@ -368,8 +368,13 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
         if (helper != current) return;
         // Every valid message is nonempty, so size zero is the helper's EOF.
         if (error || size == 0U) {
-            replace_helper(Status::diagnostic(StatusCode::NotFound,
-                                              "system resolver helper exited"));
+            replace_helper(Status::diagnostic(
+                current->hello ? StatusCode::NotFound
+                               : StatusCode::FailedPrecondition,
+                current->hello
+                    ? "system resolver helper exited"
+                    : "system resolver helper exited before readiness. "
+                      "check executable and sandbox privileges"));
             return;
         }
         const std::span<const std::uint8_t> message(current->buffer.data(), size);
@@ -441,6 +446,9 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
 
     const std::shared_ptr<AsioExecutionContext> context;
     const SystemResolverOptions options;
+    // Shared by all remotes of this owner, independently of the helper's
+    // outstanding/waiting bounds. Last releases may run on either context.
+    std::atomic<std::size_t> remote_reservations{0U};
     AsioExecutionContext::ControlTask close_task;
     AsioExecutionContext::ControlTask replace_task;
     std::atomic<bool> close_requested{false};
@@ -459,11 +467,44 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
 // then needs no extra map allocation, and terminal delivery cannot be lost
 // to an allocating post.
 struct SystemResolver::Remote final : std::enable_shared_from_this<Remote> {
+    class Reservation final {
+    public:
+        explicit Reservation(std::shared_ptr<State> owner) noexcept
+            : owner_(std::move(owner)) {
+            const auto limit =
+                owner_->options.max_outstanding + owner_->options.max_waiting;
+            auto used =
+                owner_->remote_reservations.load(std::memory_order_relaxed);
+            while (used < limit) {
+                if (owner_->remote_reservations.compare_exchange_weak(
+                        used, used + 1U, std::memory_order_relaxed)) {
+                    return;
+                }
+            }
+            owner_.reset();
+        }
+        Reservation(const Reservation&) = delete;
+        Reservation& operator=(const Reservation&) = delete;
+        Reservation(Reservation&&) noexcept = default;
+        Reservation& operator=(Reservation&&) = delete;
+        ~Reservation() {
+            if (owner_) {
+                owner_->remote_reservations.fetch_sub(
+                    1U, std::memory_order_relaxed);
+            }
+        }
+        explicit operator bool() const noexcept { return bool(owner_); }
+
+    private:
+        std::shared_ptr<State> owner_;
+    };
+
     struct Lookup final : std::enable_shared_from_this<Lookup> {
         Lookup(std::shared_ptr<Remote> resolver, std::uint64_t lookup_id,
                std::string_view name, std::size_t address_limit,
-               Completion callback)
+               Completion callback, Reservation reservation)
             : remote_(std::move(resolver)),
+              reservation_(std::move(reservation)),
               id_(lookup_id),
               host_(name),
               max_addresses_(address_limit),
@@ -524,6 +565,9 @@ struct SystemResolver::Remote final : std::enable_shared_from_this<Remote> {
         }
 
         const std::shared_ptr<Remote> remote_;
+        // Cancellation releases the caller's completion immediately, but
+        // this slot survives every queued owner/answer task holding Lookup.
+        const Reservation reservation_;
         const std::uint64_t id_;
         const std::string host_;
         const std::size_t max_addresses_;
@@ -554,11 +598,17 @@ struct SystemResolver::Remote final : std::enable_shared_from_this<Remote> {
         if (!completion || max_addresses == 0U || !protocol::valid_host(host))
             return Result<std::uint64_t>(Status::diagnostic(
                 StatusCode::InvalidArgument, "invalid system lookup"));
+        Reservation reservation(owner->state_);
+        if (!reservation) {
+            return Result<std::uint64_t>(
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "too many forwarded system lookups"));
+        }
         const std::uint64_t id = ++last_id;
         try {
-            auto lookup =
-                std::make_shared<Lookup>(shared_from_this(), id, host,
-                                         max_addresses, std::move(completion));
+            auto lookup = std::make_shared<Lookup>(
+                shared_from_this(), id, host, max_addresses,
+                std::move(completion), std::move(reservation));
             pending.emplace(id, lookup);
             owner->state_->context->submit(lookup->owner_task_, lookup);
         } catch (...) {
@@ -570,7 +620,7 @@ struct SystemResolver::Remote final : std::enable_shared_from_this<Remote> {
     void deliver(std::uint64_t id, Result<Addresses> result) noexcept {
         const auto found = pending.find(id);
         if (found == pending.end()) return;
-        auto completion = std::move(found->second->completion_);
+        auto completion = std::exchange(found->second->completion_, nullptr);
         pending.erase(found);
         invoke_contained(completion, std::move(result));
     }
@@ -579,7 +629,7 @@ struct SystemResolver::Remote final : std::enable_shared_from_this<Remote> {
         const auto found = pending.find(id);
         if (found == pending.end()) return;
         auto lookup = std::move(found->second);
-        auto completion = std::move(lookup->completion_);
+        auto released = std::exchange(lookup->completion_, nullptr);
         pending.erase(found);
         lookup->request_cancel();
     }
@@ -596,7 +646,7 @@ struct SystemResolver::Remote final : std::enable_shared_from_this<Remote> {
         outstanding.swap(pending);
         for (auto& [id, lookup] : outstanding) {
             lookup->request_cancel();
-            auto completion = std::move(lookup->completion_);
+            auto completion = std::exchange(lookup->completion_, nullptr);
             invoke_contained(completion, Result<Addresses>(Status::diagnostic(
                                              StatusCode::Closed,
                                              "system resolver is closed")));

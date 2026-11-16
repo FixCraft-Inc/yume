@@ -12,6 +12,34 @@ current behavior and qualification.
 
 ## [Unreleased 0.3.0-dev1]
 
+Client configuration, cluster lists and `yume-setup` refuse IPv6 literal
+server hosts before connecting or provisioning. Use a DNS host with
+`endpoint.connect_address` or a cluster node's `address` to dial IPv6.
+IPv4 literal hosts remain accepted, with their TLS server-name difference
+from browsers documented.
+
+On Linux, the resolver helper verifies that its capabilities are empty and
+`no_new_privs` is set before it announces readiness. It refuses to serve if
+either check fails. Forwarded lookups also reserve bounded owner-wide slots
+before queueing, retained until owner and answer tasks have released them,
+so delayed owner loops and cancelled bursts cannot retain unbounded work.
+Cancelling a forwarded lookup releases the caller's completion immediately,
+including when built with libc++.
+
+Empty writes through the C ABI report `CLOSED` when the stream is terminal
+or its write direction is shut down. Peer identity queries preserve the
+handle's earlier I/O diagnostic on success and failure.
+
+An ABI device bridge validates and binds during startup, then begins reading
+when the first session authenticates and startup succeeds. Failed or cancelled
+startup leaves device input unread.
+
+WebSocket CLOSE frames validate their status code and UTF-8 reason before
+acceptance or echo. Outbound CLOSE encoding refuses the same invalid codes.
+
+A cluster peer's admission key must differ from every client access PSK.
+Admission keys shared within their own trust class remain accepted.
+
 The protocol contracts, the C ABI page, the source map and the YTP/1
 development guide were checked against the code and corrected where they
 differed. Module programs run under a service manager and `yumed` never

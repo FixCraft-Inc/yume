@@ -2375,32 +2375,10 @@ yume_status yume_stream_get_peer_identity(const yume_stream* stream,
     if (!stream || !valid_header(&stream->header, HandleKind::Stream)) {
         return YUME_STATUS_INVALID_ARGUMENT;
     }
-    if (g_in_callback) {
-        return fail_with_diagnostic(
-            const_cast<HandleHeader*>(&stream->header),
-            YUME_STATUS_INVALID_STATE,
-            "stream identity queries are forbidden from callbacks");
-    }
-    auto* diagnostic_owner = const_cast<HandleHeader*>(&stream->header);
-    if (!out) {
-        return fail_with_diagnostic(diagnostic_owner,
-                                    YUME_STATUS_INVALID_ARGUMENT,
-                                    "peer identity output is required");
-    }
-    return guard(diagnostic_owner, [&]() -> yume_status {
-        const yume_status status = copy_sized(
-            out, out_size, YUME_PEER_IDENTITY_MIN_SIZE, stream->peer,
-            kPeerIdentityFields);
-        if (status == YUME_STATUS_OK) {
-            clear_diagnostic(diagnostic_owner);
-        } else {
-            set_diagnostic(diagnostic_owner, status, {},
-                           status == YUME_STATUS_BUFFER_TOO_SMALL
-                               ? "peer identity output is too small"
-                               : "peer identity output layout is invalid");
-        }
-        return status;
-    });
+    if (g_in_callback) return YUME_STATUS_INVALID_STATE;
+    if (!out) return YUME_STATUS_INVALID_ARGUMENT;
+    return copy_sized(out, out_size, YUME_PEER_IDENTITY_MIN_SIZE, stream->peer,
+                      kPeerIdentityFields);
 }
 
 yume_status yume_stream_read(yume_stream* stream,
@@ -2481,10 +2459,6 @@ yume_status yume_stream_write(yume_stream* stream,
                                             "stream is closed");
             }
             backend = stream->backend.get();
-        }
-        if (size == 0) {
-            clear_diagnostic(&stream->header);
-            return YUME_STATUS_OK;
         }
         std::string error;
         const yume::embed::BackendIo io =
@@ -2581,32 +2555,10 @@ yume_status yume_packet_get_peer_identity(const yume_packet* packet,
     if (!packet || !valid_header(&packet->header, HandleKind::Packet)) {
         return YUME_STATUS_INVALID_ARGUMENT;
     }
-    if (g_in_callback) {
-        return fail_with_diagnostic(
-            const_cast<HandleHeader*>(&packet->header),
-            YUME_STATUS_INVALID_STATE,
-            "packet identity queries are forbidden from callbacks");
-    }
-    auto* diagnostic_owner = const_cast<HandleHeader*>(&packet->header);
-    if (!out) {
-        return fail_with_diagnostic(diagnostic_owner,
-                                    YUME_STATUS_INVALID_ARGUMENT,
-                                    "peer identity output is required");
-    }
-    return guard(diagnostic_owner, [&]() -> yume_status {
-        const yume_status status = copy_sized(
-            out, out_size, YUME_PEER_IDENTITY_MIN_SIZE, packet->peer,
-            kPeerIdentityFields);
-        if (status == YUME_STATUS_OK) {
-            clear_diagnostic(diagnostic_owner);
-        } else {
-            set_diagnostic(diagnostic_owner, status, {},
-                           status == YUME_STATUS_BUFFER_TOO_SMALL
-                               ? "peer identity output is too small"
-                               : "peer identity output layout is invalid");
-        }
-        return status;
-    });
+    if (g_in_callback) return YUME_STATUS_INVALID_STATE;
+    if (!out) return YUME_STATUS_INVALID_ARGUMENT;
+    return copy_sized(out, out_size, YUME_PEER_IDENTITY_MIN_SIZE, packet->peer,
+                      kPeerIdentityFields);
 }
 
 yume_status yume_packet_write_batch(yume_packet* packet,

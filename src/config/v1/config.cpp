@@ -391,6 +391,11 @@ Endpoint ParseEndpoint(const Json& endpoint, Role role) {
                           {"host", "port"});
         const auto& host =
             ReadString(endpoint.at("host"), "/endpoint/host", kMaxHostBytes);
+        if (IsIpv6Literal(host)) {
+            Fail("/endpoint/host",
+                 "IPv6 literals cannot name a server, use a DNS host with "
+                 "endpoint.connect_address instead");
+        }
         if (!IsClientHost(host)) {
             Fail("/endpoint/host", "must be an IP literal or DNS host name");
         }

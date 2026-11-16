@@ -69,6 +69,11 @@ public:
     // posted to `owner` on the owner's context and its answer posted back,
     // so the contexts of one server share one helper and its bounds. The
     // owner's synchronous refusals arrive through the completion here.
+    // All remotes of one owner additionally share max_outstanding + max_waiting
+    // forwarded slots, reserved before forwarding and held until queued owner
+    // work and answer delivery settle, including after cancellation. This is
+    // separate from the helper's outstanding and waiting bounds. A full remote
+    // budget refuses synchronously with ResourceExhausted.
     // Closing this resolver fails its own outstanding lookups and leaves the
     // owner open. Keep the owner's context running while this one has
     // lookups outstanding.

@@ -528,7 +528,9 @@ write was sent. A zero-timeout call while that is in progress returns
 that had capacity but could not take ownership of the write returns
 `YUME_STATUS_IO_ERROR`. None of the three consumes the input,
 reserves capacity, or sends a partial record. A zero-length write is a
-successful no-op on an open stream.
+successful no-op while the stream and its write side remain open. It returns
+`YUME_STATUS_CLOSED` after endpoint stop, peer abort, or write shutdown, just
+as a nonempty write does. It copies and queues no data.
 
 `shutdown_write` sends an authenticated half-close after prior writes. A
 positive deadline bounds the wait for those writes and the execution-thread
@@ -598,9 +600,12 @@ a null `options` detaches it. A server endpoint returns
 `YUME_STATUS_UNSUPPORTED`, and a service the configuration does not declare
 with the right kind `YUME_STATUS_NOT_FOUND`.
 
-The bridge runs while the endpoint is `RUNNING`. Nothing reads the device
-otherwise, so its traffic waits and then drops inside the device and never
-leaves another way. A start fails with `YUME_STATUS_INVALID_ARGUMENT` when
+Device reading begins when the start's first session has authenticated, at
+the start's success decision, and ends when stop closes the bridge. Before
+that decision and after closure nothing reads the device, so its traffic
+waits and then drops inside the device and never leaves another way. A
+failed or cancelled first attempt does not read it. A start fails with
+`YUME_STATUS_INVALID_ARGUMENT` when
 the device's address is not usable for the bridge's listener.
 
 An endpoint with a device keeps its session up. Its start still returns when
@@ -897,7 +902,8 @@ OPEN, write, or lifecycle call.
 
 Each handle stores its own last diagnostic. A successful status-returning
 operation clears the previous diagnostic on that handle; side-effect-free
-queries and the diagnostic query itself do not. `yume_handle_get_diagnostic`
+queries (including both peer-identity queries) and the diagnostic query itself
+preserve it on success and failure. `yume_handle_get_diagnostic`
 copies the status, truncation flags, optional JSON pointer, and bounded human
 message into caller storage. It takes a runtime, config, endpoint, stream,
 packet or kit handle. Diagnostics contain no private key, PSK, token,

@@ -383,8 +383,8 @@ public:
     }
     // The client's authenticated session, or nullptr while it has none.
     std::shared_ptr<engine::SessionEngine> active_session() const noexcept;
-    // Opens the device bridge of a client that has a device.
-    Status start_bridge();
+    // Validates and binds a client's device without arming traffic yet.
+    Status prepare_bridge();
     // Retains the first-attempt waiter until it settles or this run closes.
     void watch_start(std::shared_ptr<StartOperation> operation) noexcept {
         start_operation_ = std::move(operation);
@@ -861,7 +861,19 @@ BackendIo NativeStream::write_packets(std::span<const BackendPacketView> packets
 
 BackendIo NativeStream::write(const void* data, std::size_t size,
                               std::uint32_t timeout_ms, std::string& error) {
-    if (size == 0U) return BackendIo::Ok;
+    if (size == 0U) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (const auto refusal = send_refusal_locked(error);
+            refusal != BackendIo::Ok) {
+            return refusal;
+        }
+        if (shutdown_requested_) {
+            describe(error, "stream write side is shut down");
+            return BackendIo::Closed;
+        }
+        error.clear();
+        return BackendIo::Ok;
+    }
     if (size > kMaxWriteBytes) {
         describe(error, "stream write exceeds the 256 KiB admission bound");
         return BackendIo::Invalid;
@@ -1446,7 +1458,7 @@ void StartOperation::start_on_runner() noexcept {
             return;
         }
         if (run_->keeper) {
-            Status bridged = run_->start_bridge();
+            Status bridged = run_->prepare_bridge();
             if (!bridged.ok()) {
                 settle(std::move(bridged));
                 return;
@@ -1515,6 +1527,14 @@ void StartOperation::settle(Status status) noexcept {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (done_) return;
+#if defined(YUME_HAS_DEVICE_BRIDGE)
+        if (status.ok() && run_->bridge) {
+            // Only the winning authenticated start may arm reads. A failed
+            // or already cancelled first attempt leaves device input queued.
+            status = run_->running() ? run_->bridge->start()
+                                     : Status(StatusCode::Cancelled);
+        }
+#endif
         done_ = true;
         status_ = std::move(status);
     }
@@ -1741,7 +1761,7 @@ std::shared_ptr<engine::SessionEngine> NativeRun::active_session()
                : nullptr;
 }
 
-Status NativeRun::start_bridge() {
+Status NativeRun::prepare_bridge() {
 #if defined(YUME_HAS_DEVICE_BRIDGE)
     if (!device) return Status::success();
     const std::weak_ptr<NativeRun> weak = weak_from_this();

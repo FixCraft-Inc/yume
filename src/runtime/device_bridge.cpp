@@ -846,6 +846,7 @@ struct DeviceBridge::State final : std::enable_shared_from_this<State> {
     std::atomic<std::uint32_t> tcp_count{0U};
     std::atomic<std::uint32_t> udp_count{0U};
     bool closing{false};
+    bool started{false};
 };
 
 // One accepted connection from accept until its stream is joined or it
@@ -1242,12 +1243,6 @@ engine::Result<std::shared_ptr<DeviceBridge>> DeviceBridge::create(
 
         auto result = std::shared_ptr<DeviceBridge>(new DeviceBridge(state));
         state->opener = std::move(opener);
-        state->sweep();
-        state->resume_accepting();
-        state->wait_device();
-        // A failure while arming closed the bridge before any owner existed.
-        if (state->closing)
-            return Created(Status(StatusCode::ResourceExhausted));
         state->on_stopped = std::move(on_stopped);
         return Created(std::move(result));
     } catch (const std::bad_alloc&) {
@@ -1262,6 +1257,24 @@ DeviceBridge::DeviceBridge(std::shared_ptr<State> state) noexcept
 
 DeviceBridge::~DeviceBridge() noexcept {
     close();
+}
+
+engine::Status DeviceBridge::start() noexcept {
+    if (!state_->context->running_in_this_thread()) {
+        return Status(StatusCode::FailedPrecondition);
+    }
+    if (state_->closing) return Status(StatusCode::Closed);
+    if (state_->started) return Status::success();
+    state_->started = true;
+    // Initial arming reports failure to start's caller. Only a later device
+    // failure invokes the owner's stopped callback.
+    auto stopped = std::exchange(state_->on_stopped, {});
+    state_->sweep();
+    state_->resume_accepting();
+    state_->wait_device();
+    if (state_->closing) return Status(StatusCode::ResourceExhausted);
+    state_->on_stopped = std::move(stopped);
+    return Status::success();
 }
 
 std::uint32_t DeviceBridge::tcp_connections() const noexcept {

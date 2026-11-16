@@ -464,7 +464,12 @@ static void* deadline_worker(void* opaque) {
                                   20000u);
         if (status == YUME_STATUS_OK) continue;
         if (status == YUME_STATUS_CLOSED) {
-            context->ok = 1;
+            size_t written = 99u;
+            context->ok =
+                expect_status(yume_stream_write(stream, NULL, 0u, &written, 0u),
+                              YUME_STATUS_CLOSED,
+                              "empty write after peer abort", stream) &&
+                written == 0u;
         } else {
             report("server read after the client abort", status, stream);
         }
@@ -1038,13 +1043,33 @@ int main(int argc, char** argv) {
     echo_started = 1;
     if (!expect_status(open_named(client, kEcho, 20000u, &stream),
                        YUME_STATUS_OK, "echo OPEN", client) ||
-        !check_peer(stream, YUME_ROLE_SERVER, kEcho, server_fingerprint) ||
-        !expect_read(stream, 0u, YUME_STATUS_WOULD_BLOCK,
+        !check_peer(stream, YUME_ROLE_SERVER, kEcho, server_fingerprint)) {
+        goto cleanup;
+    }
+    {
+        size_t written = 99u;
+        if (!expect_status(yume_stream_write(stream, NULL, 0u, &written, 0u),
+                           YUME_STATUS_OK, "empty write on a live stream",
+                           stream) ||
+            written != 0u) {
+            goto cleanup;
+        }
+    }
+    if (!expect_read(stream, 0u, YUME_STATUS_WOULD_BLOCK,
                      "zero-timeout read") ||
         !write_text(stream, kClientPayload) ||
         !expect_status(yume_stream_shutdown_write(stream, 20000u),
                        YUME_STATUS_OK, "client shutdown_write", stream)) {
         goto cleanup;
+    }
+    {
+        size_t written = 99u;
+        if (!expect_status(yume_stream_write(stream, NULL, 0u, &written, 0u),
+                           YUME_STATUS_CLOSED, "empty write after shutdown",
+                           stream) ||
+            written != 0u) {
+            goto cleanup;
+        }
     }
     {
         size_t written = 0u;
@@ -1209,6 +1234,11 @@ int main(int argc, char** argv) {
                 yume_stream_write(retained_server, "x", 1u, &written, 0u),
                 YUME_STATUS_CLOSED, "write on a stopped server's stream",
                 retained_server) ||
+            !expect_status(
+                yume_stream_write(retained_server, NULL, 0u, &written, 0u),
+                YUME_STATUS_CLOSED, "empty write on a stopped server's stream",
+                retained_server) ||
+            written != 0u ||
             !expect_read(retained_client, 20000u, YUME_STATUS_CLOSED,
                          "client read after the server stopped") ||
             !expect_status(open_named(client, kEcho, 5000u, &stream),

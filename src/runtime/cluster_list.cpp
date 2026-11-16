@@ -209,6 +209,9 @@ Node parse_node(const keys::KeyContext& keys, const Json& entry) {
     node.name = text(entry.at("name"), kMaxNameBytes);
     require(label_text(node.name), "cluster node name is invalid");
     node.host = text(entry.at("host"), 253U);
+    require(!config::v1::IsIpv6Literal(node.host),
+            "cluster node host cannot be an IPv6 literal, use a DNS host "
+            "with address instead");
     require(config::v1::IsEndpointHost(node.host),
             "cluster node host is invalid");
     const auto& port = entry.at("port");

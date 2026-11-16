@@ -29,8 +29,9 @@ inline constexpr std::size_t kMaxJsonBytes = std::size_t{4} * 1024U * 1024U;
 bool valid_name(std::string_view name) noexcept;
 std::string require_client_name(std::string_view name);
 std::string require_node_name(std::string_view name);
-// A host a client endpoint may name, in setup's canonical text: an IP
-// literal as inet_ntop prints it, or a DNS name in lowercase.
+// A server host in setup's canonical text: an IPv4 literal as inet_ntop
+// prints it, or a DNS name in lowercase. IPv6 literals belong in a separate
+// connection address because admission cannot authenticate them as names.
 std::string require_host(std::string_view host);
 // The canonical text of an IP literal, or nothing.
 std::optional<std::string> canonical_ip(std::string_view text);

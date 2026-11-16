@@ -81,7 +81,7 @@ struct DeviceBridgeOptions final {
 // identifier of its own, random as the application's was, and returns the
 // reply to the port that asked with the identifier it used.
 //
-// Creation, close and every callback run on the supplied single-runner
+// Creation, start, close and every callback run on the supplied single-runner
 // context. The caller closes the bridge, calls finish() and drains. Close
 // ends joined connections too. on_stopped runs once when the device or a
 // listener fails in a way that cannot be retried, after the bridge closed
@@ -90,6 +90,7 @@ class DeviceBridge final {
 public:
     using Stopped = std::function<void(engine::Status)>;
 
+    // Validates and binds without reading the device or accepting traffic.
     // InvalidArgument for options outside their bounds or addresses the
     // listener cannot bind, which a device without that address causes.
     static engine::Result<std::shared_ptr<DeviceBridge>> create(
@@ -100,6 +101,12 @@ public:
     DeviceBridge(const DeviceBridge&) = delete;
     DeviceBridge& operator=(const DeviceBridge&) = delete;
     ~DeviceBridge() noexcept;
+
+    // Arms traffic once the owning client's first session has authenticated.
+    // Idempotent on the context. A closed bridge cannot be restarted.
+    // Initial arming failure closes the bridge and returns its status without
+    // invoking on_stopped, which reports failures after start succeeds.
+    [[nodiscard]] engine::Status start() noexcept;
 
     // Callable from any thread: what the bridge carries now.
     std::uint32_t tcp_connections() const noexcept;

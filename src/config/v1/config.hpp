@@ -818,8 +818,10 @@ struct RunSettings final {
     std::optional<std::string> control_socket;
 };
 
-// A host a client endpoint may name: an IP literal or a DNS name of at most
-// 253 bytes. Cluster lists name their nodes' hosts by the same rule.
+// Host syntax: an IP literal or a DNS name of at most 253 bytes. Endpoint
+// and cluster parsers additionally refuse IPv6 literals as server names
+// because admission authenticates a DNS-form name. Numeric addresses remain
+// valid in connect_address and cluster address.
 bool IsEndpointHost(std::string_view value);
 // An IPv4 or IPv6 literal, as endpoint.connect_address takes.
 bool IsIpAddressLiteral(std::string_view value);

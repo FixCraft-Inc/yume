@@ -162,7 +162,7 @@ int run_system_resolver_helper() noexcept {
         return 2;
     }
     // The helper runs the system's DNS and NSS parsing and needs no privilege.
-    drop_process_privileges();
+    if (!drop_process_privileges()) return 1;
     const auto hello = protocol::encode_hello();
     send_message(hello.data(), hello.size());
 

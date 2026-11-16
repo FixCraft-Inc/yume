@@ -87,7 +87,10 @@ Implemented and covered by focused tests:
   process, one thread per lookup, with bounded outstanding and abandoned work.
   Cancellation settles at once, and closing the resolver kills and reaps the
   helper. The helper inherits only its standard streams and socketpair and
-  drops every capability. Resolver, provider and endpoint tests use a helper
+  verifies empty Linux capability sets and no-new-privileges before readiness,
+  failing closed if that outcome cannot be verified. It retains the parent's
+  user identity and file access. The helper requires Linux. Other platforms
+  refuse to serve. Resolver, provider and endpoint tests use a helper
   whose test name never resolves: cancellation, helper replacement after
   abandoned lookups and endpoint close all settle, and final drain finishes
   within two seconds. The development programs are their own helper. The

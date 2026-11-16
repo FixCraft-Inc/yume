@@ -27,7 +27,7 @@ inline constexpr char kHelpBody[] =
     "  yume-setup --help\n"
     "\n"
     "Kit options:\n"
-    "  --host <host>            The server's public DNS name or IP address\n"
+    "  --host <host>            The server's public DNS name or IPv4 address\n"
     "  --output <directory>     New directory to create; its parent must exist\n"
     "  --server <directory>     A server directory holding yumed.json\n"
     "  --client-name <name>     The client's name in the store, client1 by default\n"

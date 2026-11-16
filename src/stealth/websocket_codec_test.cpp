@@ -278,6 +278,117 @@ void RejectWrongMaskAndText() {
     assert(server2.failed());
 }
 
+WebSocketBytes CloseWire(WebSocketRole receiver, WebSocketBytes payload) {
+    const bool masked = receiver == WebSocketRole::Server;
+    WebSocketBytes wire{0x88, static_cast<std::uint8_t>(payload.size() |
+                                                        (masked ? 0x80U : 0U))};
+    if (masked) {
+        const std::array<std::uint8_t, 4> key{1, 2, 3, 4};
+        wire.insert(wire.end(), key.begin(), key.end());
+        ReferenceMask(payload.data(), payload.size(), key, 0U);
+    }
+    wire.insert(wire.end(), payload.begin(), payload.end());
+    return wire;
+}
+
+void ClosePayloadValidation() {
+    const auto check = [](WebSocketBytes payload, bool valid) {
+        for (const auto role : {WebSocketRole::Client, WebSocketRole::Server}) {
+            WebSocketCodec receiver(role);
+            std::size_t observed = 0U;
+            receiver.set_inbound_frame_observer(
+                [](void* context, const auto&) noexcept {
+                    ++*static_cast<std::size_t*>(context);
+                },
+                &observed);
+            const auto wire = CloseWire(role, payload);
+            receiver.Feed(wire.data(), wire.size() - 1U);
+            assert(!receiver.failed() && !receiver.closed() && observed == 0U);
+            assert(receiver.TakeWireReplies().empty());
+            receiver.Feed(wire.data() + wire.size() - 1U, 1U);
+            assert(receiver.failed() == !valid && receiver.closed() == valid);
+            assert(observed == (valid ? 1U : 0U));
+            const auto reply = receiver.TakeWireReplies();
+            if (valid) {
+                assert(!reply.empty());
+                const auto peer_role = role == WebSocketRole::Client
+                                           ? WebSocketRole::Server
+                                           : WebSocketRole::Client;
+                WebSocketCodec peer(peer_role);
+                peer.Feed(reply);
+                assert(!peer.failed() && peer.closed());
+            } else {
+                assert(reply.empty());
+            }
+        }
+    };
+    check({}, true);
+    check({0x03}, false);
+    for (const std::uint16_t code :
+         {1000, 1001, 1002, 1003, 1007, 1014, 3000, 4999}) {
+        check({static_cast<std::uint8_t>(code >> 8U),
+               static_cast<std::uint8_t>(code)},
+              true);
+        WebSocketCodec encoder(WebSocketRole::Server);
+        WebSocketBytes wire;
+        encoder.EncodeClose(wire, code);
+        assert(wire == CloseWire(WebSocketRole::Client,
+                                 {static_cast<std::uint8_t>(code >> 8U),
+                                  static_cast<std::uint8_t>(code)}));
+    }
+    for (const std::uint16_t code :
+         {0, 999, 1004, 1005, 1006, 1015, 1016, 2999, 5000, 65535}) {
+        check({static_cast<std::uint8_t>(code >> 8U),
+               static_cast<std::uint8_t>(code)},
+              false);
+        WebSocketCodec encoder(WebSocketRole::Server);
+        WebSocketBytes out{0xaa};
+        bool refused = false;
+        try {
+            encoder.EncodeClose(out, code);
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        assert(refused && out == WebSocketBytes{0xaa});
+    }
+    const WebSocketBytes valid_reason{
+        0x00, 0x7f, 0xc2, 0x80, 0xdf, 0xbf, 0xe0, 0xa0, 0x80, 0xed, 0x9f, 0xbf,
+        0xef, 0xbf, 0xbf, 0xf0, 0x90, 0x80, 0x80, 0xf4, 0x8f, 0xbf, 0xbf};
+    const auto check_reason = [&](const WebSocketBytes& reason, bool valid) {
+        WebSocketBytes payload{0x03, 0xe8};
+        payload.insert(payload.end(), reason.begin(), reason.end());
+        check(payload, valid);
+        WebSocketCodec encoder(WebSocketRole::Server);
+        WebSocketBytes out{0xaa};
+        bool refused = false;
+        try {
+            encoder.EncodeClose(
+                out, 1000,
+                {reinterpret_cast<const char*>(reason.data()), reason.size()});
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        assert(refused == !valid);
+        if (!valid) assert(out == WebSocketBytes{0xaa});
+    };
+    check_reason(valid_reason, true);
+    for (const auto& reason :
+         std::vector<WebSocketBytes>{{0x80},
+                                     {0xc0, 0xaf},
+                                     {0xc1, 0xbf},
+                                     {0xc2},
+                                     {0xc2, 0x20},
+                                     {0xe0, 0x80, 0x80},
+                                     {0xed, 0xa0, 0x80},
+                                     {0xe2, 0x82},
+                                     {0xf0, 0x80, 0x80, 0x80},
+                                     {0xf4, 0x90, 0x80, 0x80},
+                                     {0xf5, 0x80, 0x80, 0x80},
+                                     {0xff}}) {
+        check_reason(reason, false);
+    }
+}
+
 void ObserveOnlyCompleteValidatedMetadata() {
     WebSocketCodec client(WebSocketRole::Client);
     WebSocketCodec server(WebSocketRole::Server);
@@ -356,6 +467,7 @@ int main() {
     EncodeFragmentedRoundTrip();
     ExtendedEmptyAndCloseAccounting();
     RejectWrongMaskAndText();
+    ClosePayloadValidation();
     ObserveOnlyCompleteValidatedMetadata();
     ConfigurableInboundBinaryLimitPreservesDefault();
     MaskMatchesPerByteReference();

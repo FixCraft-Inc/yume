@@ -47,7 +47,7 @@ Each server in `nodes` has exactly these members, and an optional `address`:
 | --- | --- |
 | `name` | 1 to 63 letters, digits, `.`, `_` or `-`, starting and ending with a letter or digit |
 | `identity` | The server's composite fingerprint |
-| `host` | The DNS name or IP literal its TLS certificate names |
+| `host` | The DNS name or IPv4 literal its TLS certificate names. IPv6 literals are refused. Prefer a DNS name with `address` for a numeric connection |
 | `address` | Optional: an IP literal other servers dial instead of resolving `host` |
 | `port` | Its listener port, 1 to 65535 |
 | `identity_key` | Its composite public key, the Ed25519 and ML-DSA-87 PEM blocks |
@@ -119,7 +119,9 @@ Each ordered pair of servers has its own PSK. A server refuses a store in
 which a peer is missing from the list, is the server itself, appears twice,
 or is also a client or administrator identity. It also refuses one where any
 PSK equals another PSK, the server's own or a peer's admission key, or a
-client's access PSK.
+client's access PSK. Each peer admission key must also differ from every
+client access PSK. Admission keys may equal other admission keys because they grant
+the same pre-authentication authority and do not replace a link PSK.
 
 ## Configuration
 

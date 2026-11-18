@@ -43,8 +43,10 @@ public:
     std::size_t max_size() const noexcept { return max_size_; }
     bool empty() const noexcept { return storage_.empty(); }
 
-    std::span<const std::byte> bytes() const noexcept { return storage_; }
-    std::span<std::byte> mutable_bytes() noexcept { return storage_; }
+    // Views borrow the buffer's storage. Keep its elements alive while using them.
+    std::span<const std::byte> bytes() const& noexcept { return storage_; }
+    std::span<const std::byte> bytes() const&& = delete;
+    std::span<std::byte> mutable_bytes() & noexcept { return storage_; }
 
 private:
     explicit Buffer(std::size_t max_size) noexcept : max_size_(max_size) {}

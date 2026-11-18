@@ -57,11 +57,13 @@
 #include "runtime/native_socks5.hpp"
 #include <boost/asio/local/stream_protocol.hpp>
 #define YUME_TEST_ALIGNED_ALLOCATIONS 1
-#include "test_support/allocation_failure.hpp"
 #if defined(YUME_TEST_ECHO_MODULE)
 #include "test_support/socket_activated_module.hpp"
 #endif
+#endif
+#include "test_support/allocation_failure.hpp"
 
+#ifdef YUME_NATIVE_TEST_ROUTES
 namespace {
 thread_local bool allocation_failure_sustained = false;
 thread_local unsigned injected_allocation_failures = 0U;
@@ -664,11 +666,22 @@ void test_keeper_stops_on_incompatible_only_when_asked(
         // Long enough that no second attempt starts during the test.
         keeping.reconnect_initial = 60s;
         keeping.reconnect_max = 60s;
+        std::string report;
+        if (stop) {
+            keeping.report = [&report](std::string_view text) {
+                report = text;
+                // Transferring the reported failure to its owner must work
+                // even if the next allocation would fail.
+                yume::test::arm_allocation_failure(1U);
+            };
+        }
         auto failed = std::make_shared<std::promise<Status>>();
         auto failure = failed->get_future();
         auto keeper = std::make_shared<SessionKeeper>(
-            runner.context, std::move(keeping),
-            [failed](Status status) { failed->set_value(std::move(status)); });
+            runner.context, std::move(keeping), [failed](Status status) {
+                yume::test::disarm_allocation_failure();
+                failed->set_value(std::move(status));
+            });
         NativeEndpointOptions client_options;
         client_options.max_sessions = client_options.max_pending_starts = 1U;
         client_options.connection_address = "127.0.0.1";
@@ -684,7 +697,10 @@ void test_keeper_stops_on_incompatible_only_when_asked(
             keeper->start();
         });
         if (stop) {
-            CHECK(await(failure).code() == StatusCode::Incompatible);
+            const auto reason = await(failure);
+            CHECK(reason.code() == StatusCode::Incompatible);
+            CHECK(!reason.message().empty());
+            CHECK(report == "session failed: " + reason.message());
         } else {
             const auto deadline = std::chrono::steady_clock::now() + 10s;
             NativeClientStatus status = keeper->status();

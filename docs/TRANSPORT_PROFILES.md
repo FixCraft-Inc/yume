@@ -175,13 +175,7 @@ Unsupported profiles fail closed.
 
 ## BaseFWX dependency metadata
 
-Only the optional module libraries build on BaseFWX. Its repository, exact
-revision and minimum compatible version live once in
-`config/dependencies.json`, beside the OpenSSL and liboqs pins. CMake, CI,
-CodeQL and release preflight read that manifest through
-`scripts/yume_dependencies.py` and must not copy those values into another
-workflow.
-
-The manifest accepts only an exact lowercase 40-hex commit for each dependency.
-Updating BaseFWX is one reviewed manifest change followed by its own
-compatibility, security, ABI and build validation.
+The relay and file libraries use BaseFWX. `config/dependencies.json` records
+its repository, exact commit and minimum compatible version. CI checks out
+that commit. See [the contributor guide](../CONTRIBUTING.md) for local
+checkout and system package selection.

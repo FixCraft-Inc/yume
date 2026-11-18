@@ -97,9 +97,10 @@ addresses/routes and systemd-resolved's D-Bus API for per-link DNS. DNS-free
 TUN configurations do not require a running resolved service. The C ABI and
 engine do not link the Linux network manager.
 
-The module libraries (`YUME_BUILD_BASEFWX_MODULES=ON`) build the pinned
-BaseFWX checkout and need liboqs with ML-KEM-1024. `yume`, `yumed` and the C
-ABI never link them.
+Set `YUME_BUILD_BASEFWX_MODULES=ON` to build the relay and file libraries.
+The relay uses BaseFWX for channel encryption and protected storage. The
+file receiver links the relay and uses BaseFWX to clear digest buffers.
+These libraries require BaseFWX with liboqs and ML-KEM-1024.
 
 The desktop GUI (`YUME_BUILD_GUI=ON`) needs Qt 6.4 or later: on Debian and
 Ubuntu `qt6-base-dev` and `qt6-declarative-dev`, and at run time the QtQuick
@@ -124,14 +125,15 @@ so relative, absolute and symlink aliases cannot run them concurrently.
 The Linux helper requires `flock`, `realpath` and a writable shared lock
 directory (`YUME_LOCK_ROOT`, defaulting to the user's YUME cache). A build
 directory must not be the source checkout or one of its ancestors.
-The native application does not use BaseFWX. Only the module libraries build
-on its pinned checkout. A normal full CMake configuration rejects stock OpenSSL
+A normal full CMake configuration rejects stock OpenSSL
 because the default `openssl-chrome151` backend requires the additive
 capability.
 
-Do not delete or replace an existing `basefwx/` developer checkout. For module
-qualification, use an isolated checkout at the exact pin. `ezbuild.sh` leaves
-BaseFWX untouched.
+For module qualification, use an isolated BaseFWX checkout at the revision in
+`config/dependencies.json`. Direct CMake uses the adjacent `basefwx/` as found.
+With `YUME_USE_SYSTEM_BASEFWX=ON`, it prefers a version-compatible installed
+package and falls back to the checkout. Neither path verifies the revision.
+`ezbuild.sh` leaves the developer checkout untouched.
 
 ## Test
 
@@ -221,8 +223,11 @@ control flow readable:
 
 ## C++, API, and naming
 
-Use `.clang-format` for changed lines and `.clang-tidy` for focused analysis.
-Avoid reformatting unrelated code. For example:
+Use `.clang-format` for changed lines and `.clang-tidy` for focused local
+analysis with the build's compile database. CI runs CodeQL, ASan/UBSan, a
+separate TSan job and parser fuzz tests. Sanitizers check the paths exercised.
+Trace the owner of a span, reference or callback through reentry, cancellation
+and completion. C++20 permits a borrowed view to outlive its storage.
 
 @code bash
 git-clang-format --diff
@@ -245,11 +250,10 @@ clang-tidy -p <build-dir> src/path/to/file.cpp
   versioned cryptographic domains and wire labels, and add new domains for
   intentional protocol migrations.
 
-Invited preview deployments support the documented YTP/1 wire protocol,
-schema-1 configuration, native CLI provisioning and sealed kits used by the
-registered preview consumers. Consumer-owned provider contract 1 is versioned
-separately. The experimental embedding ABI remains a build-tree candidate;
-preview deployment does not freeze that interface.
+The invited preview policy covers the documented YTP/1 wire protocol, schema-1
+configuration, native CLI provisioning and sealed kits. Consumer-owned provider
+contract 1 is versioned separately. The embedding ABI remains an experimental
+build-tree candidate.
 
 An incompatible change must name the affected interface and verified consumers,
 update their writers, readers and tests together, and provide an explicit

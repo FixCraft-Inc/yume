@@ -19,7 +19,7 @@ Transport v2, the protocol before YTP/1, has been removed, and commit
 | **cover** | The static site `yumed` loads at start and serves for ordinary HTTP/2 GET and HEAD requests. It refuses other methods with a fixed 405. There is no built-in fallback site, and a configured reverse-proxy cover is refused as not implemented yet. |
 | **carrier** | The outer connection YTP records ride inside: TLS 1.3, then HTTP/2 with an RFC 8441 extended CONNECT stream of WebSocket binary frames. |
 | **relay channel** | The end-to-end channel between two users that the relay module library keeps for the planned chat and file modules. Its labels come from transport v2. See [protocol/RELAY_CHANNEL.md](protocol/RELAY_CHANNEL.md). |
-| **BaseFWX** | A separate pinned repository of cryptographic primitives, checked out at `basefwx/`. Only the module libraries build on it. `yume`, `yumed` and `libyume` do not link it. |
+| **BaseFWX** | A separate pinned repository of cryptographic primitives, checked out at `basefwx/`. The relay and file libraries build on it. `yume`, `yumed` and `libyume` do not link it. |
 | **evidence profile** | A captured browser identity such as `chrome151-node24-v1`. It describes geometry only. It is not a wire version, and recapturing one does not change the protocol. |
 
 The product (`0.3.0-dev1`), YTP/1, schema 1, ABI v1, the evidence profile and
@@ -45,8 +45,8 @@ Implementation paths below are relative to `src/`. The candidate header in
 | `stealth/` | The browser-shaped outer layers: the Chrome TLS client profile applied to OpenSSL, the active cover profile with its generated registry, and the HTTP/2 and WebSocket carrier with its wire profile and outer observer. `clienthello_dump.cpp` and `h2_opening_probe.cpp` are evidence probes that the tests run |
 | `fs/` | Bounded regular-file reads, and reading and writing owner-only secret files. Reads open nonblocking and refuse special files before reading |
 | `config/v1/` | The strict schema-1 parser with RFC 6901 error pointers |
-| `modules/` | Module programs, which link no YUME library, and the libraries they build on. `echo/` is the example module that the tests run. `relay/` is the relay channel between two users (handshake, records and hybrid ratchet), the stores its users keep (encrypted chat history, the password-derived relay secret and peer trust), and the invite and directory records with the policies that check them. `files/` holds relay file transfer on top of it: an outbound source pinned to one opened file and a confined receiver that publishes only a verified file. `codecs/` is the application codec core for a planned codec module: the HTTP request and response envelope, backend dialing rules and the Monero RPC descriptor. The libraries build only with `YUME_BUILD_BASEFWX_MODULES=ON` |
-| `gui/` | The optional Qt 6 Quick desktop program `yume-gui`, built with `YUME_BUILD_GUI=ON`. `control_client.*` speaks [control protocol 1](protocol/CONTROL_1.md) over the owner-only socket, `tunnel.*` starts a kit's `yume` detached, polls it and stops it, `kit_store.*` lists kits and imports them through `yume --import-kit`, `tuning.*` delegates validated settings writes to `yume-setup` and sequences restart, and `app_state.*` is what the QML pages under `qml/` see. `headless.*` and `capture.*` are its display-free lifecycle and page capture. It includes no other YUME layer, and no other layer includes Qt |
+| `modules/` | Module programs, which link no YUME library, and the libraries they build on. `echo/` is the example module that the tests run. `relay/` is the relay channel between two users (handshake, records and hybrid ratchet), the stores its users keep (encrypted chat history, the password-derived relay secret and peer trust), and the invite and directory records with the policies that check them. `files/` holds relay file transfer on top of it: an outbound source pinned to one opened file and a confined receiver that publishes only a verified file. `codecs/` is the application codec core for a planned codec module: the HTTP request and response envelope, backend dialing rules and the Monero RPC descriptor. `YUME_BUILD_BASEFWX_MODULES` enables relay and files. The codec library builds when `Boost::headers` is available |
+| `gui/` | The optional Qt 6 Quick desktop program `yume-gui`, built with `YUME_BUILD_GUI=ON`. `control_client.*` speaks [control protocol 1](protocol/CONTROL_1.md) over the owner-only socket, `tunnel.*` starts a kit's `yume` detached, polls it and stops it, `kit_store.*` lists kits and imports them through `yume --import-kit`, `tuning.*` delegates validated settings writes to `yume-setup` and sequences restart, and `app_state.*` is what the QML pages under `qml/` see. `headless.*` and `capture.*` are its display-free lifecycle and page capture. The GUI uses shared headers from `common/`. Qt use stays in `gui/` |
 | `test_support/` | Allocation-failure hooks, generated TLS identities, JA3/JA4 ClientHello analysis and the in-memory circuit fixtures (an execution thread, packet stream pairs, an echoing destination and node identities) for isolated tests, with no production allocator or runtime dependency |
 | `include/yume/` | The public candidate C header. It is unfrozen, and development SDK installation is opt-in |
 
@@ -84,9 +84,9 @@ inputs, not file names:
 
 `yume_h2_carrier` is the single build owner of the `stealth/` H2,
 WebSocket, wire-profile and observer sources, and the native adapter
-`yume_h2_duplex_carrier` links it. It propagates the diagnostics setting to
-callers because public declarations depend on it. Release and MinSizeRel
-compile those diagnostics out. `yume_cover_profile` owns profile data with no
+`yume_h2_duplex_carrier` links it. The build-wide `YUME_DEV_DIAGNOSTICS` option
+controls the diagnostics and their public declarations in every configuration.
+It defaults to off. `yume_cover_profile` owns profile data with no
 library dependency, and `yume_tls_client_profile` owns SSL_CTX profile
 configuration. The H2 library links profile data, nghttp2, OpenSSL Crypto and
 platform threading, with no SSL, BaseFWX or session-engine dependency.
@@ -225,7 +225,9 @@ config_v1 + session_bootstrap + providers -> native_endpoint
 config_v1 + composite_keys + cluster_list -> setup -> yume-setup, yume-doctor
 native_endpoint + circuit_runtime -> native_runtime -> yume, yumed
 native_endpoint -> embed -> abi (libyume)
-basefwx -> modules (relay, files, codecs)
+basefwx -> module_relay
+basefwx + module_relay -> module_files
+Boost headers + nlohmann JSON -> module_codecs
 ```
 
 [`cmake/YumeLayering.cmake`](../cmake/YumeLayering.cmake) runs two checks

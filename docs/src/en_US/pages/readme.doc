@@ -6,10 +6,8 @@ summary:  Internet freedom through a server you control: what YUME carries and h
 markdown: README.md
 web:      no
 ---
-YUME is an internet freedom tool. It carries TCP, UDP and IP packets through
-a server you control over a connection shaped like a browser visiting an
-ordinary HTTPS site. The client is `yume` and the server is `yumed`. Both speak
-YTP/1, the YUME Transport Protocol.
+YUME carries TCP, UDP and IP traffic through a server you control. Its client
+(`yume`) and server (`yumed`) speak YTP/1, the YUME Transport Protocol.
 
 Yume (夢) means dream in Japanese. The dream behind it is internet freedom
 for everyone. Anime openings helped inspire the name. The design puts
@@ -30,8 +28,8 @@ By default, `yume` carries connections over one session to `yumed`, which
 opens the destination sockets allowed by its policy. Configured TCP circuits
 can instead leave through two or three servers in one operator's cluster.
 
-On the wire the session is TLS 1.3 with a pinned Chrome ClientHello, HTTP/2
-and WebSocket framing. The front door serves ordinary HTTP/2 requests from the
+The connection opens with TLS 1.3 and HTTP/2 using a captured Chrome profile.
+The tunnel carries records in WebSocket frames. The front door serves ordinary HTTP/2 requests from the
 cover site. A fresh admission proof opens a carrier, where clients authenticate
 with composite Ed25519 and ML-DSA-87 identities. Session keys combine
 ML-KEM-1024, X25519, a pre-shared key and the TLS exporter, and application
@@ -53,9 +51,9 @@ cd yume
 ./ezbuild.sh
 @end
 
-This produces `build/bin/yume` and `build/bin/yumed` and prepares the pinned,
-patched OpenSSL that the Chrome TLS profile needs. Direct CMake builds must use
-the same OpenSSL installation. See [the contributor guide](CONTRIBUTING.md).
+This builds `build/bin/yume` and `build/bin/yumed` with the pinned, patched
+OpenSSL. You can build and run both programs and the optional `libyume` without
+BaseFWX. See [the contributor guide](CONTRIBUTING.md) for direct CMake builds.
 
 ## Set up a tunnel
 
@@ -94,7 +92,7 @@ libraries are available for future modules.
 
 ## Documentation
 
-The [documentation map](docs/README.md) lists every page. Most readers need:
+For the full list of guides, see the [documentation map](docs/README.md).
 
 - [YUME explained](docs/EXPLAINED.md) for how a connection works and what
   each party can see

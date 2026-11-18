@@ -111,8 +111,9 @@ result and relevant trust boundary. Distinguish implemented behavior,
 requirements, proposals and measured results, and link each claim to its
 owning contract or test.
 
-Keep a fact at one owner and link to it elsewhere. Remove repeated status
-caveats, generic assurances and sections that list what the project is not.
+Explain a mechanism where it is owned. On another page, give the reader the
+fact they need for the decision at hand and link to the full explanation.
+Cut repeated introductions, status caveats and generic assurances.
 Keep limits where they affect a reader's decision, such as who can read
 traffic or which permissions a command needs. Current qualification belongs
 in implementation status; historical behavior belongs in the changelog.

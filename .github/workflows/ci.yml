@@ -29,12 +29,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --no-checkout --filter=blob:none \
-            https://github.com/F1xGOD/basefwx.git basefwx
-          git -C basefwx fetch --depth=1 origin \
-            471f5fdf9f742f5ffd023b9ff7245e7d133b6978
-          git -C basefwx checkout --detach \
-            471f5fdf9f742f5ffd023b9ff7245e7d133b6978
+          repository="$(python3 scripts/yume_dependencies.py get basefwx repository)"
+          revision="$(python3 scripts/yume_dependencies.py get basefwx revision)"
+          git clone --no-checkout --filter=blob:none "$repository" basefwx
+          git -C basefwx fetch --depth=1 origin "$revision"
+          git -C basefwx checkout --detach "$revision"
 
       - name: Check the generated documents
         run: python3 scripts/yume_docs.py check --all-languages
@@ -60,6 +59,9 @@ jobs:
       - name: Validate website catalog
         run: |
           python3 scripts/check_website_catalog.py
+
+      - name: Check stable release links in the browser
+        run: python3 scripts/test_website_release.py
 
       - name: Documentation tooling tests
         run: |
@@ -631,8 +633,7 @@ jobs:
   # sustained campaign is a separate, longer-running exercise.
   #
   # Clang-only, like the separate libc++ job.
-  # It builds the three harness targets by name rather than the whole tree,
-  # which keeps it well inside the runner budget.
+  # Building only the named harness targets keeps the job within its budget.
   fuzz:
     needs: [preflight]
     runs-on: ubuntu-24.04

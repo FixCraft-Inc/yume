@@ -1,7 +1,6 @@
 ---
 layout: page
 title: "YUME: for internet freedom"
-description: YUME is an open-source internet freedom tool. It carries TCP, UDP and IP traffic through a server you control over an encrypted connection shaped like a browser visiting a website.
 body_class: home-page
 section_nav:
   - label: How it works
@@ -23,10 +22,10 @@ section_nav:
     <h1>YUME <small>For internet freedom.</small></h1>
     <p>
       Reach the internet through a server you control. YUME carries TCP, UDP
-      and IP packets inside one encrypted connection that looks like Chrome
-      visiting a website, with post-quantum keys. Run the <code>yume</code>
-      client and <code>yumed</code> server, or embed the same engine through
-      its C library.
+      and IP packets inside one encrypted connection with post-quantum keys.
+      Its TLS and HTTP/2 opening follows a captured Chrome visit. Run the
+      <code>yume</code> client and <code>yumed</code> server, or embed the
+      same engine through its C library.
     </p>
     <p>
       Yume (夢) means dream in Japanese. The dream behind it is internet
@@ -212,7 +211,7 @@ curl --socks5-hostname 127.0.0.1:1080 https://example.com/</code></pre>
     </div>
     <div class="card">
       <h3>Release builds</h3>
-      <p>Linux builds will appear on GitHub with checksums and a signed manifest. There is no release yet, so build from source.</p>
+      <p>Stable Linux builds come with checksums and a signed manifest. You can also build from source using the steps above.</p>
       <div class="link-row">
         <a class="btn secondary disabled" data-download="yume-linux-amd64" aria-disabled="true" tabindex="-1">Client bundle</a>
         <a class="btn secondary disabled" data-download="yumed-linux-amd64" aria-disabled="true" tabindex="-1">Daemon</a>

@@ -157,37 +157,29 @@ def cmake_lanes(workflow: str) -> list[str]:
 
 
 def check_native_lanes(ci_yml: str, dependency_setup: str) -> None:
-    """Every CI lane that builds the native graph uses the patched OpenSSL.
-
-    The invariant is "every native lane that configures CMake", not "exactly
-    three": a hardcoded count went stale the moment a lane was added, and it
-    would also have passed if a lane were deleted and another added in its
-    place. A lane that turns the native application off and builds no shared
-    ABI compiles no TLS provider, as the desktop GUI's lane does, so it needs
-    no OpenSSL. CMake itself refuses stock OpenSSL for any lane that builds
-    the native providers.
-    """
-    lanes = cmake_lanes(ci_yml)
-    native = []
-    for lane in lanes:
-        if "-DYUME_BUILD_NATIVE_APPLICATION=OFF" in lane:
-            require("-DYUME_BUILD_SHARED_ABI=ON" not in lane,
-                    "a CI lane without the native application must not build the "
-                    "shared ABI, which needs the patched OpenSSL")
+    """Check the provider build options and dependency setup in each CI job."""
+    # The checked-in workflow uses a two-space job key. Steps in one job
+    # share the prepared environment, including a later configure step.
+    _, _, job_definitions = ci_yml.partition("jobs:\n")
+    jobs = re.split(r"^  (?=[\w-]+:[ \t]*$)", job_definitions, flags=re.MULTILINE)
+    native_jobs = 0
+    for job in jobs[1:]:
+        name, _, steps = job.partition("\n")
+        native = [command for command in cmake_lanes(steps)
+                  if "-DYUME_BUILD_NATIVE_APPLICATION=OFF" not in command
+                  or "-DYUME_BUILD_SHARED_ABI=ON" in command]
+        if not native:
             continue
-        native.append(lane)
-    require(len(native) >= 3,
+        native_jobs += 1
+        setup = steps.find("\n          " + dependency_setup + "\n")
+        for command in native:
+            require(0 <= setup < steps.index(command),
+                    f"{name} prepare OpenSSL and nghttp2 before configuring the native build")
+            require("-DYUME_STATIC_OPENSSL=ON" in command,
+                    f"{name} the native configure command must embed the patched OpenSSL")
+    require(native_jobs >= 3,
             "ci.yml must keep at least the release, sanitizer and thread-sanitizer "
-            f"build lanes; found {len(native)} native lanes that configure CMake")
-    require(ci_yml.count(dependency_setup) == len(native),
-            "every native CI build lane must preserve the combined OpenSSL/nghttp2 "
-            f"environment: {len(native)} native lanes configure CMake but "
-            f"{ci_yml.count(dependency_setup)} set that environment up")
-    embedding = sum(1 for lane in native if "-DYUME_STATIC_OPENSSL=ON" in lane)
-    require(embedding == len(native) and
-            ci_yml.count("-DYUME_STATIC_OPENSSL=ON") == len(native),
-            "every native CI build lane must embed the patched OpenSSL: "
-            f"{len(native)} native lanes configure CMake but {embedding} embed it")
+            f"build lanes; found {native_jobs} native jobs that configure CMake")
 
 
 def validate_workflow_guards() -> None:

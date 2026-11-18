@@ -1,17 +1,13 @@
 <!-- Generated from docs/src/en_US/pages/implementation_status.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME implementation status
 
-This page records what works in the current source tree and how each part is
-tested. It uses three terms:
+YUME `0.3.0-dev1` runs YTP/1 in `yume` and `yumed` with schema-1
+configuration. The table uses three levels of evidence.
 
 - **Implemented** means code exists in this repository.
 - **Tested** means a named executable or integration path exercises it.
 - **Qualified** means the exact candidate passed the complete gate for the
   named platform and environment.
-
-YUME `0.3.0-dev1` composes native YTP/1 as `yume` and `yumed`, using schema-1
-configuration. The native programs, SDK, installed packages and GUI each need
-qualification evidence for their own environment.
 
 ## Summary
 
@@ -53,9 +49,9 @@ Implemented and covered by focused tests:
 - a bounded `h2-duplex` carrier provider over `SecureChannel`, with
   genuine client priming plus extended-CONNECT acceptance, a typed live-state
   server-promotion seam, carrier-private record framing, move-owned outer
-  credit, and flow-controlled send completion. Focused fake-channel tests and
-  the H2 carrier regression (`yume_h2_carrier_test`) pass, and they do not
-  establish a complete YTP session runtime;
+  credit, and flow-controlled send completion. Fake-channel tests and
+  `yume_h2_carrier_test` exercise this provider. The [integration tests](#integration-tests)
+  exercise complete sessions.
 - 31-bit YTP stream identifiers with stream zero reserved for control, odd
   client ownership, even server ownership, and exhaustion checks;
 - a dependency-pure YTP/1 protocol kernel with bounded canonical frame, OPEN,
@@ -132,9 +128,8 @@ Implemented and covered by focused tests:
   authenticated named streams/packets and routed TCP/UDP using the original
   probes and staged programs. Selected consumer language, C++ runtime and
   sanitizer options are preserved across both discovery paths.
-  `tests/abi/install_consumer/consumer.c` is not idle: the shared-ABI build
-  compiles it as `yume_c_abi_consumer_c`, which checks that the
-  public header still parses as strict C11 rather than C++;
+  The shared-ABI build compiles `tests/abi/install_consumer/consumer.c` as
+  `yume_c_abi_consumer_c` to check the public header under strict C11.
 - one compatibility manifest reporting product, YTP, config, ABI, logical
   suite components, concrete providers, cryptographic backend, and
   evidence-profile versions without treating an unwired component as active;
@@ -523,9 +518,10 @@ The native executables `yumed` and `yume` run schema-1 configurations.
 selects the file, `--validate` checks configuration and credentials, and
 security policy has no CLI override. The client's `--connect`,
 `--socks-address` and `--socks-port` each replace one configuration key for a
-run and pass that key's checks. The daemon serves configured
-`direct_tcp`/`direct_udp` adapters and refuses a service without one, because
-only an embedding application can supply a named-service handler. The client
+run and pass that key's checks. At startup the daemon requires a matching
+`direct_tcp` or `module` adapter for each configured stream service and a
+`direct_udp` or `packet` adapter for each configured packet service. An
+embedding application can register its own named services through the C ABI. The client
 keeps one authenticated session and starts a replacement when the endpoint
 reports closure. Failed attempts and short sessions use bounded exponential
 backoff. It refuses
@@ -676,8 +672,6 @@ and managed TUN DNS have separate lifetime and privilege boundaries.
 
 ## Remaining qualification and integration
 
-These qualification and integration tasks remain open:
-
 - complete-session qualification of the native FrontDoor, including external
   comparison of ordinary and rejected-admission cover behavior;
 - production qualification of `yume`, `yumed` and the experimental schema-1
@@ -692,8 +686,8 @@ These qualification and integration tasks remain open:
   exit, UDP and IP carriage, and a consent interface in the C ABI;
 - complete installed-SDK qualification across the supported build/toolchain matrix;
 - distribution publication of the patched OpenSSL dependency and qualification
-  of each exact candidate package, remaining consumer migration around native
-  `yume` and `yumed`, and a qualified setup-to-first-SOCKS path over a real network;
+  of each exact candidate package, migration checks for affected consumers,
+  and a qualified setup-to-first-SOCKS path over a real network;
 - a release-workflow run with the configured signing secret and existing
   release target. Local rejection tests cover trusted commit/tag verification,
   required signatures, manifest consistency and refusal of existing asset
@@ -740,13 +734,8 @@ leave the service disabled after installation. Native release archives carry
 the native setup and doctor programs and enforce native executable identities; packaging regression
 checks do not qualify a distribution or an installed service.
 
-The C ABI attaches the native runtime through its one backend and accepts only
-schema-1 documents. `yume_endpoint_start` starts a client or server,
-`yume_endpoint_register_service`, `yume_endpoint_open_stream` and
-`yume_endpoint_accept_stream` carry authenticated named byte streams, and
-`yume_stream_read`, `write`, `shutdown_write` and `close` move real bytes with
-typed transport failures. Native packet channels support named services and
-routed UDP with bounded whole-packet batches.
+For the tests that start an endpoint through the C ABI and transfer streams
+and whole packets, see [Embedding ABI](#embedding-abi).
 
 `IpPacketChannel` validates IPv4/IPv6 lengths, exact packet size, MTU and
 directional address policy before forwarding through the native route bridge.

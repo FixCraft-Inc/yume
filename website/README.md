@@ -59,8 +59,8 @@ key rotation limits and the signing key fingerprint. Update a listed
 statement there when you reword it.
 
 **Change a colour.** Edit `config/palette.json` at the repository root.
-Generate the shared palette and sync diagrams as the root
-[agent guide](../AGENTS.md#repository-and-dependency-boundaries) describes.
+Generate the shared palette and sync diagrams using the
+[shared palette instructions](../docs/agents/README.md#shared-palette).
 The generated regions of `assets/tokens.css` are exports of that palette.
 
 **Ship a CSS or JS change.** Bump `asset_version` in `_config.yml`. It covers
@@ -68,7 +68,10 @@ The generated regions of `assets/tokens.css` are exports of that palette.
 
 ## Rules worth keeping
 
-The site loads nothing from another host. The three faces are Latin subsets
+Page assets are self-hosted. The home and checksums pages query GitHub for
+the latest stable release. Download links require the signed publication's
+complete file list, and the checksums page reads its SHA-256 sidecars.
+The three faces are Latin subsets
 from the Fontsource 5.3.0 packages, unmodified, served from `assets/fonts/`
 beside their license texts. Characters outside those subsets use the system
 faces in each font stack.

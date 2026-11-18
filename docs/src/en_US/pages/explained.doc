@@ -10,17 +10,15 @@ catalog-group: Start here
 catalog-home: Start here
 catalog-order: 20
 ---
-YUME is two programs. `yume` runs on your device and collects traffic from your
-applications. `yumed` runs on a server you control. The traffic travels between
-them inside one long-lived connection that looks like a browser visiting a
-website. The server authenticates the client, checks what it may reach, makes
-the real connection and sends the answer back the same way.
+When an application sends traffic through `yume`, the client on your device
+carries it over an encrypted connection to `yumed` on a server you control.
+The server authenticates the client, connects to destinations the client may
+reach and sends the replies back over the same connection.
 
 @diagram traffic_path
 
-This page describes the default programs, which speak YTP/1 (YUME Transport
-Protocol 1). The [glossary](GLOSSARY.md) defines the terms, and the
-[YTP/1 reference](protocol/YTP_1.md) has the exact wire format.
+The programs speak YUME Transport Protocol 1. See the [glossary](GLOSSARY.md)
+for terms and the [YTP/1 reference](protocol/YTP_1.md) for the wire format.
 
 ## Setting up
 
@@ -64,9 +62,9 @@ After authentication application data is sealed with AES-256-GCM under a key
 that is used once per record. Each direction has its own key epoch. At the
 default size, it rotates after one MiB of data, 512 records or 500 ms,
 whichever comes first. A rotation starts halfway to those limits.
-The old epoch carries data while
-confirmation is pending, up to its limits. Further data then waits for the
-acknowledgement; a missed acknowledgement deadline ends the session. Both sides
+While the peer confirms the rotation, the sender can use the old epoch up to
+its limits. At the limit it pauses. If the acknowledgement misses its deadline,
+the session ends. Both sides
 may allow a larger epoch, up to 64 MiB. The session then uses the smaller
 of the two sizes, still with one record per 2 KiB, so either side can keep
 rotation at its own setting.
@@ -95,9 +93,8 @@ listener and TUN routes stay in place.
 
 ## Embedding
 
-Applications can embed the same endpoint through the [C ABI](ABI.md): named
-byte streams, packet channels and routed TCP/UDP, with the application
-deciding where traffic comes from.
+An application can embed the same endpoint and supply its own traffic. The
+[C ABI](ABI.md) offers named byte streams, packet channels and routed TCP/UDP.
 
 ## What stays visible
 

@@ -23,10 +23,10 @@ Checks: >
   -cert-err58-cpp,
   -performance-avoid-endl
 
-# bugprone-unchecked-optional-access: engine::Result exposes .value as a raw
-#   optional and gates it behind ok(), which returns value_.has_value(). The
-#   analyzer cannot follow that indirection and reports every correct use.
-#   Prefer Result::value_if() in new code, which is safe and analyzable.
+# bugprone-unchecked-optional-access: the YTP and circuit codec Results
+#   expose an optional value, and their ok() checks its presence. Analysis
+#   can miss that guard. The engine Result keeps its optional private and
+#   offers value_if() for checked access.
 # bugprone-empty-catch: teardown paths reached from destructors and noexcept
 #   ABI boundaries have nowhere to report a failure. Those catches are
 #   deliberate and commented individually.

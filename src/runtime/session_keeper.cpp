@@ -191,7 +191,7 @@ void SessionKeeper::on_session(
         // on every attempt, so an owner that asked for it stops here.
         if (options_.stop_when_incompatible &&
             result.status().code() == StatusCode::Incompatible) {
-            fail(result.status());
+            fail(std::move(result).take_status());
             return;
         }
         schedule_reconnect(&result.status());

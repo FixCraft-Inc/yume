@@ -1,11 +1,9 @@
 const repo = "FixCraft-Inc/yume";
-const releaseApi = `https://api.github.com/repos/${repo}/releases?per_page=1`;
-let latestReleaseData = null;
+const releaseApi = `https://api.github.com/repos/${repo}/releases/latest`;
 
-// The first stable CLI release workflow attaches exactly these two artifacts, plus a
-// .sha256 sidecar for each, an aggregate SHA256SUMS.txt, and
-// release-manifest.json. Detached .sig files appear only when the workflow has
-// signing secrets. MD5 sidecars are no longer produced.
+// The release workflow publishes these two artifacts with a .sha256 sidecar
+// for each. Both artifacts, SHA256SUMS.txt and release-manifest.json require
+// detached .sig files.
 const assetMap = {
   "yume-linux-amd64": { bin: "yume-amd64-linux.tar.xz", component: "client" },
   "yumed-linux-amd64": { bin: "yumed-amd64-linux", component: "daemon" }
@@ -17,17 +15,27 @@ Object.values(assetMap).forEach((entry) => {
 });
 
 const currentReleaseAssets = (data) => {
-  const assets = Array.isArray(data?.assets) ? data.assets : [];
-  const lookup = new Map(assets.map((asset) => [asset.name, asset]));
-  const required = [
-    ...Object.values(assetMap).flatMap((entry) => [entry.bin, entry.sha256]),
-    "SHA256SUMS.txt",
-    "release-manifest.json"
-  ];
-  if (!required.every((name) => lookup.has(name))) {
-    throw new Error("latest release does not match the current artifact contract");
+  if (data?.draft !== false || data.prerelease !== false || typeof data.tag_name !== "string" ||
+      !/^v\d+\.\d+\.\d+$/.test(data.tag_name) || !Array.isArray(data.assets)) {
+    return null;
   }
-  return { assets, lookup };
+  const lookup = new Map();
+  for (const asset of data.assets) {
+    if (typeof asset?.name !== "string" || lookup.has(asset.name)) return null;
+    lookup.set(asset.name, asset);
+  }
+  const required = [
+    ...Object.values(assetMap).flatMap((entry) => [entry.bin, entry.sha256, entry.sig]),
+    "SHA256SUMS.txt", "SHA256SUMS.txt.sig",
+    "release-manifest.json", "release-manifest.json.sig"
+  ];
+  const assetBase = `https://github.com/${repo}/releases/download/${data.tag_name}/`;
+  const complete = required.every((name) => {
+    const asset = lookup.get(name);
+    return asset?.state === "uploaded" && Number.isSafeInteger(asset.size) && asset.size > 0 &&
+      asset.browser_download_url === assetBase + name;
+  });
+  return complete ? lookup : null;
 };
 
 const setText = (id, value) => {
@@ -71,22 +79,6 @@ const formatDate = (iso) => {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "Release date pending";
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-};
-
-const fetchLatestRelease = async () => {
-  if (latestReleaseData) {
-    return latestReleaseData;
-  }
-  const response = await fetch(releaseApi, { headers: { Accept: "application/vnd.github+json" } });
-  if (!response.ok) {
-    throw new Error(`release fetch failed: ${response.status}`);
-  }
-  const releases = await response.json();
-  if (!Array.isArray(releases) || releases.length === 0) {
-    throw new Error("no published release");
-  }
-  latestReleaseData = releases[0];
-  return latestReleaseData;
 };
 
 const HASH_COLLAPSED_LEN = 32;
@@ -150,21 +142,35 @@ const applyReleaseLinks = (assetLookup) => {
   });
 };
 
+const showReleaseStatus = (status) => {
+  setText("release-date", status);
+  document.querySelectorAll("[data-hash-file]").forEach((node) => showHash(node, status));
+};
+
 const loadRelease = async () => {
+  let data;
   try {
-    const data = await fetchLatestRelease();
-    const { assets, lookup } = currentReleaseAssets(data);
-    setText("release-version", data.name || data.tag_name || "Latest release");
-    setText("release-date", formatDate(data.published_at));
-    setText("release-assets", `${assets.length} assets`);
-    setLinks("#release-link", data.html_url || "");
-    applyReleaseLinks(lookup);
+    const response = await fetch(releaseApi, { headers: { Accept: "application/vnd.github+json" } });
+    if (!response.ok) {
+      showReleaseStatus(response.status === 404 ? "No stable release published" : "Release information unavailable");
+      return;
+    }
+    data = await response.json();
   } catch (_err) {
-    // No published release, or GitHub is unreachable. The markup already
-    // states the no-release default, so only overwrite it when it is stale.
-    setText("release-assets", "");
-    applyReleaseLinks(new Map());
+    showReleaseStatus("Release information unavailable");
+    return;
   }
+  const lookup = currentReleaseAssets(data);
+  if (!lookup) {
+    showReleaseStatus("Stable release files unavailable");
+    return;
+  }
+  setText("release-version", data.name || data.tag_name);
+  setText("release-date", formatDate(data.published_at));
+  setText("release-assets", `${lookup.size} assets`);
+  setLinks("#release-link", `https://github.com/${repo}/releases/tag/${data.tag_name}`);
+  applyReleaseLinks(lookup);
+  await loadHashFiles(lookup);
 };
 
 const parseSha256 = (body) => {
@@ -172,19 +178,8 @@ const parseSha256 = (body) => {
   return match ? match[0].toLowerCase() : "";
 };
 
-const loadHashFiles = async () => {
+const loadHashFiles = async (assetLookup) => {
   const nodes = Array.from(document.querySelectorAll("[data-hash-file]"));
-  if (!nodes.length) {
-    return;
-  }
-  let assetLookup = new Map();
-  try {
-    const data = await fetchLatestRelease();
-    assetLookup = currentReleaseAssets(data).lookup;
-  } catch (_err) {
-    nodes.forEach((node) => showHash(node, "No published release"));
-    return;
-  }
   await Promise.all(nodes.map(async (node) => {
     const asset = assetLookup.get(node.getAttribute("data-hash-file") || "");
     if (!asset) {
@@ -441,13 +436,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initDiagramMotion();
   initDiagramKeys();
   initDocToc();
-  const run = async () => {
-    if (document.getElementById("release-version") || document.querySelector("[data-download]")) {
-      await loadRelease();
-    }
-    if (document.querySelector("[data-hash-file]")) {
-      await loadHashFiles();
-    }
-  };
-  run();
+  if (document.getElementById("release-version")) {
+    loadRelease();
+  }
 });

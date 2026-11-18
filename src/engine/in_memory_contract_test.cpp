@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "engine/buffer.hpp"
 #include "engine/engine_builder.hpp"
 #include "engine/session_engine.hpp"
 #include "test_support/allocation_failure.hpp"
@@ -31,6 +32,21 @@ namespace {
 static_assert(!std::is_copy_constructible_v<Buffer>);
 static_assert(!std::is_copy_assignable_v<Buffer>);
 static_assert(std::is_nothrow_move_constructible_v<Buffer>);
+
+template <typename T>
+concept CanBorrowBytes = requires { std::declval<T>().bytes(); };
+
+template <typename T>
+concept CanBorrowMutableBytes =
+    requires { std::declval<T>().mutable_bytes(); };
+
+static_assert(CanBorrowBytes<Buffer&> && CanBorrowBytes<const Buffer&>);
+static_assert(!CanBorrowBytes<Buffer&&> && !CanBorrowBytes<const Buffer&&>);
+static_assert(CanBorrowMutableBytes<Buffer&> &&
+              !CanBorrowMutableBytes<const Buffer&>);
+static_assert(!CanBorrowMutableBytes<Buffer&&> &&
+              !CanBorrowMutableBytes<const Buffer&&>);
+
 static_assert(!std::is_copy_constructible_v<CarrierCredit>);
 static_assert(std::is_nothrow_move_constructible_v<CarrierCredit>);
 static_assert(!std::is_constructible_v<

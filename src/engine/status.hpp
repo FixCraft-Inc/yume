@@ -87,6 +87,9 @@ public:
 
     bool ok() const noexcept { return value_.has_value(); }
     const Status& status() const noexcept { return status_; }
+    [[nodiscard]] Status take_status() && noexcept {
+        return std::move(status_);
+    }
 
     T* value_if() noexcept { return value_ ? &*value_ : nullptr; }
     const T* value_if() const noexcept { return value_ ? &*value_ : nullptr; }

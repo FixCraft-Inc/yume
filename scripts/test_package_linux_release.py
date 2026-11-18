@@ -202,13 +202,16 @@ class NativeLaneGuardTests(unittest.TestCase):
              "          source scripts/ensure-nghttp2.sh\n"
              "          yume_nghttp2_ensure")
 
-    def lane(self, *options: str, setup: bool = True) -> str:
-        text = (self.SETUP + "\n") if setup else ""
+    def lane(self, *options: str, setup: bool = True, name: str = "candidate") -> str:
+        text = f"  {name}:\n    steps:\n      - run: |\n"
+        if setup:
+            text += f"          {self.SETUP}\n"
         body = " \\\n            ".join(options)
         return text + "          cmake -S . -B build \\\n            " + body + "\n"
 
     def native(self) -> str:
-        return "".join(self.lane("-DYUME_STATIC_OPENSSL=ON") for _ in range(3))
+        return "jobs:\n" + "".join(self.lane("-DYUME_STATIC_OPENSSL=ON", name=name)
+                                   for name in ("release", "sanitize", "thread-sanitize"))
 
     def test_three_native_lanes_pass(self) -> None:
         preflight.check_native_lanes(self.native(), self.SETUP)
@@ -226,11 +229,20 @@ class NativeLaneGuardTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             preflight.check_native_lanes(self.native() + unembedded, self.SETUP)
 
-    def test_a_lane_without_the_application_builds_no_shared_abi(self) -> None:
-        abi = self.lane("-DYUME_BUILD_NATIVE_APPLICATION=OFF", "-DYUME_BUILD_SHARED_ABI=ON",
-                        setup=False)
+    def test_sdk_only_builds_use_native_dependencies(self) -> None:
+        sdk = ("-DYUME_BUILD_NATIVE_APPLICATION=OFF", "-DYUME_BUILD_SHARED_ABI=ON")
+        preflight.check_native_lanes(self.native() + self.lane(*sdk, "-DYUME_STATIC_OPENSSL=ON"),
+                                     self.SETUP)
+        for setup, linkage in ((False, "ON"), (True, "OFF")):
+            with self.subTest(setup=setup, linkage=linkage), self.assertRaises(SystemExit):
+                lane = self.lane(*sdk, f"-DYUME_STATIC_OPENSSL={linkage}", setup=setup)
+                preflight.check_native_lanes(self.native() + lane, self.SETUP)
+
+    def test_setup_in_another_job_cannot_qualify_a_native_job(self) -> None:
+        gui = self.lane("-DYUME_BUILD_NATIVE_APPLICATION=OFF", name="gui")
+        native = self.lane("-DYUME_STATIC_OPENSSL=ON", setup=False)
         with self.assertRaises(SystemExit):
-            preflight.check_native_lanes(self.native() + abi, self.SETUP)
+            preflight.check_native_lanes(self.native() + gui + native, self.SETUP)
 
     def test_the_real_workflow_passes(self) -> None:
         ci_yml = (preflight.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")

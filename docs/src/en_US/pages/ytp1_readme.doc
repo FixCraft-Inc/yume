@@ -25,7 +25,7 @@ not load, and nothing converts one.
 The native providers and the runtime on top of them build whenever the
 programs (`YUME_BUILD_NATIVE_APPLICATION`, on by default) or the shared C ABI
 (`YUME_BUILD_SHARED_ABI`) are on. The providers need the patched OpenSSL. With
-both switches off, only the engine, YTP/1 and configuration libraries build.
+both switches off, the native providers are omitted.
 To build one component, name its target:
 
 @code bash
@@ -38,12 +38,11 @@ Set `YUME_NATIVE_TEST_OPENSSL` to the pinned installation's `bin/openssl` when
 configuring tests. `yume_native_credentials_test` and `yume_native_endpoint_test`
 provision temporary kits and run real loopback TLS/HTTP/2 sessions.
 
-`YUME_BUILD_BASEFWX_MODULES=ON` adds the module libraries built on BaseFWX and
-their tests. So far that is `yume_module_relay`, the end-to-end relay channel
-in `src/modules/relay`. It needs the BaseFWX checkout at the revision
-`config/dependencies.json` pins and liboqs, which configuration requires in
-this mode. Core targets never link BaseFWX, so a plain `yume` and `yumed`
-build needs neither.
+`YUME_BUILD_BASEFWX_MODULES=ON` adds `yume_module_relay` for the end-to-end
+relay channel and `yume_module_files` for file transfer. Both use BaseFWX.
+[The build guide](../../../CONTRIBUTING.md#build) describes dependency selection
+and the pin used for qualification. The native programs can build without
+BaseFWX or liboqs.
 
 A few rules hold across the native graph:
 

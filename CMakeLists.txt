@@ -19,9 +19,8 @@ endif()
 
 option(YUME_BUILD_NATIVE_APPLICATION
     "Build the native YTP/1 yume client and yumed daemon" ON)
-# Module libraries built on BaseFWX, such as the end-to-end relay channel.
-# They need the pinned BaseFWX checkout and liboqs, so an ordinary yume and
-# yumed build leaves them out. No core target links BaseFWX.
+# Only the optional relay and file libraries use BaseFWX with liboqs.
+# A native application or shared ABI build needs no BaseFWX checkout.
 option(YUME_BUILD_BASEFWX_MODULES
     "Build module libraries that use BaseFWX, such as the end-to-end relay channel"
     OFF)

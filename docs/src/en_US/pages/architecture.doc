@@ -10,17 +10,14 @@ catalog-group: Reference and development
 catalog-home: Internals and status
 catalog-order: 130
 ---
-This page describes how native YUME is put together: which component owns
-what, which way dependencies point, and where the runtime boundaries are. The
-[source map](SOURCE_MAP.md) says where each piece lives in the tree.
+The native client, daemon and embedding library share a session engine. The
+[source map](SOURCE_MAP.md) locates each component in the tree.
 
 ## Why YTP/1
 
-YUME has to work as a standalone client and server and inside other
-applications. YTP/1 (YUME Transport Protocol 1) meets that with a session
-engine that owns its state explicitly and does not depend on sockets, TLS
-libraries, configuration parsing or application policy. Providers plug those
-in from outside.
+The engine owns YTP/1 session state. Providers handle sockets, TLS and HTTP/2.
+The native runtime reads configuration and applies policy. An embedded
+application can use the transport without running either command-line program.
 
 The HTTP/2 and WebSocket carrier code and the browser profile came from
 transport v2, the protocol before YTP/1, which has been removed. The relay
@@ -32,7 +29,8 @@ tested with.
 
 ## Composition
 
-Client and server compositions depend only downward:
+On the client, the carrier runs over a secure byte channel. On the server,
+the front door passes an accepted carrier to the same session engine.
 
 @code text
 client: ByteChannel -> SecureChannel -> Carrier ---------+
@@ -42,9 +40,7 @@ server: FrontDoor -> AcceptedCarrier --------------------+      -> StreamDispatc
                                                                    -> RouteProvider
 @end
 
-An application may supply or consume the endpoints at these boundaries. The
-session engine does not know about sockets, TLS libraries, HTTP/2 libraries,
-JSON, configuration files, command-line parsing, or GUI state.
+Application code can supply or consume endpoints at these interfaces.
 
 ## Core contracts
 
@@ -190,12 +186,12 @@ it closes: each session ends its own connection.
 
 ### SessionBootstrap
 
-`SessionBootstrap` is a dependency-pure, one-session orchestration seam. A
-client consumes the frozen byte-channel, secure-channel, and carrier providers;
-a server borrows a shared persistent front door until one accept settles. It
-validates the YTP/1 role, the suite's explicit TLS 1.3 requirement, exact
-accepted-carrier provider ID/API/capabilities, and equal front-door, carrier,
-and secure-channel executor affinity before constructing `SessionEngine`.
+`SessionBootstrap` starts one session. On the client it uses the frozen
+byte-channel, secure-channel and carrier providers. On the server it borrows
+the shared front door until one accept completes. Before constructing
+`SessionEngine`, it checks the YTP/1 role, the suite's TLS 1.3 requirement
+and the accepted carrier's provider ID, API and capabilities. The front door,
+carrier and secure channel must have the same executor affinity.
 
 Every layer transfers single ownership into the next accepted asynchronous
 operation. Cancellation requests the active operation's token and waits for its
@@ -483,7 +479,7 @@ Native source is organized by dependency:
 | `src/admission/` | protocol-neutral H2 path/authority parsing, HMAC and replay reservations; each protocol owns its encoding |
 | `src/abi/` | experimental exception-contained C ABI handles, validation, diagnostics, and backend leasing. It accepts schema-1 documents only and reaches the runtime through the embedding seam |
 | `src/abi/native_backend.cpp` | experimental schema-1 embedding backend that runs `NativeEndpoint` on its own thread behind the blocking ABI |
-| `src/modules/` | module programs and the libraries planned modules build on: the relay channel with its stores, file transfer and application codecs. Only these libraries use BaseFWX |
+| `src/modules/` | module programs and the libraries planned modules build on: the relay channel with its stores, file transfer and application codecs. Relay and file transfer use BaseFWX |
 | `tools/` | provisioning and evidence tooling |
 @end
 
@@ -503,15 +499,15 @@ native runtime                config, bootstrap, providers, protected files
 yume_embed                    native endpoint, OpenSSL security provider and
                               threads, no BaseFWX
 C ABI                         config_v1 plus the embed backend, no private-header API
-module libraries              BaseFWX, OpenSSL and JSON, never linked by the
-                              programs or the C ABI
+relay and file libraries      BaseFWX, with OpenSSL and JSON in relay
+application codec library     Boost headers and nlohmann JSON
 future adapters/executables   C ABI or explicit application layer
 @end
 
 YUME owns YTP authentication, domains, transcript construction, key schedules,
 ratchet semantics, admission and authorization. The concrete YTP/1 security
 provider calls OpenSSL 3.5 directly. BaseFWX supplies primitives and secret
-containers to the module libraries only. It is a separate ignored checkout
+containers to the relay and file libraries. It is a separate ignored checkout
 pinned by `config/dependencies.json`. The [source map](SOURCE_MAP.md#authentication-and-cryptographic-ownership)
 connects each mechanism to its implementation and explains the data path.
 

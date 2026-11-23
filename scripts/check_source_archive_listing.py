@@ -17,13 +17,13 @@ import re
 
 
 FORBIDDEN_ROOTS = {
-    ".agents", ".cache", ".claude", ".codex", ".private",
+    ".agents", ".ai", ".cache", ".claude", ".codex", ".private",
     ".pytest_cache", ".secrets", ".wrangler", "basefwx", "bins", "debian",
     "DEV_services", "third_party", "vendor", "yume-bench-results",
     "yume-lan-kit",
 }
 FORBIDDEN_ANYWHERE = {
-    ".git", ".agents", ".cache", ".claude", ".codex", ".jekyll-cache",
+    ".git", ".agents", ".ai", ".cache", ".claude", ".codex", ".jekyll-cache",
     ".private", ".pytest_cache", ".secrets", ".wrangler", "__pycache__",
 }
 FORBIDDEN_BASENAMES = {".DS_Store"}

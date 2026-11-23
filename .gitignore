@@ -18,7 +18,8 @@ DEV_services
 .idea/
 *.swp
 opencode.json
-# AI tools — per-machine state, not for the repo
+# Local tooling and workspace notes
+.ai/
 .claude/
 .codex/
 .aider*
@@ -103,10 +104,7 @@ bins/
 # Local benchmark captures and reports
 /yume-bench-results/
 /yume-lan-kit/
-# Agent notes must never be tracked. Root-anchored on purpose: an unanchored
-# `AGENTS.md` would also swallow a legitimate one anywhere in the tree, and
-# that filename is becoming a public convention. yume's own copy lives in
-# .private/ai/ (already covered above); this is belt-and-braces for the root.
+# Local root instructions
 /AGENTS.md
 /AI_NOTES.md
 

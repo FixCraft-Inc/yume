@@ -49,7 +49,7 @@ archive_path_is_public() {
   fi
 
   case "${root}" in
-    .agents|.cache|.claude|.codex|.private|.pytest_cache|.secrets|.wrangler|\
+    .agents|.ai|.cache|.claude|.codex|.private|.pytest_cache|.secrets|.wrangler|\
     basefwx|bins|debian|DEV_services|third_party|vendor|yume-bench-results|\
     yume-lan-kit|build|build-?*|obj-?*)
       return 1
@@ -63,7 +63,7 @@ archive_path_is_public() {
       ;;
   esac
   case "/${path}/" in
-    */.git/*|*/.agents/*|*/.cache/*|*/.claude/*|*/.codex/*|\
+    */.git/*|*/.agents/*|*/.ai/*|*/.cache/*|*/.claude/*|*/.codex/*|\
     */.private/*|*/.pytest_cache/*|*/.secrets/*|*/.wrangler/*|\
     */.jekyll-cache/*|*/__pycache__/*|*/.DS_Store/*)
       return 1
@@ -100,6 +100,7 @@ archive_paths() {
   find . -mindepth 1 \
     \( -path './.git' \
        -o -path './.agents' \
+       -o -path './.ai' \
        -o -path './.cache' \
        -o -path './.claude' \
        -o -path './.codex' \

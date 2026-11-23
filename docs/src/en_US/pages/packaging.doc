@@ -88,6 +88,10 @@ and release qualification. Their eventual split will separate the frozen
 runtime library from the C header, discovery metadata and contract
 documentation.
 
+The Debian source archive excludes local workspace files, including
+`AGENTS.md` at the repository root and `.ai` and `.private` directories.
+The archive builder checks its finished file listing before publishing it.
+
 ## Linux release archive
 
 The Linux archive contains the native client, the native schema-1 setup and

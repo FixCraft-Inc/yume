@@ -1,9 +1,8 @@
 # YUME website
 
-Published to GitHub Pages by `.github/workflows/pages.yml`. Jekyll builds this
-directory. `actions/configure-pages` injects the correct `baseurl`, which is why
-every internal link goes through `relative_url` rather than a hand-written `../`
-path.
+The Pages workflow builds this directory with Jekyll and hands the artifact
+to a separate deployment job. `actions/configure-pages` supplies the
+`baseurl`. Use `relative_url` for internal links.
 
 ## Documentation sources
 

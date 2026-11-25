@@ -44,6 +44,27 @@ yume_openssl_detect() {
             | grep -Fq 'ML-DSA-87'
 }
 
+# Name the first yume_openssl_detect requirement the host OpenSSL misses.
+# Call it before any cache prefix is activated, while pkg-config and PATH
+# still resolve the host's files.
+yume_openssl_host_shortfall() {
+    local version=""
+    if ! command -v pkg-config >/dev/null 2>&1; then
+        printf 'pkg-config was not found, so the host OpenSSL could not be checked.'
+    elif ! version="$(pkg-config --modversion openssl 2>/dev/null)"; then
+        printf 'OpenSSL development files were not detected by pkg-config.'
+    elif ! pkg-config --exists "openssl >= ${YUME_OPENSSL_MIN_VERSION}"; then
+        printf 'The host OpenSSL %s is older than the required %s.' \
+            "${version}" "${YUME_OPENSSL_MIN_VERSION}"
+    elif ! command -v openssl >/dev/null 2>&1; then
+        printf 'pkg-config reports OpenSSL %s, but no openssl command can confirm ML-DSA-87.' \
+            "${version}"
+    else
+        printf 'pkg-config reports OpenSSL %s, but the openssl command does not list ML-DSA-87.' \
+            "${version}"
+    fi
+}
+
 yume_openssl_hash_file() {
     local path="$1"
     if command -v sha256sum >/dev/null 2>&1; then
@@ -447,6 +468,9 @@ yume_openssl_ensure() {
     local patch_dir="${YUME_OPENSSL_PATCH_DIR:-}"
     local series_tag=""
     local sanitize=""
+    local host_shortfall=""
+    local cache_problem=""
+    local cached=0
 
     if [[ -z "${patch_dir}" ]]; then
         patch_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/patches/openssl"
@@ -457,6 +481,9 @@ yume_openssl_ensure() {
     if [[ "${force_pinned}" != "0" && "${force_pinned}" != "1" ]]; then
         yume_openssl_error "YUME_OPENSSL_FORCE_PINNED must be 0 or 1."
         return 1
+    fi
+    if [[ "${force_pinned}" == "1" ]]; then
+        yume_openssl_log "YUME_OPENSSL_FORCE_PINNED=1 is set, so the host library will not be used."
     fi
     # A non-stock series can only be satisfied by our own build. The host
     # library is unpatched by definition and there is no capability probe for
@@ -471,10 +498,15 @@ yume_openssl_ensure() {
         yume_openssl_log "Instrumented OpenSSL requested; the host library cannot satisfy it."
         force_pinned=1
     fi
-    if [[ "${force_pinned}" == "0" ]] && yume_openssl_detect; then
-        found_version="$(pkg-config --modversion openssl)"
-        yume_openssl_log "OpenSSL ${found_version} with ML-DSA-87 detected (required >= ${YUME_OPENSSL_MIN_VERSION})."
-        return 0
+    # Every forced path above has logged its reason. When the host was
+    # eligible, keep the requirement it missed for the build path below.
+    if [[ "${force_pinned}" == "0" ]]; then
+        if yume_openssl_detect; then
+            found_version="$(pkg-config --modversion openssl)"
+            yume_openssl_log "OpenSSL ${found_version} with ML-DSA-87 detected (required >= ${YUME_OPENSSL_MIN_VERSION})."
+            return 0
+        fi
+        host_shortfall="$(yume_openssl_host_shortfall)"
     fi
 
     if ! mkdir -p "${requested_cache_root}" ||
@@ -485,19 +517,37 @@ yume_openssl_ensure() {
     fi
     prefix="${cache_root}/openssl-${YUME_OPENSSL_SOURCE_VERSION}-$(yume_openssl_prefix_tag "${patch_dir}" "${sanitize}")"
 
-    if yume_openssl_activate_prefix "${prefix}" && yume_openssl_detect &&
-       yume_openssl_variant_ok "${prefix}" "${sanitize}"; then
+    # Check the cache one requirement at a time so a rejected prefix is named
+    # by what it lacks. A version from pkg-config cannot say that, because
+    # after a failed check it may describe the cached build or the host.
+    if [[ -e "${prefix}" ]]; then
+        if ! yume_openssl_activate_prefix "${prefix}"; then
+            cache_problem="is incomplete"
+        elif ! yume_openssl_detect; then
+            cache_problem="does not pass the ML-DSA-87 check"
+        elif ! yume_openssl_variant_ok "${prefix}" "${sanitize}"; then
+            cache_problem="does not pass the ${sanitize} instrumentation check"
+        else
+            cached=1
+        fi
+    fi
+
+    if (( cached )); then
         found_version="$(pkg-config --modversion openssl)"
         yume_openssl_log "Using cached OpenSSL ${found_version} from ${prefix}."
     else
-        found_version="$(pkg-config --modversion openssl 2>/dev/null || true)"
-        if [[ -n "${found_version}" ]]; then
-            yume_openssl_warn "OpenSSL ${found_version} does not satisfy the >= ${YUME_OPENSSL_MIN_VERSION} ML-DSA requirement."
-        else
-            yume_openssl_warn "OpenSSL development files were not detected by pkg-config."
+        if [[ -n "${host_shortfall}" ]]; then
+            yume_openssl_warn "${host_shortfall}"
+        fi
+        if [[ -n "${cache_problem}" ]]; then
+            yume_openssl_warn "The cached OpenSSL at ${prefix} ${cache_problem}."
         fi
         if [[ "${YUME_SKIP_DEPS:-0}" == "1" || -n "${YUME_VENDOR_ONLY:-}" ]]; then
-            yume_openssl_error "Install OpenSSL >= ${YUME_OPENSSL_MIN_VERSION} with ML-DSA-87 support or allow ezbuild to create its pinned user-cache fallback."
+            if [[ "${force_pinned}" == "1" ]]; then
+                yume_openssl_error "This build requires the pinned OpenSSL, and ${prefix} holds no usable copy. Unset YUME_SKIP_DEPS and YUME_VENDOR_ONLY to let this script build it."
+            else
+                yume_openssl_error "Install OpenSSL >= ${YUME_OPENSSL_MIN_VERSION} with ML-DSA-87 support or allow ezbuild to create its pinned user-cache fallback."
+            fi
             return 1
         fi
         for command_name in perl make tar; do

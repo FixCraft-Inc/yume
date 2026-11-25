@@ -88,9 +88,10 @@ and release qualification. Their eventual split will separate the frozen
 runtime library from the C header, discovery metadata and contract
 documentation.
 
-The Debian source archive excludes local workspace files, including
-`AGENTS.md` at the repository root and `.ai` and `.private` directories.
-The archive builder checks its finished file listing before publishing it.
+The Debian source archive leaves out local workspace and build files.
+`scripts/check_source_archive_listing.py` holds the list of excluded paths,
+and the archive builder checks its finished file listing against that list
+before publishing it.
 
 ## Linux release archive
 

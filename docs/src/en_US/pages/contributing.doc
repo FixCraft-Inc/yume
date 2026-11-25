@@ -45,10 +45,10 @@ old implementation there before rebuilding it natively.
 
 Before editing, state the requested outcome and check its premise against live
 source, callers and tests. Separate observed behavior, product requirements,
-proposals and test results. Agent notes and previous plans cannot establish
-owner approval. Explain an unfamiliar term by its operation and consequences
-before asking the owner to decide about it. Make routine engineering decisions
-within the authorized scope.
+proposals and test results. Notes and previous plans cannot establish owner
+approval. Explain an unfamiliar term by its operation and consequences before
+asking the owner to decide about it. Make routine engineering decisions within
+the scope of the change.
 
 Challenge an incorrect premise or a poor solution whether it came from the
 owner, another contributor, an agent, or your own draft. Give concrete evidence,
@@ -307,11 +307,9 @@ format, figures, CLI help and locales. Review hand-authored site landing-page
 claims with each behavior change.
 
 Keep public docs focused on setup, behavior, design, and supported interfaces.
-Keep task queues, checkpoints, run summaries, and agent handoffs in ignored
-private `TEMP_*.md` notes with explicit deletion conditions. Lasting private
-guides contain rules, decisions, and technical rationale, with raw evidence in
-private artifact storage. Public [automation guidance](docs/agents/README.md)
-contains only repository facts that apply to a fresh clone.
+Do not commit task lists, progress notes, run summaries, or raw captures and
+logs. The [automation guidance](docs/agents/README.md) contains only
+repository facts that apply to a fresh clone.
 
 The `website/` tree publishes the static project site. Edit the canonical
 `docs/src/` source, never the generated `docs/*.md` or
@@ -328,11 +326,11 @@ internal links, generated routes, browser behavior, and accessibility affected
 by the change. A website build qualifies only the static publication surface,
 not runtime or security behavior.
 
-Before handoff, review the complete diff, confirm no secrets or generated
-machine state are present, record tests actually run (not intended), and list
-every meaningful unrun gate. Before a commit, stage it and run
-`scripts/check_repository_hygiene.py --staged`, which checks whitespace in the
-staged files, new ones included. CI checks every committed file the same way,
+Before submitting a change, review the complete diff, confirm no secrets or
+generated machine state are present, record tests actually run (not
+intended), and list every meaningful unrun gate. Before a commit, stage it
+and run `scripts/check_repository_hygiene.py --staged`, which checks
+whitespace in the staged files, new ones included. CI checks every committed file the same way,
 and each commit pushed to a branch for its message: a subject of at most 72
 columns, a body wrapped at 72, a `Validation:` paragraph, no attribution
 trailers, and a signature.

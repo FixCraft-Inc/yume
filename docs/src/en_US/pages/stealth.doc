@@ -304,7 +304,7 @@ python3 scripts/yume_ndpi_smoke.py \
 The script runs the session under `unshare -rn`, so it needs no host
 privileges, and writes the raw reader output and a summary to a new directory.
 It observes one loopback session and is not a classifier result. Packet
-capture outside such a namespace should run only on an approved evidence host
+capture outside such a namespace should run only on a dedicated capture host
 with deliberately granted capture access. Do not give the YUME binaries root
 or capture privileges to make a check pass.
 

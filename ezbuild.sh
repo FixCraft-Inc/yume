@@ -80,7 +80,11 @@ Useful environment variables:
                           (default: ~/.cache/yume)
   YUME_CMAKE_ARGS         Extra CMake arguments, such as
                           -DYUME_BUILD_BASEFWX_MODULES=ON
-  YUME_SKIP_DEPS          Set to 1 to skip installing system packages
+  YUME_SKIP_DEPS          Set to 1 to skip installing system packages.
+                          It also stops the pinned OpenSSL and libnghttp2
+                          fallback builds, so the cache must already hold
+                          the pinned OpenSSL, and libnghttp2 1.64 or later
+                          must be installed or cached
   YUME_TMP_ROOT           Temporary work directory
 EOF
 }

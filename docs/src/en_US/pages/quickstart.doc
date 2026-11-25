@@ -25,7 +25,10 @@ cd yume
 
 `ezbuild.sh` first fast-forwards a checkout without local changes to its upstream branch and
 installs missing system packages with `sudo apt-get`. Pass `--no-pull` or set
-`YUME_SKIP_DEPS=1` to skip either. The normal build produces `build/bin/yume`, `build/bin/yumed`,
+`YUME_SKIP_DEPS=1` to skip either. `YUME_SKIP_DEPS=1` also stops it from
+building the pinned OpenSSL or a libnghttp2 fallback, so it works only when an
+earlier build has cached the pinned OpenSSL and libnghttp2 1.64 or later is
+installed or cached. The normal build produces `build/bin/yume`, `build/bin/yumed`,
 `build/bin/yume-setup` and `build/bin/yume-doctor`. It prepares
 the pinned, patched OpenSSL required by the native TLS profile and uses a
 bounded build job count. It does not prepare or change the separate BaseFWX

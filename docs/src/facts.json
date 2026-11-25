@@ -136,6 +136,21 @@
         {"path": "docs/src/en_US/pages/abi.doc", "text": "Opening derives a key with Argon2id over 64 MiB"},
         {"path": "docs/src/en_US/man/yume_1.doc", "text": "print a new code in five groups of five characters"}
       ]
+    },
+    {
+      "id": "skip-deps-builds",
+      "fact": "YUME_SKIP_DEPS=1 skips the system package install in ezbuild.sh and also refuses to build the pinned OpenSSL and the libnghttp2 fallback, which a system libnghttp2 older than 1.64 needs. The ezbuild.sh help text states this too.",
+      "source": [
+        {"path": "scripts/ensure-openssl.sh", "text": "if [[ \"${YUME_SKIP_DEPS:-0}\" == \"1\" || -n \"${YUME_VENDOR_ONLY:-}\" ]]; then"},
+        {"path": "scripts/ensure-nghttp2.sh", "text": "if [[ \"${YUME_SKIP_DEPS:-0}\" == \"1\" || -n \"${YUME_VENDOR_ONLY:-}\" ]]; then"},
+        {"path": "scripts/ensure-nghttp2.sh", "text": "YUME_NGHTTP2_MIN_VERSION=\"${YUME_NGHTTP2_MIN_VERSION:-1.64.0}\""}
+      ],
+      "stated": [
+        {"path": "docs/src/en_US/pages/readme.doc", "text": "also stops `ezbuild.sh` from building the pinned OpenSSL or a libnghttp2 fallback"},
+        {"path": "docs/src/en_US/pages/readme.doc", "text": "libnghttp2 1.64 or later is installed or cached"},
+        {"path": "docs/src/en_US/pages/quickstart.doc", "text": "also stops it from building the pinned OpenSSL or a libnghttp2 fallback"},
+        {"path": "docs/src/en_US/pages/quickstart.doc", "text": "libnghttp2 1.64 or later is installed or cached"}
+      ]
     }
   ]
 }

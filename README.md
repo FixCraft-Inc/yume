@@ -52,10 +52,15 @@ OpenSSL. You can build and run both programs and the optional `libyume` without
 BaseFWX. See [the contributor guide](CONTRIBUTING.md) for direct CMake builds.
 
 `ezbuild.sh` installs build dependencies with the system package manager
-through `sudo`, such as `sudo apt-get` on Debian and Ubuntu. Set
-`YUME_SKIP_DEPS=1` to skip that step. It caches downloads, the patched
-OpenSSL build and build locks in `~/.cache/yume`, or in `YUME_CACHE_ROOT`
-when that is set.
+through `sudo`, such as `sudo apt-get` on Debian and Ubuntu. It caches
+downloads, the patched OpenSSL build and build locks in `~/.cache/yume`, or
+in `YUME_CACHE_ROOT` when that is set.
+
+`YUME_SKIP_DEPS=1` skips the package step and also stops `ezbuild.sh` from
+building the pinned OpenSSL or a libnghttp2 fallback. Use it only when the
+packages are already installed, an earlier build has left the pinned OpenSSL
+for the current patch series in the cache, and libnghttp2 1.64 or later is
+installed or cached.
 
 ## Set up a tunnel
 

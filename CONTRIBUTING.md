@@ -38,7 +38,7 @@ old implementation there before rebuilding it natively.
 
 ## Decision and review discipline
 
-Before editing, state the requested outcome and check its premise against live
+Before editing, state the intended outcome and check its premise against live
 source, callers and tests. Separate observed behavior, product requirements,
 proposals and test results. Notes and previous plans cannot establish owner
 approval. Explain an unfamiliar term by its operation and consequences before
@@ -303,7 +303,7 @@ claims with each behavior change.
 
 Keep public docs focused on setup, behavior, design, and supported interfaces.
 Do not commit task lists, progress notes, run summaries, or raw captures and
-logs. The [automation guidance](docs/agents/README.md) contains only
+logs. [Checks by changed surface](docs/development/CHECKS.md) holds only
 repository facts that apply to a fresh clone.
 
 The `website/` tree publishes the static project site. Edit the canonical

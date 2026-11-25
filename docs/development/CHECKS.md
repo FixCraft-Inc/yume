@@ -1,10 +1,10 @@
-<!-- Generated from docs/src/en_US/pages/agents_readme.doc by scripts/yume_docs.py. Edit that file, not this one. -->
-# Automation guidance
+<!-- Generated from docs/src/en_US/pages/checks.doc by scripts/yume_docs.py. Edit that file, not this one. -->
+# Checks by changed surface
 
-Use [CONTRIBUTING.md](../../CONTRIBUTING.md#decision-and-review-discipline) for
-decision and review rules, including challenging incorrect premises and your
-own proposed solutions. Its project-direction, interface and documentation
-sections apply to automation too. Check live Git status and source before
+This page lists the contracts to update and the checks to run for each kind
+of change. [CONTRIBUTING.md](../../CONTRIBUTING.md#decision-and-review-discipline)
+owns the decision and review rules, including challenging incorrect premises
+and your own proposed solutions. Check live Git status and source before
 changing files, preserve unrelated work, and finish with `git diff --check`.
 
 ## Repository contracts
@@ -31,12 +31,12 @@ layers.
 | Transport, AUTH, ratchet | [YTP/1](../protocol/YTP_1.md) and its construction vectors, the [relay channel](../protocol/RELAY_CHANNEL.md) for the relay module, focused protocol and security tests |
 | C ABI and endpoint backend | [ABI](../ABI.md), header, symbol map, candidate Debian symbols, C/C++ and stream integration tests |
 | Config parsers | Both roles' readers, writers, validation and startup consumers, paired rejection/rollback tests, the [configuration reference](../CONFIGURATION.md), the complete documents in `tests/fixtures/config` that `yume_config_v1_closure` probes, CLI help and manuals |
-| Server policy and cover | [Operations](../OPERATIONS.md), [YTP/1 development guide](../development/ytp1/README.md), daemon manual |
+| Server policy and cover | [Operations](../OPERATIONS.md), [YTP/1 development guide](ytp1/README.md), daemon manual |
 | yume-setup, yume-doctor or generated kit layout | The setup and doctor manuals, [Operations](../OPERATIONS.md), [cluster 1](../protocol/CLUSTER_1.md), quickstarts, and the setup/doctor tests |
 | Packaging, systemd or installed paths | Debian README and unit, [packaging](../PACKAGING.md), [Operations](../OPERATIONS.md), and every path the generated configuration writes at runtime |
 | Cover or outer-carrier behavior | [Stealth](../STEALTH.md), including its remaining differences, and [transport profiles](../TRANSPORT_PROFILES.md) |
 | UI text | `translations/catalog.json`, translation validation/generation, and translation tests |
-| YTP/1 engine and providers | [Architecture](../ARCHITECTURE.md), [YTP/1](../protocol/YTP_1.md), [development guide](../development/ytp1/README.md), provider tests |
+| YTP/1 engine and providers | [Architecture](../ARCHITECTURE.md), [YTP/1](../protocol/YTP_1.md), [development guide](ytp1/README.md), provider tests |
 | Product version or packaging | Version header, package metadata, README, [status](../IMPLEMENTATION_STATUS.md), [packaging](../PACKAGING.md), metadata tests |
 | Dependencies | Manifest, dependency/SBOM check, third-party notices |
 | Control socket | [Control protocol 1](../protocol/CONTROL_1.md) and its additive rules, control socket, CLI and native runtime tests, and the GUI tests |

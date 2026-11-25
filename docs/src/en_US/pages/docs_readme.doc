@@ -56,8 +56,9 @@ This map covers YUME `0.3.0-dev1`. Its `yume` and `yumed` speak YTP/1.
   tools, embedding and verification gates.
 - [Developer diagnostics](DIAGNOSTICS.md): timing helpers, warnings,
   sanitizers and fuzzing.
-- [Development notes](release/CHANGELOG.md), [SBOM](release/SBOM.spdx.json)
-  and [automation guidance](agents/README.md).
+- [Checks by changed surface](development/CHECKS.md): the contracts, tests
+  and generators to update for each kind of change.
+- [Development notes](release/CHANGELOG.md) and [SBOM](release/SBOM.spdx.json).
 
 Source and tests win when prose disagrees. Generated pages come from `.doc`
 sources under [docs/src](src/README.md). Edit the source named in the banner,

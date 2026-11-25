@@ -76,6 +76,8 @@ Options:
 Useful environment variables:
   YUME_BUILD_DIR          Build directory (default: build)
   YUME_BUILD_JOBS         Parallel compile jobs (default: 2)
+  YUME_CACHE_ROOT         Download, OpenSSL build and lock cache
+                          (default: ~/.cache/yume)
   YUME_CMAKE_ARGS         Extra CMake arguments, such as
                           -DYUME_BUILD_BASEFWX_MODULES=ON
   YUME_SKIP_DEPS          Set to 1 to skip installing system packages

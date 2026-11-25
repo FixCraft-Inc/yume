@@ -9,9 +9,9 @@ web:      no
 YUME carries TCP, UDP and IP traffic through a server you control. Its client
 (`yume`) and server (`yumed`) speak YTP/1, the YUME Transport Protocol.
 
-Yume (夢) means dream in Japanese. Anime openings helped inspire the name,
-and internet freedom for everyone is the project's goal. The design puts
-security first, then stealth, then usable speed.
+Yume (夢) means dream in Japanese. The dream is an internet anyone can reach.
+The design puts security first, then stealth, then usable speed.
+[Why YUME exists](docs/WHY_YUME.md) tells the story behind the name.
 
 YUME `0.3.0-dev1` builds from source on Linux x86-64 and is in active
 development, with an independent security review planned.

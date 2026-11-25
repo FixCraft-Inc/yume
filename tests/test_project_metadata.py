@@ -433,7 +433,7 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("WHY_YUME.md", documentation_map)
         self.assertIn("protocol/YTP_1.md", documentation_map)
         self.assertIn("IMPLEMENTATION_STATUS.md", documentation_map)
-        self.assertRegex(documentation_map, r"\]\(agents/README\.md\)")
+        self.assertRegex(documentation_map, r"\]\(development/CHECKS\.md\)")
 
     def test_website_documentation_uses_one_sync_path(self) -> None:
         sync_script = (ROOT / "scripts/sync_website_docs.sh").read_text(
@@ -457,7 +457,7 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(published["docs/protocol/YTP_1.md"], "/docs/protocol/YTP_1/")
         self.assertEqual(published["docs/release/CHANGELOG.md"], "/docs/release/CHANGELOG/")
         self.assertEqual(published["CONTRIBUTING.md"], "/docs/CONTRIBUTING/")
-        self.assertNotIn("docs/agents/README.md", published)
+        self.assertNotIn("docs/development/CHECKS.md", published)
 
         gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("website/docs/**/*.md", gitignore)

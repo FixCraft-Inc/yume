@@ -59,7 +59,7 @@ statement there when you reword it.
 
 **Change a colour.** Edit `config/palette.json` at the repository root.
 Generate the shared palette and sync diagrams using the
-[shared palette instructions](../docs/agents/README.md#shared-palette).
+[shared palette instructions](../docs/development/CHECKS.md#shared-palette).
 The generated regions of `assets/tokens.css` are exports of that palette.
 
 **Ship a CSS or JS change.** Bump `asset_version` in `_config.yml`. It covers

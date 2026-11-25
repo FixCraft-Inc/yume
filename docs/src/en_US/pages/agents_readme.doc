@@ -77,9 +77,8 @@ the website landing page repeat, and `tests/test_doc_facts.py` names every
 place to update when one of them changes.
 
 [CONTRIBUTING](../../CONTRIBUTING.md#documentation-and-review) says what
-public documents hold and where task state and evidence go instead. A fresh
-clone must contain everything a contributor needs to build and understand
-YUME. Source and executable tests decide whether a claim is true.
+public documents hold and what stays out of the repository. A fresh clone
+must contain everything a contributor needs to build and understand YUME. Source and executable tests decide whether a claim is true.
 
 ## Shared credits
 

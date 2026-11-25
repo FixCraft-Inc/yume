@@ -297,17 +297,17 @@ runs from the node host. The served nodes listen on the relay's port,
 because a client's HTTP/2 authority must name the port its node listens
 on.
 
-On 2026-09-30 a laptop ran the clients against the build host over a
+On 2026-09-30 a second machine ran the clients against the node host over a
 1 Gbit/s cable. At `rtt=0` every path filled the link, 916 to 941 Mbit/s.
 At 40 and 100 ms per hop each tunnelled path's rate and request time came
-within 2 % of the build host's own run. At 200 ms one stream moved 40.2
+within 2 % of the node host's own run. At 200 ms one stream moved 40.2
 Mbit/s through the direct session and 5.5 Mbit/s through three hops, and
 four streams 20.1 Mbit/s through three hops. The four nodes still shared
 one host.
 
-On the build host on 2026-09-29, one stream moved 35 Mbit/s through three
-hops at 40 ms each and 14 Mbit/s at 100 ms, 52 and 21 Mbit/s through two
-hops, and 174 and 77 Mbit/s through the direct session. At 100 ms per hop
+In the node host's own run on 2026-09-29, one stream moved 35 Mbit/s
+through three hops at 40 ms each and 14 Mbit/s at 100 ms, 52 and 21 Mbit/s
+through two hops, and 174 and 77 Mbit/s through the direct session. At 100 ms per hop
 a small request after a quiet spell took 0.8 s through three hops, 0.5 s
 with idle rotation, and 0.4 s through the direct session.
 
@@ -319,8 +319,8 @@ node's links. It rebuilds each connection's TLS record timeline from the
 captures (arrival time, content type and length), gives the client's
 sessions the classifier gate's features and, with `--compare`, describes
 them against one arm of an earlier campaign's feature document. Each link
-gets its record counts and common lengths. The output keeps the pcaps and
-belongs in private evidence. It is a baseline, not a classifier verdict.
+gets its record counts and common lengths. The output keeps the pcaps, so
+keep it out of the repository. It is a baseline, not a classifier verdict.
 
 ## Managed Linux TUN networking
 
@@ -509,8 +509,8 @@ inside one is diagnostic lookup, lifecycle and I/O re-entry fail with
 `YUME_STATUS_INVALID_STATE`, and void destroy calls are ignored.
 
 Captures, NetLogs, browser profiles, sanitizer logs, fuzz crashes, and
-benchmark traces are evidence artifacts: keep them in approved private
-locations, redact secrets, record exact tool and profile versions, and keep
+benchmark traces are evidence artifacts: keep them out of the repository,
+redact secrets, record exact tool and profile versions, and keep
 immutable hashes with candidate results. Production timing and metrics must
 be bounded, off unless configured, and must never expose plaintext, keys,
 nonces, AUTH messages, identity-to-PSK mappings, secret paths, or full
@@ -556,7 +556,7 @@ Resource and failure qualification exercises slow consumers, stalled front
 doors, handshake and stream floods, malformed lengths, queue pressure, packet
 batches, rekey pressure, cancellation, and teardown at every asynchronous
 boundary, with ASan, UBSan, TSan, soak, failure-injection, and fuzz suites
-run detached on the private build host.
+run detached on a separate build machine.
 
 Performance claims against transport v2 need matched runs of a build from
 commit `9070b0a`, the last that contains it: throughput, p50/p99 latency, CPU

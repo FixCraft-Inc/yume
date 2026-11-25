@@ -56,6 +56,12 @@ This builds `build/bin/yume` and `build/bin/yumed` with the pinned, patched
 OpenSSL. You can build and run both programs and the optional `libyume` without
 BaseFWX. See [the contributor guide](CONTRIBUTING.md) for direct CMake builds.
 
+`ezbuild.sh` installs build dependencies with the system package manager
+through `sudo`, such as `sudo apt-get` on Debian and Ubuntu. Set
+`YUME_SKIP_DEPS=1` to skip that step. It caches downloads, the patched
+OpenSSL build and build locks in `~/.cache/yume`, or in `YUME_CACHE_ROOT`
+when that is set.
+
 ## Set up a tunnel
 
 `yume-setup` writes a server and client kit: configuration, credentials and a

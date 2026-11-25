@@ -500,8 +500,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   and cumulative traffic from any thread, with an optional state-change
   callback. `SessionEngine::traffic()` supplies per-session byte counts.
 - **Native operations guide.** `docs/OPERATIONS.md` now covers the native
-  programs. The transport-v2 operator material moved to
-  `docs/TRANSPORT_V2_OPERATIONS.md` under its reference program names.
+  programs. The transport-v2 operator material moved to a
+  separate page under its reference program names. That page was later
+  removed with transport v2, and commit `9070b0a` contains it.
   Release verification, which describes the native release, stays on the
   native page. The duplicate website build notes were dropped in favor of the
   documentation source guide.
@@ -1993,15 +1994,15 @@ validation are complete.
 - **Historical release line moved to 1.1.** At the time, the now-withdrawn
   `v1.0` tag named the first test release and the tree targeted `1.1` as its
   first stable line.
-- **BaseFWX pin currently names legacy-history 3.7.0 commit** `ddf31617aab6bb9ac87129295564d6736e48c601`, carrying Java Argon2id support, fixed Argon2 lane defaults across runtimes, secret-hygiene hardening, and the blackbox plugin ABI surface. The SHA remains fetchable but is not on the rewritten current `main`/`v3.7.0` lineage; choose and validate the intended canonical release commit before shipping 1.1.
-- **Inner crypto secret hygiene.** Introduced `basefwx::crypto::SecureBytes` — move-only RAII owner that wraps `Bytes` and SecureClears on destruction. Replaces the `SecretGuard` raw-pointer pattern at every KEM-touching call site in yume (`server_derive_key`, `validate_pq_keypair`) and basefwx (`filecodec.cpp` 4 sites, `keywrap.cpp` 2 sites). Eliminates a use-after-free class fixed in 66153f6 by structural change rather than placement discipline. Existing string-secret SecretGuard sites are unchanged.
+- **BaseFWX pin currently names legacy-history 3.7.0 commit** `ddf31617aab6bb9ac87129295564d6736e48c601`, carrying Java Argon2id support, fixed Argon2 lane defaults across runtimes, secret-hygiene hardening, and the blackbox plugin ABI surface. The SHA remains fetchable but is not on the rewritten current `main`/`v3.7.0` lineage.
+- **Inner crypto secret hygiene.** Introduced `basefwx::crypto::SecureBytes` — move-only RAII owner that wraps `Bytes` and SecureClears on destruction. Replaces the `SecretGuard` raw-pointer pattern at every KEM-touching call site in yume (`server_derive_key`, `validate_pq_keypair`) and basefwx (`filecodec.cpp` 4 sites, `keywrap.cpp` 2 sites). Eliminates the use-after-free class described under Fixed by structural change rather than placement discipline. Existing string-secret SecretGuard sites are unchanged.
 - **TLS browser-profile labels corrected** to match the captured shapes: Chrome 131, Firefox 126, Safari 18, and Edge 123.
 - **JA4 diagnostics made canonical.** Fingerprints now use FoxIO's `a_b_c` format, GREASE filtering, sorted lower-case cipher/extension hex lists, SNI/ALPN exclusions, and original-order signature algorithms. Focused official-vector and match-threshold tests cover the implementation.
 - **`X-Yume-Blob` HTTP response header removed.** It had zero consumers in the tree; the substring "Yume" was a passive fingerprint for any layer-7 inspector. The anonym blob still ships in the body (zero-width `<span>` + HTML comment) where the actual readers look.
 
 ### Fixed
-- **Use-after-free on KEM secret wipe.** SecretGuard stores raw `Bytes*` pointers and SecureClears them from its destructor. Reverse-construction-order destruction meant a SecretGuard declared BEFORE the locals it tracked accessed already-freed vector storage on scope exit. Manifested as `malloc(): unaligned tcache chunk detected` immediately after PQ keypair validation on `--pq-auto-generate` startup. Closed first by reordering (commit 66153f6), then by structural replacement with SecureBytes (commit 58c39a7).
-- **Pre-existing yume_server link break** from the `f6db161` session.cpp split: `epoch_now_ms` was anonymous-namespace-local in session.cpp but referenced from session_control.cpp. Exposed at file scope in session.hpp; duplicate copy in federation_link.cpp removed.
+- **Use-after-free on KEM secret wipe.** SecretGuard stores raw `Bytes*` pointers and SecureClears them from its destructor. Reverse-construction-order destruction meant a SecretGuard declared BEFORE the locals it tracked accessed already-freed vector storage on scope exit. Manifested as `malloc(): unaligned tcache chunk detected` immediately after PQ keypair validation on `--pq-auto-generate` startup. Closed first by reordering, then by structural replacement with SecureBytes.
+- **Pre-existing yume_server link break** from the earlier session.cpp split: `epoch_now_ms` was anonymous-namespace-local in session.cpp but referenced from session_control.cpp. Exposed at file scope in session.hpp; duplicate copy in federation_link.cpp removed.
 - **Argon2 admission was not aggregate.** `argon2_env_limits()` previously returned `{0,0,0}` by default, making the parameter guard a no-op. It now seeds per-derivation ceilings (`time=12, memory=512 MiB, parallelism=8`), and positive environment values may deliberately lower or raise them. The server additionally reserves each Argon2 derivation against manager-owned aggregate memory/job limits before allocation; move-only RAII leases release accounting on all exits. Defaults are 512 MiB aggregate and four jobs, configurable through CLI or JSON. The unused `has_argon2_limits` gate was removed. The client also checked its local cap in that implementation.
 
 ## [withdrawn v1.0] - 2026-05-16
@@ -2046,12 +2047,12 @@ Former tag commit: <https://github.com/FixCraft-Inc/yume/commit/82735dc12b17e7bc
 ### Changed
 - The 1.0 test build included its wire, authentication-key, anonym CA/sub-key,
   and `yume-obfs-v2` token formats. The proposed 1.1 stable line was withdrawn.
-- Server-to-server federation links are pinned to **TLS 1.3 only** (no fallback to earlier TLS versions) — see commit `f13fbdb`.
+- Server-to-server federation links are pinned to **TLS 1.3 only** (no fallback to earlier TLS versions).
 - Build pipeline rewritten end-to-end vs the BETA cycle: smoke-gate before heavy builds, GUI added for desktop OSes, dynamic "busybox" artifacts dropped (they were misleadingly named — a glibc-dynamic binary can't run on a real busybox/musl target), only verified-static `*-busybox-static` ships, macOS job is matrix-ized so Intel can be added in a follow-up by uncommenting one matrix entry.
 - Website's `assetMap` aligned with the new release-artifact set: GUI download cards for Linux / macOS / Windows added; dynamic-busybox cards dropped.
 
 ### Fixed
-- Federation TLS regression: an earlier commit used the wrong TLS-method constant (`tls_client` instead of `tlsv13_client`); pinned in `f13fbdb`.
+- Federation TLS regression: an earlier commit used the wrong TLS-method constant (`tls_client` instead of `tlsv13_client`), now corrected.
 - 240-commit history through the ALPHA → BETA cycle accumulated and addressed: TLS-fingerprint correctness, HTTP/2 obfs token rotation, key-hop window seam handling, federation handshake edge cases, anonym-mode metadata leaks, Android VPN capture restart bugs, Windows MinGW cross-build deps, BusyBox static-link reliability across glibc/musl toolchains, GUI font rendering on Wayland vs X11 (URW Gothic Demi double-bold fix), CodeQL high-severity findings, OpenWRT SDK feed wiring, and assorted CI/website hash-rendering bugs.
 
 ### Notes

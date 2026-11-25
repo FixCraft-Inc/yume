@@ -74,8 +74,8 @@ evidence-profile versions, and BaseFWX's runtime and format compatibility limits
 An intentional web title may clarify those boundaries; do not replace it with
 a filename-derived title.
 
-The format guide, diagram guide, agent instructions, website design guides,
-and private notes are edited directly. Product documents and changelogs are
+The format guide, diagram guide and website design guides are edited
+directly. Product documents and changelogs are
 `.doc` sources. Site landing-page prose is still authored HTML; review its
 claims with a behavior change. BaseFWX's native help is runtime code, while
 its manual and web reference share a source. The tooling does not claim to
@@ -288,9 +288,9 @@ or `man` when changing formatting, and build Jekyll when changing web output.
 Compare the displayed words and code examples, not only raw roff bytes.
 
 YUME and BaseFWX carry identical common tooling so either standalone checkout
-works. In the parent workspace, `python3 scripts/check_doc_tooling_parity.py`
-checks the shared modules and tests. It reports a skip if the separate BaseFWX
-checkout is absent; it does not claim cross-repository parity in that case.
+works. With a BaseFWX checkout in `basefwx/`,
+`python3 scripts/check_doc_tooling_parity.py` checks the shared modules and
+tests. It reports a skip if that checkout is absent; it does not claim cross-repository parity in that case.
 Update both copies together. Product-specific CLI generation and site policy
 remain in their owning repository.
 
